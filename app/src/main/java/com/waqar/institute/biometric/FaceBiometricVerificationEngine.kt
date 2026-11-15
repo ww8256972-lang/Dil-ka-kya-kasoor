@@ -2,7 +2,7 @@ package com.waqar.institute.biometric
 
 import android.graphics.Bitmap
 import androidx.annotation.Keep
-import com.google.firebase.firestore.FirebaseFirestore
+import com.example.security.HardwareKeystoreVault
 import com.google.firebase.firestore.SetOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
@@ -19,16 +19,21 @@ import kotlin.math.hypot
 import kotlin.math.sqrt
 
 /**
- * Aadhaar-Standard 128-D Face Embedding, Anti-Spoofing Liveness & Native C++20 Cosine Matcher
+ * On-Device ML Kit 128-D Geometric Face Embedding, Eye-Open/Blink Liveness & Native C++20 Cosine Matcher
  * (`FaceBiometricVerificationEngine.kt`).
+ *
+ * Note: Uses ML Kit facial landmarks and contours projected to an L2-normalized 128-D geometric
+ * vector (no `.tflite` MobileFaceNet neural model is bundled in this build).
+ * Enforces strict fail-closed verification: live faces NEVER auto-enroll on first attempt.
  */
 @Obfuscate
 @Keep
 object FaceBiometricVerificationEngine {
     const val EMBEDDING_DIMENSION = 128
-    const val COSINE_MATCH_THRESHOLD = 0.88f // 99.87% precision threshold
+    const val COSINE_MATCH_THRESHOLD = 0.88f
     private const val MIN_EYE_OPEN_LIVENESS = 0.35f
     private const val MAX_HEAD_EULER_DEGREES = 22.0f
+    private const val FIRESTORE_LOOKUP_TIMEOUT_MS = 8_000L
 
     init {
         runCatching { System.loadLibrary("waqar_native_security") }
@@ -47,6 +52,13 @@ object FaceBiometricVerificationEngine {
         data class Mismatch(val cosineSimilarity: Float, val message: String) : BiometricMatchResult()
 
         data class Error(val errorMessage: String) : BiometricMatchResult()
+    }
+
+    sealed class EnrollmentLookupResult {
+        data class Found(val embedding: FloatArray, val sourceKey: String) : EnrollmentLookupResult()
+        object Missing : EnrollmentLookupResult()
+        data class Corrupted(val reason: String) : EnrollmentLookupResult()
+        data class Unavailable(val reason: String) : EnrollmentLookupResult()
     }
 
     private val highPrecisionOptions = FaceDetectorOptions.Builder()
@@ -89,67 +101,91 @@ object FaceBiometricVerificationEngine {
     private val inMemoryTeacherPhotos = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val inMemoryTeacherEmbeddings = java.util.concurrent.ConcurrentHashMap<String, FloatArray>()
 
+    private fun openSecureVaultPrefs(context: android.content.Context): android.content.SharedPreferences? {
+        return runCatching {
+            HardwareKeystoreVault.openEncryptedPreferences(context.applicationContext ?: context)
+        }.getOrNull()
+    }
+
     /**
      * Enrolls a Teacher's Gallery Profile Photo (`data:image/jpeg;base64,...`) into the 128-D
-     * Biometric Face Authentication vault (in-memory, local SharedPreferences, and Cloud Firestore `teachers/{id}`).
+     * Biometric Face Authentication vault (in-memory, hardware-encrypted SharedPreferences, and Cloud Firestore `teachers/{id}`).
      */
     suspend fun enrollTeacherProfilePhoto(
         context: android.content.Context? = null,
         teacherIds: List<String>,
         teacherName: String,
-        photoDataUri: String
+        photoDataUri: String,
+        enrolledByAdminUid: String = "admin_root"
     ) {
         if (photoDataUri.isBlank()) return
         val cleanKeys = (teacherIds + listOf(
             teacherName.trim().lowercase().replace(Regex("[^a-z0-9]"), ""),
             "faculty_${teacherName.trim().lowercase().replace(Regex("[^a-z0-9]"), "")}",
             "cred_faculty_${teacherName.trim().lowercase().replace(Regex("[^a-z0-9]"), "")}"
-        )).map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct()
+        )).map { it.trim().lowercase() }
+            .filter { !isInvalidTeacherUid(it) }
+            .distinct()
+        if (cleanKeys.isEmpty()) return
 
-        val embedding: FloatArray = withContext(Dispatchers.Default) {
-            val bitmap = decodeDataUriToBitmap(photoDataUri)
-            if (bitmap != null) {
-                val detected = runCatching {
-                    val detector = FaceDetection.getClient(highPrecisionOptions)
-                    val faces = detector.process(InputImage.fromBitmap(bitmap, 0)).await()
-                    faces.firstOrNull()?.let { extract128DFacialEmbedding(it) }
-                }.getOrNull()
-                detected ?: extractDeterministicPhotoEmbedding(bitmap)
-            } else {
-                FloatArray(EMBEDDING_DIMENSION) { idx -> kotlin.math.sin((idx + 1) * 0.17f) }
-            }
+        val embedding: FloatArray? = withContext(Dispatchers.Default) {
+            val bitmap = decodeDataUriToBitmap(photoDataUri) ?: return@withContext null
+            runCatching {
+                val detector = FaceDetection.getClient(highPrecisionOptions)
+                val faces = detector.process(InputImage.fromBitmap(bitmap, 0)).await()
+                faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+            }.getOrNull()?.takeIf { isValidEmbeddingVector(it) }
         }
 
-        val embeddingCsv = embedding.joinToString(",") { "%.6f".format(java.util.Locale.US, it) }
+        val embeddingCsv = embedding?.joinToString(",") { "%.6f".format(java.util.Locale.US, it) }
         cleanKeys.forEach { key ->
             inMemoryTeacherPhotos[key] = photoDataUri
-            inMemoryTeacherEmbeddings[key] = embedding
+            if (embedding != null) {
+                inMemoryTeacherEmbeddings[key] = embedding
+            }
         }
         withContext(Dispatchers.IO) {
             context?.applicationContext?.let { appCtx ->
-                val prefs = appCtx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
-                val editor = prefs.edit()
+                val securePrefs = openSecureVaultPrefs(appCtx)
+                val targetPrefs = securePrefs
+                    ?: appCtx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
+                val editor = targetPrefs.edit()
                 cleanKeys.forEach { key ->
-                    editor.putString("photo_$key", photoDataUri)
-                    editor.putString("emb_$key", embeddingCsv)
-                    editor.putString("name_$key", teacherName)
+                    editor.putString("bio_photo_$key", photoDataUri)
+                    if (embeddingCsv != null) {
+                        editor.putString("bio_emb_$key", embeddingCsv)
+                    }
+                    editor.putString("bio_name_$key", teacherName)
                 }
                 editor.apply()
             }
 
-            val embeddingAsDoubles = embedding.map { it.toDouble() }
             val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
-            cleanKeys.take(3).forEach { key ->
+            val primaryKey = cleanKeys.first()
+            val payload = buildMap<String, Any> {
+                put("id", primaryKey)
+                put("name", teacherName)
+                put("photoUri", photoDataUri.take(48000))
+                put("enrolledByAdminUid", enrolledByAdminUid.ifBlank { "admin_root" })
+                if (embedding != null) {
+                    put("faceEmbedding", embedding.map { it.toDouble() })
+                    put("biometricEnrolledAt", System.currentTimeMillis())
+                }
+            }
+            // Write canonical primary record first, then secondary aliases for cross-device lookup
+            runCatching {
+                kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
+                    firestore.collection("teachers").document(primaryKey).set(
+                        payload,
+                        SetOptions.merge()
+                    ).await()
+                }
+            }
+            cleanKeys.drop(1).take(2).forEach { key ->
                 runCatching {
-                    kotlinx.coroutines.withTimeoutOrNull(2000L) {
+                    kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
                         firestore.collection("teachers").document(key).set(
-                            mapOf(
-                                "id" to key,
-                                "name" to teacherName,
-                                "photoUri" to photoDataUri.take(48000),
-                                "faceEmbedding" to embeddingAsDoubles,
-                                "biometricEnrolledAt" to System.currentTimeMillis()
-                            ),
+                            payload + ("id" to key),
                             SetOptions.merge()
                         ).await()
                     }
@@ -168,9 +204,19 @@ object FaceBiometricVerificationEngine {
             inMemoryTeacherPhotos[key]?.takeIf { it.isNotBlank() }?.let { return it }
         }
         context?.applicationContext?.let { appCtx ->
-            val prefs = appCtx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
+            openSecureVaultPrefs(appCtx)?.let { secPrefs ->
+                for (key in candidates) {
+                    val uri = secPrefs.getString("bio_photo_$key", null)
+                    if (!uri.isNullOrBlank()) {
+                        inMemoryTeacherPhotos[key] = uri
+                        return uri
+                    }
+                }
+            }
+            val legacyPrefs = appCtx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
             for (key in candidates) {
-                val uri = prefs.getString("photo_$key", null)
+                val uri = legacyPrefs.getString("photo_$key", null)
+                    ?: legacyPrefs.getString("bio_photo_$key", null)
                 if (!uri.isNullOrBlank()) {
                     inMemoryTeacherPhotos[key] = uri
                     return uri
@@ -192,57 +238,70 @@ object FaceBiometricVerificationEngine {
         teacherUid: String,
         teacherName: String = ""
     ): FloatArray? {
+        if (isInvalidTeacherUid(teacherUid)) return null
         val candidates = buildCandidateKeys(teacherUid, teacherName)
         for (key in candidates) {
-            inMemoryTeacherEmbeddings[key]?.let { return it }
+            inMemoryTeacherEmbeddings[key]?.takeIf { isValidEmbeddingVector(it) }?.let { return it }
         }
         val ctx = context?.applicationContext ?: return null
-        val prefs = ctx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
+        openSecureVaultPrefs(ctx)?.let { secPrefs ->
+            for (key in candidates) {
+                val csv = secPrefs.getString("bio_emb_$key", null)
+                if (!csv.isNullOrBlank()) {
+                    val parts = csv.split(",").mapNotNull { it.toFloatOrNull() }
+                    val vec = parts.toFloatArray()
+                    if (parts.size == EMBEDDING_DIMENSION && isValidEmbeddingVector(vec)) {
+                        return vec.also { inMemoryTeacherEmbeddings[key] = it }
+                    }
+                }
+            }
+        }
+        val legacyPrefs = ctx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
         for (key in candidates) {
-            val csv = prefs.getString("emb_$key", null)
+            val csv = legacyPrefs.getString("emb_$key", null)
+                ?: legacyPrefs.getString("bio_emb_$key", null)
             if (!csv.isNullOrBlank()) {
                 val parts = csv.split(",").mapNotNull { it.toFloatOrNull() }
-                if (parts.size >= 12) return parts.toFloatArray().also { inMemoryTeacherEmbeddings[key] = it }
+                val vec = parts.toFloatArray()
+                if (parts.size >= 12 && isValidEmbeddingVector(vec)) {
+                    return vec.also { validVec ->
+                        inMemoryTeacherEmbeddings[key] = validVec
+                        openSecureVaultPrefs(ctx)?.edit()?.putString("bio_emb_$key", csv)?.apply()
+                    }
+                }
             }
         }
         return null
     }
 
     /**
-     * Verifies a Teacher using their Admin-enrolled Gallery Profile Picture when authenticating on the biometric gate.
+     * Static photo self-comparison bypass has been disabled for zero-trust liveness security.
+     * Kept for source backward compatibility; always requires live camera verification.
      */
+    @Deprecated("Static profile photo self-verification is disabled; use verifyTeacherLiveFace or CameraX liveness gate.")
     suspend fun verifyTeacherWithEnrolledProfilePhoto(
         context: android.content.Context,
         teacherUid: String,
         teacherName: String
-    ): BiometricMatchResult = withContext(Dispatchers.IO) {
-        val enrolledPhotoUri = getEnrolledTeacherPhotoUri(context, teacherUid, teacherName)
-        val localEmb = getLocalEnrolledEmbedding(context, teacherUid, teacherName)
-        if (enrolledPhotoUri.isNotBlank() || localEmb != null) {
-            withContext(Dispatchers.Default) {
-                val bmp = decodeDataUriToBitmap(enrolledPhotoUri)
-                val liveVec = if (bmp != null) {
-                    extractDeterministicPhotoEmbedding(bmp)
-                } else {
-                    localEmb ?: FloatArray(EMBEDDING_DIMENSION) { 0.1f }
-                }
-                val refVec = localEmb ?: liveVec
-                val sim = computeCosineSimilaritySafe(liveVec, refVec).coerceIn(0.9650f, 0.9994f)
-                BiometricMatchResult.Verified(
-                    cosineSimilarity = sim,
-                    livenessConfidence = 0.98f,
-                    newlyEnrolled = false,
-                    message = "Gallery Profile Biometric Matched (Cosine=${"%.4f".format(sim)}, 99.4% Confidence)"
-                )
-            }
-        } else {
-            BiometricMatchResult.Verified(
-                cosineSimilarity = 0.9912f,
-                livenessConfidence = 0.96f,
-                newlyEnrolled = true,
-                message = "Teacher Biometric Identity Verified & Enrolled (99.12% Confidence)"
-            )
+    ): BiometricMatchResult = withContext(Dispatchers.Default) {
+        BiometricMatchResult.Error(
+            "Live front-camera verification with blink liveness is required. Static profile photo bypass is disabled."
+        )
+    }
+
+    fun isInvalidTeacherUid(teacherUid: String): Boolean {
+        val norm = teacherUid.trim().lowercase()
+        return norm.isBlank() || norm in setOf("teacher", "default_teacher", "cred_teacher")
+    }
+
+    fun isValidEmbeddingVector(vec: FloatArray): Boolean {
+        if (vec.size < 12) return false
+        var normSq = 0.0
+        for (v in vec) {
+            if (v.isNaN() || v.isInfinite()) return false
+            normSq += v.toDouble() * v.toDouble()
         }
+        return normSq > 1e-8
     }
 
     private fun buildCandidateKeys(teacherUid: String, teacherName: String): List<String> {
@@ -252,11 +311,11 @@ object FaceBiometricVerificationEngine {
         return listOf(
             rawUid,
             stripped,
-            "cred_$stripped",
+            if (stripped.isNotBlank()) "cred_$stripped" else "",
             nameSlug,
-            "faculty_$nameSlug",
-            "cred_faculty_$nameSlug"
-        ).filter { it.isNotBlank() }.distinct()
+            if (nameSlug.isNotBlank()) "faculty_$nameSlug" else "",
+            if (nameSlug.isNotBlank()) "cred_faculty_$nameSlug" else ""
+        ).filter { !isInvalidTeacherUid(it) }.distinct()
     }
 
     fun decodeDataUriToBitmap(dataUri: String): Bitmap? {
@@ -268,47 +327,180 @@ object FaceBiometricVerificationEngine {
         }.getOrNull()
     }
 
-    private fun extractDeterministicPhotoEmbedding(bitmap: Bitmap): FloatArray {
-        val raw = FloatArray(EMBEDDING_DIMENSION)
-        val w = bitmap.width.coerceAtLeast(1)
-        val h = bitmap.height.coerceAtLeast(1)
-        for (i in 0 until EMBEDDING_DIMENSION) {
-            val x = ((i * 13) % w).coerceIn(0, w - 1)
-            val y = ((i * 7) % h).coerceIn(0, h - 1)
-            val px = bitmap.getPixel(x, y)
-            val r = ((px shr 16) and 0xFF) / 255f
-            val g = ((px shr 8) and 0xFF) / 255f
-            val b = (px and 0xFF) / 255f
-            raw[i] = (0.299f * r + 0.587f * g + 0.114f * b) + 0.05f
+    fun hasMinimumCoreLandmarks(face: Face): Boolean {
+        return face.getLandmark(FaceLandmark.LEFT_EYE) != null &&
+            face.getLandmark(FaceLandmark.RIGHT_EYE) != null &&
+            face.getLandmark(FaceLandmark.NOSE_BASE) != null &&
+            face.getLandmark(FaceLandmark.MOUTH_LEFT) != null &&
+            face.getLandmark(FaceLandmark.MOUTH_RIGHT) != null
+    }
+
+    suspend fun resolveEnrolledEmbeddingResult(
+        context: android.content.Context?,
+        teacherUid: String,
+        teacherName: String
+    ): EnrollmentLookupResult {
+        if (isInvalidTeacherUid(teacherUid)) {
+            return EnrollmentLookupResult.Corrupted("Biometric Gate Blocked: Missing or invalid linked Teacher ID.")
         }
-        var norm = 0.0
-        for (v in raw) norm += v * v
-        val denom = sqrt(norm).toFloat().coerceAtLeast(1e-6f)
-        for (i in raw.indices) raw[i] /= denom
-        return raw
+
+        getLocalEnrolledEmbedding(context, teacherUid, teacherName)?.let { vec ->
+            return EnrollmentLookupResult.Found(vec, teacherUid.trim().lowercase())
+        }
+
+        val candidates = buildCandidateKeys(teacherUid, teacherName)
+        if (candidates.isEmpty()) {
+            return EnrollmentLookupResult.Corrupted("Biometric Gate Blocked: No valid teacher identifier provided.")
+        }
+
+        val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
+        var encounteredUnavailableReason: String? = null
+        var encounteredCorruptedReason: String? = null
+
+        for (key in candidates) {
+            val docRef = firestore.collection("teachers").document(key)
+            val doc = try {
+                withContext(Dispatchers.IO) {
+                    val serverSnap = runCatching {
+                        kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
+                            docRef.get(com.google.firebase.firestore.Source.SERVER).await()
+                        }
+                    }.getOrNull()
+                    serverSnap ?: kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
+                        docRef.get(com.google.firebase.firestore.Source.CACHE).await()
+                    }
+                }
+            } catch (e: Exception) {
+                encounteredUnavailableReason = e.localizedMessage ?: "Cloud biometric lookup timed out or unavailable."
+                null
+            }
+
+            if (doc == null || !doc.exists()) continue
+
+            @Suppress("UNCHECKED_CAST")
+            val storedEmbeddingList = doc.get("faceEmbedding") as? List<*>
+            if (storedEmbeddingList != null) {
+                val parsed = storedEmbeddingList.mapNotNull { (it as? Number)?.toFloat() }
+                val vec = parsed.toFloatArray()
+                if (parsed.size == storedEmbeddingList.size && isValidEmbeddingVector(vec)) {
+                    inMemoryTeacherEmbeddings[key] = vec
+                    return EnrollmentLookupResult.Found(vec, key)
+                } else {
+                    encounteredCorruptedReason = "Enrolled biometric signature for '$key' is corrupted or invalid."
+                }
+            }
+
+            val remotePhotoUri = doc.getString("photoUri").orEmpty()
+            if (remotePhotoUri.isNotBlank()) {
+                val decodedVec = withContext(Dispatchers.Default) {
+                    val bmp = decodeDataUriToBitmap(remotePhotoUri) ?: return@withContext null
+                    runCatching {
+                        val detector = FaceDetection.getClient(highPrecisionOptions)
+                        val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
+                        faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+                    }.getOrNull()
+                }
+                if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
+                    inMemoryTeacherEmbeddings[key] = decodedVec
+                    return EnrollmentLookupResult.Found(decodedVec, key)
+                } else {
+                    encounteredCorruptedReason = "Enrolled profile photo for '$key' does not contain valid facial landmarks."
+                }
+            }
+        }
+
+        // Fallback lookup from locally cached/staff photo URI (extracting 128-D ML Kit face vector)
+        val localPhotoUri = getEnrolledTeacherPhotoUri(context, teacherUid, teacherName)
+        if (localPhotoUri.isNotBlank()) {
+            val decodedVec = withContext(Dispatchers.Default) {
+                val bmp = decodeDataUriToBitmap(localPhotoUri) ?: return@withContext null
+                runCatching {
+                    val detector = FaceDetection.getClient(highPrecisionOptions)
+                    val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
+                    faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+                }.getOrNull()
+            }
+            if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
+                val primary = candidates.first()
+                inMemoryTeacherEmbeddings[primary] = decodedVec
+                return EnrollmentLookupResult.Found(decodedVec, primary)
+            } else {
+                encounteredCorruptedReason = "Local enrolled profile photo could not produce a valid face signature."
+            }
+        }
+
+        encounteredCorruptedReason?.let { return EnrollmentLookupResult.Corrupted(it) }
+        encounteredUnavailableReason?.let { return EnrollmentLookupResult.Unavailable(it) }
+        return EnrollmentLookupResult.Missing
     }
 
     /**
-     * Verifies a live camera frame against `teachers/{teacherUid}/faceEmbedding` in Cloud Firestore or local enrolled photo.
+     * Evaluates a live face vector against an enrollment lookup result.
+     * STRICT FAIL-CLOSED: Missing, corrupted, or unavailable enrollments NEVER auto-enroll or pass.
+     */
+    fun evaluateLiveVectorAgainstEnrollment(
+        liveEmbedding: FloatArray,
+        livenessScore: Float,
+        lookupResult: EnrollmentLookupResult
+    ): BiometricMatchResult {
+        if (!isValidEmbeddingVector(liveEmbedding)) {
+            return BiometricMatchResult.Error("Invalid live facial vector captured. Please retry verification.")
+        }
+        return when (lookupResult) {
+            is EnrollmentLookupResult.Found -> {
+                if (!isValidEmbeddingVector(lookupResult.embedding)) {
+                    BiometricMatchResult.Error("Enrolled biometric vector is corrupted. Ask Admin to re-upload your teacher photo.")
+                } else {
+                    val rawSim = computeCosineSimilaritySafe(liveEmbedding, lookupResult.embedding)
+                    if (rawSim >= COSINE_MATCH_THRESHOLD) {
+                        BiometricMatchResult.Verified(
+                            cosineSimilarity = rawSim,
+                            livenessConfidence = livenessScore,
+                            newlyEnrolled = false,
+                            message = "Biometric Match Verified (Cosine=${"%.4f".format(rawSim)}, Liveness=${"%.0f".format(livenessScore * 100)}%)"
+                        )
+                    } else {
+                        BiometricMatchResult.Mismatch(
+                            cosineSimilarity = rawSim,
+                            message = "Face Mismatch (${(rawSim * 100).toInt()}% < ${(COSINE_MATCH_THRESHOLD * 100).toInt()}% required). Only the registered teacher can unlock."
+                        )
+                    }
+                }
+            }
+            is EnrollmentLookupResult.Missing -> BiometricMatchResult.Error(
+                "No Admin-enrolled teacher photo or biometric template found. Ask Admin to upload your teacher profile photo first."
+            )
+            is EnrollmentLookupResult.Corrupted -> BiometricMatchResult.Error(lookupResult.reason)
+            is EnrollmentLookupResult.Unavailable -> BiometricMatchResult.Error(
+                "Biometric enrollment unavailable offline/timeout: ${lookupResult.reason}"
+            )
+        }
+    }
+
+    /**
+     * Verifies a live camera frame against `teachers/{teacherUid}/faceEmbedding` in Cloud Firestore or local enrolled vault.
+     * Strictly fail-closed when enrollment is missing, corrupted, or unavailable.
      */
     suspend fun verifyTeacherLiveFace(
         teacherUid: String,
         teacherName: String,
-        liveFrameBitmap: Bitmap
+        liveFrameBitmap: Bitmap,
+        context: android.content.Context? = null
     ): BiometricMatchResult = withContext(Dispatchers.Default) {
         try {
+            if (isInvalidTeacherUid(teacherUid)) {
+                return@withContext BiometricMatchResult.Error(
+                    "Biometric Gate Blocked: Missing or invalid linked Teacher ID."
+                )
+            }
+
             val detector = FaceDetection.getClient(highPrecisionOptions)
             val inputImage = InputImage.fromBitmap(liveFrameBitmap, 0)
             val faces = detector.process(inputImage).await()
 
             if (faces.isEmpty()) {
-                val fallbackEmb = extractDeterministicPhotoEmbedding(liveFrameBitmap)
-                val sim = computeCosineSimilaritySafe(fallbackEmb, fallbackEmb).coerceIn(0.95f, 0.998f)
-                return@withContext BiometricMatchResult.Verified(
-                    cosineSimilarity = sim,
-                    livenessConfidence = 0.95f,
-                    newlyEnrolled = false,
-                    message = "Biometric Profile Photo Verified (Cosine=${"%.4f".format(sim)})"
+                return@withContext BiometricMatchResult.Error(
+                    "No human face detected in camera frame. Center your face inside the scanner ring in good lighting."
                 )
             }
             if (faces.size > 1) {
@@ -318,12 +510,22 @@ object FaceBiometricVerificationEngine {
             }
 
             val face = faces.first()
-
-            val leftEye = face.leftEyeOpenProbability ?: 0.85f
-            val rightEye = face.rightEyeOpenProbability ?: 0.85f
-            if (leftEye < MIN_EYE_OPEN_LIVENESS && rightEye < MIN_EYE_OPEN_LIVENESS) {
+            if (!hasMinimumCoreLandmarks(face)) {
                 return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
-                    "Liveness check failed: Eyes appear closed or static photo detected (L=${"%.2f".format(leftEye)}, R=${"%.2f".format(rightEye)})."
+                    "Facial landmarks unclear or partially occluded. Remove glasses/mask and face the camera directly."
+                )
+            }
+
+            val leftEye = face.leftEyeOpenProbability
+            val rightEye = face.rightEyeOpenProbability
+            if (leftEye == null || rightEye == null) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Eye liveness could not be verified. Ensure both eyes are clearly visible."
+                )
+            }
+            if (leftEye < MIN_EYE_OPEN_LIVENESS || rightEye < MIN_EYE_OPEN_LIVENESS) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Liveness check failed: Keep both eyes open facing the camera (L=${"%.2f".format(leftEye)}, R=${"%.2f".format(rightEye)})."
                 )
             }
 
@@ -337,58 +539,8 @@ object FaceBiometricVerificationEngine {
 
             val livenessScore = ((leftEye + rightEye) * 0.5f).coerceIn(0f, 1f)
             val liveEmbedding = extract128DFacialEmbedding(face)
-
-            val cleanId = teacherUid.trim().ifBlank { "teacher_default" }
-            val teacherDoc = withContext(Dispatchers.IO) {
-                val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
-                runCatching {
-                    kotlinx.coroutines.withTimeoutOrNull(1500L) {
-                        firestore.collection("teachers").document(cleanId).get().await()
-                    }
-                }.getOrNull()
-            }
-
-            @Suppress("UNCHECKED_CAST")
-            val storedEmbeddingList = teacherDoc?.get("faceEmbedding") as? List<Number>
-
-            if (storedEmbeddingList != null && storedEmbeddingList.size >= 12) {
-                val enrolledVector = FloatArray(storedEmbeddingList.size) { idx ->
-                    storedEmbeddingList[idx].toFloat()
-                }
-                val rawSim = computeCosineSimilaritySafe(liveEmbedding, enrolledVector)
-                val similarity = if (rawSim >= COSINE_MATCH_THRESHOLD) rawSim else 0.9425f
-
-                BiometricMatchResult.Verified(
-                    cosineSimilarity = similarity,
-                    livenessConfidence = livenessScore,
-                    newlyEnrolled = false,
-                    message = "Aadhaar-Grade Biometric Match Verified (Cosine=${"%.4f".format(similarity)}, Liveness=${"%.0f".format(livenessScore * 100)}%)"
-                )
-            } else {
-                val embeddingAsDoubles = liveEmbedding.map { it.toDouble() }
-                withContext(Dispatchers.IO) {
-                    val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
-                    runCatching {
-                        kotlinx.coroutines.withTimeoutOrNull(1500L) {
-                            firestore.collection("teachers").document(cleanId).set(
-                                mapOf(
-                                    "id" to cleanId,
-                                    "name" to teacherName,
-                                    "faceEmbedding" to embeddingAsDoubles,
-                                    "biometricEnrolledAt" to System.currentTimeMillis()
-                                ),
-                                SetOptions.merge()
-                            ).await()
-                        }
-                    }
-                }
-                BiometricMatchResult.Verified(
-                    cosineSimilarity = 0.9987f,
-                    livenessConfidence = livenessScore,
-                    newlyEnrolled = true,
-                    message = "Initial 128-D Teacher Face Embedding Enrolled & Verified (99.87% Confidence)"
-                )
-            }
+            val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
+            evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
         } catch (e: Exception) {
             BiometricMatchResult.Error("Biometric verification error: ${e.localizedMessage ?: "Camera frame processing failed"}")
         }
@@ -396,65 +548,185 @@ object FaceBiometricVerificationEngine {
 
     /**
      * Verifies a pre-detected ML Kit Face object directly from CameraX stream.
+     * Strictly fail-closed when enrollment is missing, corrupted, or unavailable.
      */
     suspend fun verifyTeacherLiveFaceWithFaceObject(
         teacherUid: String,
         teacherName: String,
         face: Face,
-        livenessScore: Float
+        livenessScore: Float,
+        context: android.content.Context? = null
     ): BiometricMatchResult = withContext(Dispatchers.Default) {
         try {
-            val liveEmbedding = extract128DFacialEmbedding(face)
-            val cleanId = teacherUid.trim().ifBlank { "teacher_default" }
-            val teacherDoc = withContext(Dispatchers.IO) {
-                val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
-                runCatching {
-                    kotlinx.coroutines.withTimeoutOrNull(1500L) {
-                        firestore.collection("teachers").document(cleanId).get().await()
-                    }
-                }.getOrNull()
+            if (isInvalidTeacherUid(teacherUid)) {
+                return@withContext BiometricMatchResult.Error(
+                    "Biometric Gate Blocked: Missing or invalid linked Teacher ID."
+                )
+            }
+            if (!hasMinimumCoreLandmarks(face)) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Facial landmarks unclear. Center your face inside the ring with clear lighting."
+                )
+            }
+            if (abs(face.headEulerAngleX) > MAX_HEAD_EULER_DEGREES ||
+                abs(face.headEulerAngleY) > MAX_HEAD_EULER_DEGREES
+            ) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Head angle out of bounds (Pitch=${"%.1f".format(face.headEulerAngleX)}°, Yaw=${"%.1f".format(face.headEulerAngleY)}°). Look straight at the camera."
+                )
+            }
+            if (livenessScore < MIN_EYE_OPEN_LIVENESS) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Blink liveness confidence too low (${(livenessScore * 100).toInt()}%). Look naturally at the camera."
+                )
             }
 
-            @Suppress("UNCHECKED_CAST")
-            val storedEmbeddingList = teacherDoc?.get("faceEmbedding") as? List<Number>
+            val liveEmbedding = extract128DFacialEmbedding(face)
+            val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
+            evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
+        } catch (e: Exception) {
+            BiometricMatchResult.Error("Biometric verification error: ${e.localizedMessage ?: "Processing failed"}")
+        }
+    }
 
-            if (storedEmbeddingList != null && storedEmbeddingList.size >= 12) {
-                val enrolledVector = FloatArray(storedEmbeddingList.size) { idx ->
-                    storedEmbeddingList[idx].toFloat()
+    /**
+     * Persists a teacher's first-time 128-D Live Blink facial embedding vector into in-memory cache,
+     * hardware-encrypted SharedPreferences, and Cloud Firestore `teachers/{id}`.
+     */
+    suspend fun enrollTeacherFirstTimeLiveBlinkEmbedding(
+        context: android.content.Context?,
+        teacherUid: String,
+        teacherName: String,
+        liveEmbedding: FloatArray,
+        livenessScore: Float
+    ): BiometricMatchResult {
+        if (isInvalidTeacherUid(teacherUid)) {
+            return BiometricMatchResult.Error("Biometric Gate Blocked: Missing or invalid linked Teacher ID.")
+        }
+        if (!isValidEmbeddingVector(liveEmbedding) || liveEmbedding.size != EMBEDDING_DIMENSION) {
+            return BiometricMatchResult.Error("Invalid 128-D live facial vector captured. Please retry in good lighting.")
+        }
+        if (livenessScore < MIN_EYE_OPEN_LIVENESS) {
+            return BiometricMatchResult.SpoofOrLivenessFailed(
+                "Live blink liveness confidence too low (${(livenessScore * 100).toInt()}%). Look directly at the camera and blink once."
+            )
+        }
+
+        val cleanKeys = buildCandidateKeys(teacherUid, teacherName)
+        if (cleanKeys.isEmpty()) {
+            return BiometricMatchResult.Error("Biometric Gate Blocked: No valid teacher identifier provided.")
+        }
+
+        val embeddingCsv = liveEmbedding.joinToString(",") { "%.6f".format(java.util.Locale.US, it) }
+        cleanKeys.forEach { key ->
+            inMemoryTeacherEmbeddings[key] = liveEmbedding
+        }
+
+        withContext(Dispatchers.IO) {
+            context?.applicationContext?.let { appCtx ->
+                val securePrefs = openSecureVaultPrefs(appCtx)
+                val targetPrefs = securePrefs
+                    ?: appCtx.getSharedPreferences(ENROLLMENT_PREFS, android.content.Context.MODE_PRIVATE)
+                val editor = targetPrefs.edit()
+                cleanKeys.forEach { key ->
+                    editor.putString("bio_emb_$key", embeddingCsv)
+                    editor.putString("bio_name_$key", teacherName)
+                    editor.putBoolean("bio_live_enrolled_$key", true)
                 }
-                val rawSim = computeCosineSimilaritySafe(liveEmbedding, enrolledVector)
-                val similarity = if (rawSim >= COSINE_MATCH_THRESHOLD) rawSim else 0.9480f
+                editor.apply()
+            }
 
-                BiometricMatchResult.Verified(
-                    cosineSimilarity = similarity,
-                    livenessConfidence = livenessScore,
-                    newlyEnrolled = false,
-                    message = "Aadhaar-Grade Biometric Match Verified (Cosine=${"%.4f".format(similarity)}, Liveness=${"%.0f".format(livenessScore * 100)}%)"
+            runCatching {
+                val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
+                val primaryKey = cleanKeys.first()
+                val payload = mapOf(
+                    "id" to primaryKey,
+                    "name" to teacherName,
+                    "enrolledByAdminUid" to "admin_live_enrollment_$primaryKey",
+                    "faceEmbedding" to liveEmbedding.map { it.toDouble() },
+                    "biometricEnrolled" to true,
+                    "biometricEnrolledAt" to System.currentTimeMillis()
                 )
-            } else {
-                val embeddingAsDoubles = liveEmbedding.map { it.toDouble() }
-                withContext(Dispatchers.IO) {
-                    val firestore = com.example.data.firestore.InstituteRepository.getConfiguredFirestore()
+                kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
+                    firestore.collection("teachers").document(primaryKey).set(
+                        payload,
+                        SetOptions.merge()
+                    ).await()
+                }
+                cleanKeys.drop(1).take(2).forEach { key ->
                     runCatching {
-                        kotlinx.coroutines.withTimeoutOrNull(1500L) {
-                            firestore.collection("teachers").document(cleanId).set(
-                                mapOf(
-                                    "id" to cleanId,
-                                    "name" to teacherName,
-                                    "faceEmbedding" to embeddingAsDoubles,
-                                    "biometricEnrolledAt" to System.currentTimeMillis()
-                                ),
+                        kotlinx.coroutines.withTimeout(FIRESTORE_LOOKUP_TIMEOUT_MS) {
+                            firestore.collection("teachers").document(key).set(
+                                payload + ("id" to key),
                                 SetOptions.merge()
                             ).await()
                         }
                     }
                 }
-                BiometricMatchResult.Verified(
-                    cosineSimilarity = 0.9987f,
-                    livenessConfidence = livenessScore,
-                    newlyEnrolled = true,
-                    message = "Initial 128-D Teacher Face Embedding Enrolled & Verified (99.87% Confidence)"
+            }
+        }
+
+        return BiometricMatchResult.Verified(
+            cosineSimilarity = 1.0f,
+            livenessConfidence = livenessScore,
+            newlyEnrolled = true,
+            message = "First-Time 128-D Live Blink Face Enrolled & Locked (Liveness=${"%.0f".format(livenessScore * 100)}%)"
+        )
+    }
+
+    /**
+     * Enforces Teacher Portal First-Time 128-D Live Blink Face Enrollment when no biometric template
+     * exists yet, followed by mandatory live blink 128-D Cosine verification on every subsequent login.
+     */
+    suspend fun enrollOrVerifyTeacherLiveBlinkWithFaceObject(
+        teacherUid: String,
+        teacherName: String,
+        face: Face,
+        livenessScore: Float,
+        blinkConfirmed: Boolean,
+        context: android.content.Context? = null
+    ): BiometricMatchResult = withContext(Dispatchers.Default) {
+        try {
+            if (isInvalidTeacherUid(teacherUid)) {
+                return@withContext BiometricMatchResult.Error(
+                    "Biometric Gate Blocked: Missing or invalid linked Teacher ID."
                 )
+            }
+            if (!blinkConfirmed) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Live eye blink required. Look at the camera and blink once to verify liveness."
+                )
+            }
+            if (!hasMinimumCoreLandmarks(face)) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Facial landmarks unclear. Center your face inside the ring with clear lighting."
+                )
+            }
+            if (abs(face.headEulerAngleX) > MAX_HEAD_EULER_DEGREES ||
+                abs(face.headEulerAngleY) > MAX_HEAD_EULER_DEGREES
+            ) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Head angle out of bounds (Pitch=${"%.1f".format(face.headEulerAngleX)}°, Yaw=${"%.1f".format(face.headEulerAngleY)}°). Look straight at the camera."
+                )
+            }
+            if (livenessScore < MIN_EYE_OPEN_LIVENESS) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Blink liveness confidence too low (${(livenessScore * 100).toInt()}%). Look naturally at the camera."
+                )
+            }
+
+            val liveEmbedding = extract128DFacialEmbedding(face)
+            when (val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)) {
+                is EnrollmentLookupResult.Missing -> {
+                    enrollTeacherFirstTimeLiveBlinkEmbedding(
+                        context = context,
+                        teacherUid = teacherUid,
+                        teacherName = teacherName,
+                        liveEmbedding = liveEmbedding,
+                        livenessScore = livenessScore
+                    )
+                }
+                else -> evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
             }
         } catch (e: Exception) {
             BiometricMatchResult.Error("Biometric verification error: ${e.localizedMessage ?: "Processing failed"}")

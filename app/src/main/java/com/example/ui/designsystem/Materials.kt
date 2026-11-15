@@ -122,48 +122,58 @@ fun GlassCard(
     val accentStart = glowColor ?: palette.start
     val accentEnd = palette.end
 
-    val surfaceBrush = when {
-        isStudentClay -> {
-            // 3D Claymorphism: Soft puffy luminous indigo-violet clay surface (never dark/black!)
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF28377E).copy(alpha = 0.97f),
-                    accentStart.copy(alpha = if (strongSurface) 0.42f else 0.30f),
-                    Color(0xFF1F2B68).copy(alpha = 0.97f)
-                ),
-                start = Offset(0f, 0f),
-                end = Offset(900f, 700f)
-            )
-        }
-        isTeacherGlass -> {
-            // Glassmorphism: Frosted emerald/cyan translucent glass with 16% white tint
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF133346).copy(alpha = 0.84f),
-                    Color.White.copy(alpha = 0.16f),
-                    accentStart.copy(alpha = 0.24f),
-                    Color(0xFF0E2638).copy(alpha = 0.86f)
-                ),
-                start = Offset(0f, 0f),
-                end = Offset(950f, 650f)
-            )
-        }
-        isParentLiquid -> {
-            // Parent Liquid Glass: Clear lens-like glass with warm rose & amber refraction
-            Brush.linearGradient(
-                colors = listOf(
-                    Color(0xFF2A183B).copy(alpha = 0.84f),
-                    Color(0xFFFF6B8B).copy(alpha = if (strongSurface) 0.30f else 0.20f),
-                    Color(0xFFFF9F43).copy(alpha = 0.16f),
-                    Color(0xFF1E1330).copy(alpha = 0.86f)
-                ),
-                start = Offset(0f, 0f),
-                end = Offset(1000f, 650f)
-            )
-        }
-        else -> {
-            // Admin Liquid Glass: Deep indigo base, lens-like panels with violet & cyan glow
-            if (isDark) {
+    val surfaceBrush = if (!isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = if (strongSurface) 0.96f else 0.92f),
+                accentStart.copy(alpha = if (strongSurface) 0.14f else 0.08f),
+                Color(0xFFF8FAFC).copy(alpha = 0.94f)
+            ),
+            start = Offset(0f, 0f),
+            end = Offset(950f, 650f)
+        )
+    } else {
+        when {
+            isStudentClay -> {
+                // 3D Claymorphism: Soft puffy luminous indigo-violet clay surface (never dark/black!)
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF28377E).copy(alpha = 0.97f),
+                        accentStart.copy(alpha = if (strongSurface) 0.42f else 0.30f),
+                        Color(0xFF1F2B68).copy(alpha = 0.97f)
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(900f, 700f)
+                )
+            }
+            isTeacherGlass -> {
+                // Glassmorphism: Frosted emerald/cyan translucent glass with 16% white tint
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF133346).copy(alpha = 0.84f),
+                        Color.White.copy(alpha = 0.16f),
+                        accentStart.copy(alpha = 0.24f),
+                        Color(0xFF0E2638).copy(alpha = 0.86f)
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(950f, 650f)
+                )
+            }
+            isParentLiquid -> {
+                // Parent Liquid Glass: Clear lens-like glass with warm rose & amber refraction
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF2A183B).copy(alpha = 0.84f),
+                        Color(0xFFFF6B8B).copy(alpha = if (strongSurface) 0.30f else 0.20f),
+                        Color(0xFFFF9F43).copy(alpha = 0.16f),
+                        Color(0xFF1E1330).copy(alpha = 0.86f)
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(1000f, 650f)
+                )
+            }
+            else -> {
+                // Admin Liquid Glass: Deep indigo base, lens-like panels with violet & cyan glow
                 Brush.linearGradient(
                     colors = listOf(
                         Color(0xFF182254).copy(alpha = if (strongSurface) 0.88f else 0.78f),
@@ -174,50 +184,51 @@ fun GlassCard(
                     start = Offset(0f, 0f),
                     end = Offset(1000f, 650f)
                 )
-            } else {
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF24347A).copy(alpha = 0.90f),
-                        accentStart.copy(alpha = 0.28f),
-                        accentEnd.copy(alpha = 0.22f),
-                        Color(0xFF1B2760).copy(alpha = 0.90f)
-                    ),
-                    start = Offset(0f, 0f),
-                    end = Offset(1000f, 650f)
-                )
             }
         }
     }
 
-    val borderBrush = when {
-        isStudentClay -> Brush.linearGradient(
+    val borderBrush = if (!isDark) {
+        Brush.linearGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.68f),
-                accentStart.copy(alpha = 0.72f),
-                Color(0xFF0F1738).copy(alpha = 0.45f)
+                Color.White,
+                accentStart.copy(alpha = 0.55f),
+                Color(0x330F172A)
             ),
             start = Offset(0f, 0f),
             end = Offset(700f, 700f)
         )
-        isTeacherGlass -> Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.55f),
-                Color(0xFF10F596).copy(alpha = 0.55f),
-                Color.White.copy(alpha = 0.25f)
-            ),
-            start = Offset(0f, 0f),
-            end = Offset(700f, 700f)
-        )
-        else -> Brush.linearGradient(
-            colors = listOf(
-                Color.White.copy(alpha = 0.60f),
-                accentStart.copy(alpha = 0.70f),
-                accentEnd.copy(alpha = 0.55f),
-                Color.White.copy(alpha = 0.22f)
-            ),
-            start = Offset(0f, 0f),
-            end = Offset(700f, 700f)
-        )
+    } else {
+        when {
+            isStudentClay -> Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.68f),
+                    accentStart.copy(alpha = 0.72f),
+                    Color(0xFF0F1738).copy(alpha = 0.45f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(700f, 700f)
+            )
+            isTeacherGlass -> Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.55f),
+                    Color(0xFF10F596).copy(alpha = 0.55f),
+                    Color.White.copy(alpha = 0.25f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(700f, 700f)
+            )
+            else -> Brush.linearGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.60f),
+                    accentStart.copy(alpha = 0.70f),
+                    accentEnd.copy(alpha = 0.55f),
+                    Color.White.copy(alpha = 0.22f)
+                ),
+                start = Offset(0f, 0f),
+                end = Offset(700f, 700f)
+            )
+        }
     }
 
     val clickMod = if (onClick != null) {
@@ -313,6 +324,7 @@ fun LiquidPill(
     badgeCount: Int? = null,
     testTag: String? = null
 ) {
+    val isDark = LocalIsDarkTheme.current
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -326,12 +338,16 @@ fun LiquidPill(
         label = "pillScale"
     )
     val bgAlpha by animateFloatAsState(
-        targetValue = if (selected) 0.42f else 0.18f,
+        targetValue = if (selected) (if (isDark) 0.42f else 0.28f) else 0.18f,
         animationSpec = WciMotion.fastTween(),
         label = "pillBgAlpha"
     )
     val borderColor by animateColorAsState(
-        targetValue = if (selected) palette.start else Color.White.copy(alpha = 0.28f),
+        targetValue = when {
+            selected -> palette.start
+            isDark -> Color.White.copy(alpha = 0.28f)
+            else -> Color(0x330F172A)
+        },
         animationSpec = WciMotion.fastTween(),
         label = "pillBorder"
     )
@@ -344,20 +360,34 @@ fun LiquidPill(
                 palette.end.copy(alpha = bgAlpha * 0.9f)
             )
         )
-    } else {
+    } else if (isDark) {
         Brush.linearGradient(
             colors = listOf(
                 Color(0xFF1B255E).copy(alpha = 0.78f),
                 palette.start.copy(alpha = 0.14f)
             )
         )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.92f),
+                Color(0xFFE2E8F0).copy(alpha = 0.86f)
+            )
+        )
+    }
+
+    val pillForeground = when {
+        selected && isDark -> Color.White
+        selected && !isDark -> WciColors.TextPrimaryLight
+        isDark -> WciColors.TextPrimaryDark
+        else -> WciColors.TextSecondaryLight
     }
 
     Row(
         modifier = modifier
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .scale(scale)
-            .heightIn(min = 38.dp)
+            .heightIn(min = 48.dp)
             .clip(shape)
             .background(brush = pillBrush, shape = shape)
             .border(width = if (selected) 1.5.dp else 1.dp, color = borderColor, shape = shape)
@@ -368,7 +398,7 @@ fun LiquidPill(
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onClick()
             }
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -376,14 +406,14 @@ fun LiquidPill(
             Icon(
                 imageVector = icon,
                 contentDescription = text,
-                tint = if (selected) Color.White else palette.start,
+                tint = if (selected && isDark) Color.White else if (selected) WciColors.TextPrimaryLight else palette.start,
                 modifier = Modifier.size(16.dp)
             )
         }
         Text(
             text = text,
             style = MaterialTheme.typography.labelLarge.copy(
-                color = if (selected) Color.White else WciColors.TextPrimaryDark,
+                color = pillForeground,
                 fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold
             ),
             maxLines = 1,
@@ -400,7 +430,7 @@ fun LiquidPill(
                     text = badgeCount.toString(),
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = JetBrainsMono,
-                        fontSize = 10.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = Color(0xFF05060F)
                     )
@@ -424,6 +454,7 @@ fun ClayActionTile(
     modifier: Modifier = Modifier,
     testTag: String? = null
 ) {
+    val isDark = LocalIsDarkTheme.current
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -434,32 +465,45 @@ fun ClayActionTile(
     )
     val shape = RoundedCornerShape(WciRadius.xl)
 
-    val clayBrush = Brush.linearGradient(
-        colors = listOf(
-            accentColor.copy(alpha = 0.36f),
-            Color(0xFF1A255C).copy(alpha = 0.92f),
-            accentColor.copy(alpha = 0.22f)
-        ),
-        start = Offset(0f, 0f),
-        end = Offset(500f, 400f)
-    )
+    val clayBrush = if (isDark) {
+        Brush.linearGradient(
+            colors = listOf(
+                accentColor.copy(alpha = 0.36f),
+                Color(0xFF1A255C).copy(alpha = 0.92f),
+                accentColor.copy(alpha = 0.22f)
+            ),
+            start = Offset(0f, 0f),
+            end = Offset(500f, 400f)
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White,
+                accentColor.copy(alpha = 0.14f),
+                Color(0xFFF8FAFC)
+            ),
+            start = Offset(0f, 0f),
+            end = Offset(500f, 400f)
+        )
+    }
 
     Box(
         modifier = modifier
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .scale(scale)
+            .heightIn(min = 64.dp)
             .shadow(
-                elevation = 14.dp,
+                elevation = if (isDark) 14.dp else 8.dp,
                 shape = shape,
-                ambientColor = accentColor.copy(alpha = 0.5f),
-                spotColor = accentColor.copy(alpha = 0.5f)
+                ambientColor = accentColor.copy(alpha = 0.42f),
+                spotColor = accentColor.copy(alpha = 0.42f)
             )
             .clip(shape)
             .background(clayBrush, shape)
             .drawBehind {
                 // Top-left 3D clay specular rim
                 drawRoundRect(
-                    color = Color.White.copy(alpha = 0.25f),
+                    color = Color.White.copy(alpha = if (isDark) 0.25f else 0.75f),
                     topLeft = Offset(2.dp.toPx(), 2.dp.toPx()),
                     size = Size(size.width - 4.dp.toPx(), size.height - 4.dp.toPx()),
                     cornerRadius = CornerRadius(WciRadius.xl.toPx(), WciRadius.xl.toPx()),
@@ -470,7 +514,7 @@ fun ClayActionTile(
                 width = 1.5.dp,
                 brush = Brush.linearGradient(
                     colors = listOf(
-                        Color.White.copy(alpha = 0.6f),
+                        if (isDark) Color.White.copy(alpha = 0.6f) else Color(0x260F172A),
                         accentColor.copy(alpha = 0.7f)
                     )
                 ),
@@ -515,7 +559,7 @@ fun ClayActionTile(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall.copy(
-                        color = Color.White,
+                        color = WciColors.textPrimary,
                         fontWeight = FontWeight.ExtraBold
                     ),
                     maxLines = 1,
@@ -524,7 +568,7 @@ fun ClayActionTile(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall.copy(
-                        color = WciColors.TextSecondaryDark
+                        color = WciColors.textSecondary
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -743,9 +787,9 @@ fun NeonWaveBackground(
                         )
                     } else {
                         listOf(
-                            Color(0xFF1A2663),
-                            Color(0xFF23327A),
-                            Color(0xFF151F52)
+                            Color(0xFFEEF2FF),
+                            Color(0xFFF8FAFC),
+                            Color(0xFFE0F2FE)
                         )
                     }
                 )
@@ -849,9 +893,10 @@ fun CountUpInt(
     modifier: Modifier = Modifier,
     prefix: String = "",
     suffix: String = "",
-    color: Color = WciColors.TextPrimaryDark,
+    color: Color? = null,
     fontSizeSp: Int = 24
 ) {
+    val resolvedColor = color ?: WciColors.textPrimary
     val animated by animateIntAsState(
         targetValue = targetValue,
         animationSpec = tween(durationMillis = 650, easing = FastOutSlowInEasing),
@@ -864,7 +909,7 @@ fun CountUpInt(
             fontFamily = JetBrainsMono,
             fontSize = fontSizeSp.sp,
             fontWeight = FontWeight.Bold,
-            color = color
+            color = resolvedColor
         )
     )
 }
@@ -961,6 +1006,7 @@ fun DonutProgressRing(
     modifier: Modifier = Modifier,
     sizeDp: Dp = 84.dp
 ) {
+    val isDark = LocalIsDarkTheme.current
     val animatedProgress by animateFloatAsState(
         targetValue = progress.coerceIn(0f, 1f),
         animationSpec = tween(durationMillis = 750, easing = FastOutSlowInEasing),
@@ -973,7 +1019,7 @@ fun DonutProgressRing(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val stroke = 8.dp.toPx()
             drawArc(
-                color = Color.White.copy(alpha = 0.16f),
+                color = if (isDark) Color.White.copy(alpha = 0.16f) else Color(0x1F0F172A),
                 startAngle = 0f,
                 sweepAngle = 360f,
                 useCenter = false,
@@ -995,14 +1041,14 @@ fun DonutProgressRing(
                 style = MaterialTheme.typography.titleSmall.copy(
                     fontFamily = JetBrainsMono,
                     fontWeight = FontWeight.ExtraBold,
-                    color = Color.White
+                    color = WciColors.textPrimary
                 )
             )
             Text(
                 text = subLabel,
                 style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 10.sp,
-                    color = WciColors.TextSecondaryDark
+                    fontSize = 12.sp,
+                    color = WciColors.textSecondary
                 )
             )
         }
@@ -1114,14 +1160,14 @@ fun EmptyStateCard(
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleMedium.copy(
-                    color = Color.White,
+                    color = WciColors.textPrimary,
                     fontWeight = FontWeight.ExtraBold
                 )
             )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall.copy(
-                    color = WciColors.TextSecondaryDark
+                    color = WciColors.textSecondary
                 )
             )
             if (ctaLabel != null && onCtaClick != null) {

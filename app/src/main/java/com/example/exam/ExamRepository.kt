@@ -24,7 +24,7 @@ class ExamRepository(
     private val instituteRepository: InstituteRepository
 ) {
     private val prefs by lazy {
-        context.getSharedPreferences("wci_encrypted_exam_cache", Context.MODE_PRIVATE)
+        com.example.security.HardwareKeystoreVault.openEncryptedPreferences(context)
     }
 
     fun generateShuffledExamPaper(
@@ -38,6 +38,28 @@ class ExamRepository(
             examId = examId.ifBlank { "exm_default" },
             courseFilter = courseName,
             targetCount = questionCount
+        )
+    }
+
+    fun generateShuffledPaperForExam(
+        studentId: String,
+        exam: ExamRecord,
+        fallbackQuestionCount: Int = 50
+    ): List<ExamQuestionItem> {
+        val customBank = PdfMcqBankParser.parseCustomExamBank(exam.questionsJson, exam.courseName)
+        if (customBank.questions.isNotEmpty()) {
+            return QuestionBank.selectUniqueQuestionsForStudent(
+                pool = customBank.questions,
+                studentId = studentId.ifBlank { "stu_default" },
+                examId = exam.id.ifBlank { "exm_default" },
+                targetCount = customBank.perStudentCount.coerceIn(1, customBank.questions.size)
+            )
+        }
+        return generateShuffledExamPaper(
+            studentId = studentId,
+            examId = exam.id,
+            courseName = exam.courseName,
+            questionCount = fallbackQuestionCount
         )
     }
 

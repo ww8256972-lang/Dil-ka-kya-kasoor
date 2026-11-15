@@ -44,6 +44,8 @@ import com.example.viewmodel.InstituteUiState
 import com.example.viewmodel.InstituteViewModel
 import com.waqar.institute.biometric.TeacherAttendanceSyncManager
 import com.waqar.institute.biometric.TeacherBiometricGateOverlay
+import com.waqar.institute.security.BindPortalWindowSecurity
+import com.waqar.institute.security.WindowSecureManager
 import com.waqar.institute.session.ConcurrentSessionManager
 import kotlinx.coroutines.launch
 
@@ -85,7 +87,17 @@ val AllDrawerDestinations = listOf(
     ModuleDestination("M21_HELPDESK", "Support Helpdesk & NPS", "Helpdesk", "Operations", Icons.Default.Support, Color(0xFFFF6B8B), Color(0xFF38BDF8)),
     ModuleDestination("M22_SECURITY", "Security, Vault & Audit Logs", "Security", "Security", Icons.Default.Security, Color(0xFFA855F7), Color(0xFF10F596)),
     ModuleDestination("M23_BACKUP", "Cloud Backup & Export", "Backup", "Security", Icons.Default.CloudSync, Color(0xFF00E5FF), Color(0xFFA855F7)),
-    ModuleDestination("M24_SETTINGS", "Settings & Language (EN/HI)", "Settings", "Settings", Icons.Default.Settings, Color(0xFF818CF8), Color(0xFF00E5FF))
+    ModuleDestination("M24_SETTINGS", "Settings & Language (EN/HI)", "Settings", "Settings", Icons.Default.Settings, Color(0xFF818CF8), Color(0xFF00E5FF)),
+    ModuleDestination(
+        com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ROUTE_ADMIN_CONVERSION,
+        "एडमिन कन्वर्जन (Admin Conversion)",
+        "Admin Conv",
+        "Security",
+        Icons.Default.AdminPanelSettings,
+        Color(0xFF10F596),
+        Color(0xFF00E5FF)
+    ),
+    com.waqar.institute.navigation.AppDrawer.codingSandboxDestination
 )
 
 fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> {
@@ -104,7 +116,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M17_LIVE_CLASSES",
             "M18_AI_HUB",
             "M21_HELPDESK",
-            "M24_SETTINGS"
+            "M24_SETTINGS",
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
         )
         PortalRole.STUDENT -> setOf(
             "M01_DASHBOARD",
@@ -120,7 +133,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M17_LIVE_CLASSES",
             "M18_AI_HUB",
             "M21_HELPDESK",
-            "M24_SETTINGS"
+            "M24_SETTINGS",
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
         )
         PortalRole.PARENT -> setOf(
             "M01_DASHBOARD",
@@ -132,7 +146,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M15_PARENTS",
             "M16_ANNOUNCEMENTS",
             "M21_HELPDESK",
-            "M24_SETTINGS"
+            "M24_SETTINGS",
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
         )
     }
     return AllDrawerDestinations.filter { it.routeId in allowedIds }.map { dest ->
@@ -212,10 +227,24 @@ fun PortalShellScreen(
         }
     }
 
+    if (activeRole == PortalRole.ADMIN) {
+        val adminUsername = state.userProfile?.username?.trim()?.ifBlank { "waqar" } ?: "waqar"
+        val adminDisplayName = state.userProfile?.displayName?.ifBlank { "Waqar Khan (Admin)" } ?: "Waqar Khan (Admin)"
+
+        com.waqar.institute.biometric.AdminBiometricGateOverlay(
+            adminUsername = adminUsername,
+            adminDisplayName = adminDisplayName,
+            onSignOutRequested = { viewModel.signOut() }
+        ) {
+            PortalShellBody(state, viewModel, externalDrawerState)
+        }
+        return
+    }
+
     if (activeRole == PortalRole.TEACHER) {
-        val teacherUid = state.userProfile?.linkedEntityId?.ifBlank {
-            state.userProfile?.uid ?: "teacher"
-        } ?: "teacher"
+        val teacherUid = state.userProfile?.linkedEntityId?.trim()?.ifBlank {
+            state.userProfile?.uid?.trim().orEmpty()
+        } ?: ""
         val teacherName = state.userProfile?.displayName?.ifBlank { "Faculty Member" } ?: "Faculty Member"
 
         TeacherBiometricGateOverlay(
@@ -231,6 +260,7 @@ fun PortalShellScreen(
     PortalShellBody(state, viewModel, externalDrawerState)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PortalShellBody(
     state: InstituteUiState,
@@ -238,11 +268,13 @@ private fun PortalShellBody(
     externalDrawerState: DrawerState? = null
 ) {
     val activeRole = state.activePortalRole
+    val isDark = LocalIsDarkTheme.current
     val isStudentClay = activeRole == PortalRole.STUDENT
     val drawerDestinations = remember(activeRole) { allowedDrawerDestinationsForRole(activeRole) }
     val bottomTabs = remember(activeRole) { bottomTabsForRole(activeRole) }
 
     var currentRoute by remember(activeRole) { mutableStateOf("M01_DASHBOARD") }
+    var showProfileSheet by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
     val sessionExpiredMsg by ConcurrentSessionManager.sessionExpiredMessage.collectAsState()
 
@@ -254,7 +286,22 @@ private fun PortalShellBody(
         OtaDynamicManager.initializeAndFetchOtaConfig()
     }
 
-    val capturePolicy = ScreenCapturePolicy.UNLOCKED_STUDY_FRIENDLY
+    BindPortalWindowSecurity(
+        portalRole = activeRole.key,
+        isAuthenticated = true,
+        allowAdminSecureOverride = state.preferences.flagSecureEnabled
+    )
+    val capturePolicy = if (
+        WindowSecureManager.isPortalProtected(
+            portalRole = activeRole.key,
+            isAuthenticated = true,
+            allowAdminSecureOverride = state.preferences.flagSecureEnabled
+        )
+    ) {
+        ScreenCapturePolicy.LOCKED_SENSITIVE
+    } else {
+        ScreenCapturePolicy.UNLOCKED_STUDY_FRIENDLY
+    }
     BindScreenCapturePolicy(capturePolicy)
 
     val internalDrawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -346,8 +393,8 @@ private fun PortalShellBody(
                     modifier = Modifier
                         .width(310.dp)
                         .fillMaxHeight(),
-                    drawerContainerColor = Color(0xF5121B46),
-                    drawerContentColor = WciColors.TextPrimaryDark,
+                    drawerContainerColor = if (isDark) Color(0xF5121B46) else Color(0xF7FFFFFF),
+                    drawerContentColor = WciColors.textPrimary,
                     drawerShape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp)
                 ) {
                     // Drawer Header
@@ -356,13 +403,22 @@ private fun PortalShellBody(
                             .fillMaxWidth()
                             .background(
                                 brush = Brush.linearGradient(
-                                    colors = listOf(
-                                        activeRoutePalette.start.copy(alpha = 0.42f),
-                                        activeRoutePalette.end.copy(alpha = 0.34f),
-                                        Color(0xFF141D4B)
-                                    )
+                                    colors = if (isDark) {
+                                        listOf(
+                                            activeRoutePalette.start.copy(alpha = 0.42f),
+                                            activeRoutePalette.end.copy(alpha = 0.34f),
+                                            Color(0xFF141D4B)
+                                        )
+                                    } else {
+                                        listOf(
+                                            activeRoutePalette.start.copy(alpha = 0.18f),
+                                            activeRoutePalette.end.copy(alpha = 0.14f),
+                                            Color(0xFFF1F5F9)
+                                        )
+                                    }
                                 )
                             )
+                            .statusBarsPadding()
                             .padding(horizontal = 20.dp, vertical = 20.dp)
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -393,12 +449,12 @@ private fun PortalShellBody(
                                             }
                                         }
                                     },
-                                    modifier = Modifier.size(36.dp)
+                                    modifier = Modifier.size(48.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Close Menu",
-                                        tint = Color.White
+                                        tint = WciColors.textPrimary
                                     )
                                 }
                             }
@@ -406,7 +462,7 @@ private fun PortalShellBody(
                             Text(
                                 text = state.preferences.instituteName,
                                 style = MaterialTheme.typography.titleMedium.copy(
-                                    color = Color.White,
+                                    color = WciColors.textPrimary,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                             )
@@ -414,13 +470,13 @@ private fun PortalShellBody(
                                 text = "${state.userProfile?.displayName ?: activeRole.label} (@${state.userProfile?.username?.ifBlank { activeRole.key } ?: activeRole.key})",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = JetBrainsMono,
-                                    color = WciColors.TextSecondaryDark
+                                    color = WciColors.textSecondary
                                 )
                             )
                         }
                     }
 
-                    HorizontalDivider(color = WciColors.GlassBorderLight)
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
 
                     LazyColumn(
                         modifier = Modifier.weight(1f),
@@ -442,29 +498,35 @@ private fun PortalShellBody(
                             }
                             items(destinations, key = { it.routeId }) { dest ->
                                 val selected = currentRoute == dest.routeId
-                                val itemBrush = if (selected) {
-                                    Brush.linearGradient(
+                                val itemBrush = when {
+                                    selected -> Brush.linearGradient(
                                         colors = listOf(
-                                            dest.accentStart.copy(alpha = 0.38f),
-                                            dest.accentEnd.copy(alpha = 0.30f)
+                                            dest.accentStart.copy(alpha = if (isDark) 0.38f else 0.22f),
+                                            dest.accentEnd.copy(alpha = if (isDark) 0.30f else 0.16f)
                                         )
                                     )
-                                } else {
-                                    Brush.linearGradient(
+                                    isDark -> Brush.linearGradient(
                                         colors = listOf(
                                             Color(0xFF1A255C).copy(alpha = 0.60f),
                                             Color(0xFF141D4B).copy(alpha = 0.60f)
+                                        )
+                                    )
+                                    else -> Brush.linearGradient(
+                                        colors = listOf(
+                                            Color(0xFFF8FAFC),
+                                            Color(0xFFF1F5F9)
                                         )
                                     )
                                 }
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
                                         .clip(RoundedCornerShape(WciRadius.md))
                                         .background(itemBrush, RoundedCornerShape(WciRadius.md))
                                         .border(
                                             width = if (selected) 1.5.dp else 0.8.dp,
-                                            color = if (selected) dest.accentStart else Color.White.copy(alpha = 0.14f),
+                                            color = if (selected) dest.accentStart else WciColors.glassBorderSubtleColor,
                                             shape = RoundedCornerShape(WciRadius.md)
                                         )
                                         .clickable {
@@ -500,7 +562,7 @@ private fun PortalShellBody(
                                         Text(
                                             text = dest.title,
                                             style = MaterialTheme.typography.bodyMedium.copy(
-                                                color = Color.White,
+                                                color = WciColors.textPrimary,
                                                 fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold
                                             ),
                                             maxLines = 1,
@@ -519,11 +581,12 @@ private fun PortalShellBody(
                         }
                     }
 
-                    HorizontalDivider(color = WciColors.GlassBorderSubtle)
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .navigationBarsPadding()
                             .padding(14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -546,16 +609,18 @@ private fun PortalShellBody(
                                 }
                                 showSignOutConfirmation = true
                             },
-                            modifier = Modifier.testTag("sign_out_button")
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("sign_out_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Logout,
                                 contentDescription = "Sign Out",
-                                tint = WciColors.Danger,
+                                tint = WciColors.dangerColor,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Sign Out", color = WciColors.Danger, fontWeight = FontWeight.Bold)
+                            Text("Sign Out", color = WciColors.dangerColor, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -565,43 +630,68 @@ private fun PortalShellBody(
                 palette = activeRoutePalette,
                 modifier = Modifier.fillMaxSize()
             ) {
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = Color.Transparent,
-                    contentWindowInsets = WindowInsets.safeDrawing,
-                    topBar = {
-                        val linkedStudentPhoto = remember(state.students, state.userProfile, activeRole) {
-                            if (activeRole == PortalRole.STUDENT || activeRole == PortalRole.PARENT) {
-                                state.students.firstOrNull()?.photoUri.orEmpty()
-                            } else ""
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val isCompactWidth = maxWidth < 600.dp
+                    val useNavigationRail = !isCompactWidth
+
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        if (useNavigationRail) {
+                            WciNavigationRail(
+                                tabs = bottomTabs,
+                                currentRoute = currentRoute,
+                                palette = activeRoutePalette,
+                                onOpenDrawer = toggleDrawerSmoothly,
+                                onSelectRoute = { selectedRoute -> currentRoute = selectedRoute }
+                            )
                         }
-                        WciTopBar(
-                            title = topBarHeaderTitle,
-                            subtitle = topBarSubtitle,
-                            activeRole = activeRole,
-                            palette = activeRoutePalette,
-                            unreadAlertsCount = state.announcements.size,
-                            userInitial = (state.userProfile?.displayName ?: activeRole.label).take(1).uppercase(),
-                            studentPhotoUri = linkedStudentPhoto,
-                            onOpenDrawer = toggleDrawerSmoothly,
-                            onOpenInbox = { currentRoute = "M16_ANNOUNCEMENTS" },
-                            onRequestSignOut = { showSignOutConfirmation = true }
-                        )
-                    },
-                    bottomBar = {
-                        WciBottomBar(
-                            tabs = bottomTabs,
-                            currentRoute = currentRoute,
-                            isClayPortal = isStudentClay,
-                            onSelectRoute = { selectedRoute -> currentRoute = selectedRoute }
-                        )
-                    }
-                ) { innerPadding ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                    ) {
+
+                        Scaffold(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
+                            containerColor = Color.Transparent,
+                            contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
+                            topBar = {
+                                val linkedStudentPhoto = remember(state.students, state.userProfile, activeRole) {
+                                    if (activeRole == PortalRole.STUDENT || activeRole == PortalRole.PARENT) {
+                                        state.students.firstOrNull()?.photoUri.orEmpty()
+                                    } else ""
+                                }
+                                WciTopBar(
+                                    title = topBarHeaderTitle,
+                                    subtitle = topBarSubtitle,
+                                    activeRole = activeRole,
+                                    palette = activeRoutePalette,
+                                    unreadAlertsCount = state.announcements.size,
+                                    userInitial = (state.userProfile?.displayName ?: activeRole.label).take(1).uppercase(),
+                                    studentPhotoUri = linkedStudentPhoto,
+                                    onOpenDrawer = toggleDrawerSmoothly,
+                                    onOpenInbox = { currentRoute = "M16_ANNOUNCEMENTS" },
+                                    onOpenProfileMenu = { showProfileSheet = true }
+                                )
+                            },
+                            bottomBar = {
+                                if (!useNavigationRail) {
+                                    WciBottomBar(
+                                        tabs = bottomTabs,
+                                        currentRoute = currentRoute,
+                                        isClayPortal = isStudentClay,
+                                        onSelectRoute = { selectedRoute -> currentRoute = selectedRoute }
+                                    )
+                                }
+                            }
+                        ) { innerPadding ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(innerPadding),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .widthIn(max = 960.dp)
+                                ) {
                         // Status Banner if present
                         state.statusMessage?.let { msg ->
                             Box(
@@ -633,7 +723,7 @@ private fun PortalShellBody(
                                     Text(
                                         text = msg,
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            color = Color.White,
+                                            color = WciColors.textPrimary,
                                             fontWeight = FontWeight.SemiBold
                                         ),
                                         modifier = Modifier.weight(1f)
@@ -641,7 +731,7 @@ private fun PortalShellBody(
                                     Icon(
                                         imageVector = Icons.Default.Close,
                                         contentDescription = "Dismiss",
-                                        tint = Color.White,
+                                        tint = WciColors.textPrimary,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
@@ -687,6 +777,21 @@ private fun PortalShellBody(
                                 "M22_SECURITY" -> SecurityBackupSettingsModuleScreen(state = state, viewModel = viewModel, initialTab = 0)
                                 "M23_BACKUP" -> SecurityBackupSettingsModuleScreen(state = state, viewModel = viewModel, initialTab = 1)
                                 "M24_SETTINGS" -> SecurityBackupSettingsModuleScreen(state = state, viewModel = viewModel, initialTab = 2)
+                                com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ROUTE_ADMIN_CONVERSION -> {
+                                    com.waqar.institute.biometric.AdminConversionModuleScreen(
+                                        state = state,
+                                        viewModel = viewModel
+                                    )
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX -> {
+                                    com.waqar.institute.ui.termux.CodingSandboxScreen(
+                                        activeUserId = state.userProfile?.linkedEntityId?.ifBlank { state.userProfile.uid }
+                                            ?: state.userProfile?.uid.orEmpty(),
+                                        activeUsername = state.userProfile?.username.orEmpty(),
+                                        activePortalRole = state.activePortalRole.key,
+                                        palette = activeRoutePalette
+                                    )
+                                }
                                 else -> AdminDashboardModule(
                                     state = state,
                                     viewModel = viewModel,
@@ -698,7 +803,110 @@ private fun PortalShellBody(
                                 )
                             }
                         }
+                            }
+                        }
                     }
+                }
+            }
+        }
+        }
+
+        if (showProfileSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showProfileSheet = false },
+                containerColor = WciColors.elevatedSurface,
+                contentColor = WciColors.textPrimary
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                                .background(activeRoutePalette.brush, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = (state.userProfile?.displayName ?: activeRole.label).take(1).uppercase(),
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    color = Color(0xFF05060F),
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = state.userProfile?.displayName ?: activeRole.label,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    color = WciColors.textPrimary,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            )
+                            Text(
+                                text = "@${state.userProfile?.username?.ifBlank { activeRole.key } ?: activeRole.key} • ${activeRole.label} Portal",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontFamily = JetBrainsMono,
+                                    color = WciColors.infoColor
+                                )
+                            )
+                            val linked = state.userProfile?.linkedEntityId.orEmpty()
+                            if (linked.isNotBlank()) {
+                                Text(
+                                    text = "Linked ID: $linked",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidPill(
+                            text = if (isDark) "Dark Cosmos" else "Daylight Mode",
+                            selected = !isDark,
+                            icon = if (isDark) Icons.Default.DarkMode else Icons.Default.LightMode,
+                            onClick = { viewModel.setDarkTheme(!isDark) },
+                            modifier = Modifier.weight(1f),
+                            testTag = "profile_theme_toggle"
+                        )
+                        LiquidPill(
+                            text = if (state.preferences.languageCode == "HI") "हिंदी (HI)" else "English (EN)",
+                            selected = state.preferences.languageCode == "HI",
+                            icon = Icons.Default.Translate,
+                            onClick = {
+                                val next = if (state.preferences.languageCode == "HI") "EN" else "HI"
+                                viewModel.setLanguage(next)
+                            },
+                            modifier = Modifier.weight(1f),
+                            testTag = "profile_language_toggle"
+                        )
+                    }
+
+                    ShimmerButton(
+                        text = if (state.preferences.languageCode == "HI") "पोर्टल से लॉग आउट करें" else "Sign Out of ${activeRole.label} Portal",
+                        icon = Icons.AutoMirrored.Filled.Logout,
+                        onClick = {
+                            showProfileSheet = false
+                            showSignOutConfirmation = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        testTag = "profile_sheet_sign_out_button"
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
@@ -706,11 +914,11 @@ private fun PortalShellBody(
         if (showSignOutConfirmation) {
             AlertDialog(
                 onDismissRequest = { showSignOutConfirmation = false },
-                containerColor = WciColors.BgElevatedDark,
+                containerColor = WciColors.elevatedSurface,
                 title = {
                     Text(
                         text = if (state.preferences.languageCode == "HI") "लॉग आउट की पुष्टि करें" else "Confirm Sign Out",
-                        color = Color.White,
+                        color = WciColors.textPrimary,
                         fontWeight = FontWeight.ExtraBold
                     )
                 },
@@ -721,7 +929,7 @@ private fun PortalShellBody(
                         } else {
                             "Are you sure you want to sign out of your ${activeRole.label} Portal session?"
                         },
-                        color = WciColors.TextSecondaryDark
+                        color = WciColors.textSecondary
                     )
                 },
                 confirmButton = {
@@ -744,18 +952,18 @@ private fun PortalShellBody(
         sessionExpiredMsg?.let { expiredText ->
             AlertDialog(
                 onDismissRequest = { ConcurrentSessionManager.clearSessionExpiredAlert() },
-                containerColor = WciColors.BgElevatedDark,
+                containerColor = WciColors.elevatedSurface,
                 title = {
                     Text(
                         text = "Single-Device Security Alert",
-                        color = WciColors.Danger,
+                        color = WciColors.dangerColor,
                         fontWeight = FontWeight.ExtraBold
                     )
                 },
                 text = {
                     Text(
                         text = expiredText,
-                        color = Color.White
+                        color = WciColors.textPrimary
                     )
                 },
                 confirmButton = {
@@ -780,44 +988,56 @@ private fun WciTopBar(
     studentPhotoUri: String = "",
     onOpenDrawer: () -> Unit,
     onOpenInbox: () -> Unit,
-    onRequestSignOut: () -> Unit
+    onOpenProfileMenu: () -> Unit
 ) {
+    val isDark = LocalIsDarkTheme.current
     val isStudentClay = activeRole == PortalRole.STUDENT
-    val topBarBrush = when (activeRole) {
-        PortalRole.STUDENT -> Brush.linearGradient(
+    val topBarBrush = if (!isDark) {
+        Brush.linearGradient(
             colors = listOf(
-                Color(0xFF28377E).copy(alpha = 0.96f),
-                palette.start.copy(alpha = 0.34f),
-                Color(0xFF1F2B68).copy(alpha = 0.96f)
+                Color.White.copy(alpha = 0.94f),
+                palette.start.copy(alpha = 0.14f),
+                Color(0xFFF8FAFC).copy(alpha = 0.96f)
             )
         )
-        PortalRole.TEACHER -> Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF123244).copy(alpha = 0.88f),
-                Color(0xFF10F596).copy(alpha = 0.24f),
-                Color(0xFF0E2536).copy(alpha = 0.90f)
+    } else {
+        when (activeRole) {
+            PortalRole.STUDENT -> Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF28377E).copy(alpha = 0.96f),
+                    palette.start.copy(alpha = 0.34f),
+                    Color(0xFF1F2B68).copy(alpha = 0.96f)
+                )
             )
-        )
-        PortalRole.PARENT -> Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF2B183D).copy(alpha = 0.88f),
-                Color(0xFFFF6B8B).copy(alpha = 0.28f),
-                Color(0xFF1E122E).copy(alpha = 0.90f)
+            PortalRole.TEACHER -> Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF123244).copy(alpha = 0.88f),
+                    Color(0xFF10F596).copy(alpha = 0.24f),
+                    Color(0xFF0E2536).copy(alpha = 0.90f)
+                )
             )
-        )
-        PortalRole.ADMIN -> Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF141D4E).copy(alpha = 0.88f),
-                palette.start.copy(alpha = 0.25f),
-                palette.end.copy(alpha = 0.20f),
-                Color(0xFF101842).copy(alpha = 0.90f)
+            PortalRole.PARENT -> Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF2B183D).copy(alpha = 0.88f),
+                    Color(0xFFFF6B8B).copy(alpha = 0.28f),
+                    Color(0xFF1E122E).copy(alpha = 0.90f)
+                )
             )
-        )
+            PortalRole.ADMIN -> Brush.linearGradient(
+                colors = listOf(
+                    Color(0xFF141D4E).copy(alpha = 0.88f),
+                    palette.start.copy(alpha = 0.25f),
+                    palette.end.copy(alpha = 0.20f),
+                    Color(0xFF101842).copy(alpha = 0.90f)
+                )
+            )
+        }
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .statusBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .shadow(
                 elevation = if (isStudentClay) 16.dp else 10.dp,
@@ -829,7 +1049,10 @@ private fun WciTopBar(
             .border(
                 width = if (isStudentClay) 2.dp else 1.2.dp,
                 brush = Brush.linearGradient(
-                    listOf(Color.White.copy(alpha = 0.55f), palette.start.copy(alpha = 0.65f))
+                    listOf(
+                        if (isDark) Color.White.copy(alpha = 0.55f) else Color(0x260F172A),
+                        palette.start.copy(alpha = 0.65f)
+                    )
                 ),
                 shape = RoundedCornerShape(WciRadius.xl)
             )
@@ -842,7 +1065,7 @@ private fun WciTopBar(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.weight(1f)
         ) {
-            // Smooth 48dp 3-Lines Navigation Menu Button (Zero Click-Flicker)
+            // Smooth 48dp 3-Lines Navigation Menu Button
             IconButton(
                 onClick = onOpenDrawer,
                 modifier = Modifier
@@ -864,7 +1087,7 @@ private fun WciTopBar(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium.copy(
-                        color = Color.White,
+                        color = WciColors.textPrimary,
                         fontWeight = FontWeight.ExtraBold
                     ),
                     maxLines = 1,
@@ -873,8 +1096,8 @@ private fun WciTopBar(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall.copy(
-                        color = WciColors.TextSecondaryDark,
-                        fontSize = 11.sp
+                        color = WciColors.textSecondary,
+                        fontSize = 12.sp
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -886,41 +1109,44 @@ private fun WciTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Bell Icon -> Opens Inbox / Alerts
+            // 48dp Bell Icon -> Opens Inbox / Alerts
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.12f), CircleShape)
-                    .border(1.dp, Color.White.copy(alpha = 0.30f), CircleShape)
+                    .background(
+                        if (isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFE2E8F0),
+                        CircleShape
+                    )
+                    .border(1.dp, WciColors.glassBorderSubtleColor, CircleShape)
                     .clickable(onClick = onOpenInbox),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.NotificationsNone,
                     contentDescription = "Notifications & Inbox",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
+                    tint = WciColors.textPrimary,
+                    modifier = Modifier.size(22.dp)
                 )
                 if (unreadAlertsCount > 0) {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(6.dp)
+                            .padding(8.dp)
                             .size(8.dp)
-                            .background( Color(0xFFFF4D79), CircleShape)
+                            .background(Color(0xFFFF4D79), CircleShape)
                     )
                 }
             }
 
-            // User Avatar / Sign Out Pill (with Student Profile Photo sync & Confirmation)
+            // 48dp User Avatar -> Opens Profile, Quick Theme/Language & Sign Out Menu
             Box(
                 modifier = Modifier
-                    .size(42.dp)
+                    .size(48.dp)
                     .clip(CircleShape)
                     .background(palette.brush, CircleShape)
                     .border(1.4.dp, Color.White.copy(alpha = 0.75f), CircleShape)
-                    .clickable(onClick = onRequestSignOut)
+                    .clickable(onClick = onOpenProfileMenu)
                     .testTag("topbar_sign_out_button"),
                 contentAlignment = Alignment.Center
             ) {
@@ -929,7 +1155,7 @@ private fun WciTopBar(
                         photoUri = studentPhotoUri,
                         fullName = userInitial,
                         palette = palette,
-                        size = 42.dp
+                        size = 48.dp
                     )
                 } else {
                     Text(
@@ -946,18 +1172,83 @@ private fun WciTopBar(
 }
 
 @Composable
+private fun WciNavigationRail(
+    tabs: List<ModuleDestination>,
+    currentRoute: String,
+    palette: RolePalette,
+    onOpenDrawer: () -> Unit,
+    onSelectRoute: (String) -> Unit
+) {
+    val isDark = LocalIsDarkTheme.current
+    NavigationRail(
+        modifier = Modifier
+            .fillMaxHeight()
+            .statusBarsPadding()
+            .navigationBarsPadding(),
+        containerColor = if (isDark) Color(0xE610173D) else Color(0xF5FFFFFF),
+        contentColor = WciColors.textPrimary,
+        header = {
+            IconButton(
+                onClick = onOpenDrawer,
+                modifier = Modifier
+                    .padding(vertical = 8.dp)
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(palette.brush, RoundedCornerShape(14.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Apps,
+                    contentDescription = "All Modules",
+                    tint = Color(0xFF05060F)
+                )
+            }
+        }
+    ) {
+        tabs.forEach { tab ->
+            val selected = currentRoute == tab.routeId
+            NavigationRailItem(
+                selected = selected,
+                onClick = { onSelectRoute(tab.routeId) },
+                icon = {
+                    Icon(
+                        imageVector = tab.icon,
+                        contentDescription = tab.shortLabel
+                    )
+                },
+                label = {
+                    Text(
+                        text = tab.shortLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1
+                    )
+                },
+                colors = NavigationRailItemDefaults.colors(
+                    selectedIconColor = Color(0xFF05060F),
+                    selectedTextColor = palette.start,
+                    indicatorColor = palette.start,
+                    unselectedIconColor = WciColors.textSecondary,
+                    unselectedTextColor = WciColors.textMuted
+                )
+            )
+        }
+    }
+}
+
+@Composable
 private fun WciBottomBar(
     tabs: List<ModuleDestination>,
     currentRoute: String,
     isClayPortal: Boolean,
     onSelectRoute: (String) -> Unit
 ) {
+    val isDark = LocalIsDarkTheme.current
     val haptic = LocalHapticFeedback.current
     val barShape = RoundedCornerShape(WciRadius.xl)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .navigationBarsPadding()
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .shadow(
                 elevation = if (isClayPortal) 18.dp else 12.dp,
@@ -967,13 +1258,16 @@ private fun WciBottomBar(
             .clip(barShape)
             .background(
                 brush = Brush.linearGradient(
-                    colors = if (isClayPortal) {
-                        listOf(
+                    colors = when {
+                        !isDark -> listOf(
+                            Color.White.copy(alpha = 0.96f),
+                            Color(0xFFF1F5F9).copy(alpha = 0.96f)
+                        )
+                        isClayPortal -> listOf(
                             Color(0xFF25347A).copy(alpha = 0.96f),
                             Color(0xFF1F2B68).copy(alpha = 0.96f)
                         )
-                    } else {
-                        listOf(
+                        else -> listOf(
                             Color(0xFF131C4E).copy(alpha = 0.92f),
                             Color(0xFF1D2869).copy(alpha = 0.88f),
                             Color(0xFF111844).copy(alpha = 0.92f)
@@ -986,14 +1280,14 @@ private fun WciBottomBar(
                 width = if (isClayPortal) 2.dp else 1.3.dp,
                 brush = Brush.linearGradient(
                     listOf(
-                        Color.White.copy(alpha = 0.52f),
+                        if (isDark) Color.White.copy(alpha = 0.52f) else Color(0x260F172A),
                         Color(0xFF00E5FF).copy(alpha = 0.55f),
                         Color(0xFFA855F7).copy(alpha = 0.55f)
                     )
                 ),
                 shape = barShape
             )
-            .padding(horizontal = 8.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1013,7 +1307,7 @@ private fun WciBottomBar(
             )
 
             val labelColor by animateColorAsState(
-                targetValue = if (selected) Color.White else WciColors.TextSecondaryDark,
+                targetValue = if (selected) WciColors.textPrimary else WciColors.textSecondary,
                 animationSpec = WciMotion.fastTween(),
                 label = "bottomTabLabelColor_${tab.routeId}"
             )
@@ -1021,8 +1315,8 @@ private fun WciBottomBar(
             val tabBrush = if (selected) {
                 Brush.linearGradient(
                     colors = listOf(
-                        tab.accentStart.copy(alpha = 0.45f),
-                        tab.accentEnd.copy(alpha = 0.38f)
+                        tab.accentStart.copy(alpha = if (isDark) 0.45f else 0.24f),
+                        tab.accentEnd.copy(alpha = if (isDark) 0.38f else 0.18f)
                     )
                 )
             } else {
@@ -1034,6 +1328,7 @@ private fun WciBottomBar(
             Column(
                 modifier = Modifier
                     .scale(animatedScale)
+                    .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(WciRadius.lg))
                     .background(tabBrush, RoundedCornerShape(WciRadius.lg))
                     .then(
@@ -1054,10 +1349,10 @@ private fun WciBottomBar(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onSelectRoute(tab.routeId)
                     }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
                     .testTag("bottom_tab_${tab.routeId}"),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement = Arrangement.Center
             ) {
                 Box(
                     modifier = Modifier
@@ -1084,10 +1379,11 @@ private fun WciBottomBar(
                         modifier = Modifier.size(17.dp)
                     )
                 }
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = tab.shortLabel,
                     style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                         fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Medium,
                         color = labelColor
                     ),

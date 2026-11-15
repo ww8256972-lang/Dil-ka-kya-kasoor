@@ -23,22 +23,22 @@ import java.security.MessageDigest
 object RecaptchaInvisibleManager {
 
     private const val META_SITE_KEY = "com.waqar.institute.RECAPTCHA_SITE_KEY"
-    private const val FALLBACK_SITE_KEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
 
     private val clientMutex = Mutex()
 
     @Volatile
     private var cachedClient: RecaptchaClient? = null
 
-    fun resolveConfiguredSiteKey(context: Context): String {
+    fun resolveConfiguredSiteKey(context: Context): String? {
         return runCatching {
             val appInfo = context.packageManager.getApplicationInfo(
                 context.packageName,
                 PackageManager.GET_META_DATA
             )
-            appInfo.metaData?.getString(META_SITE_KEY)?.takeIf { it.isNotBlank() }
-                ?: FALLBACK_SITE_KEY
-        }.getOrDefault(FALLBACK_SITE_KEY)
+            appInfo.metaData?.getString(META_SITE_KEY)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && !it.startsWith("6LeIxAcTAAAAAJcZVRqy") }
+        }.getOrNull()
     }
 
     suspend fun getOrInitClient(application: Application): Result<RecaptchaClient> =
@@ -47,6 +47,9 @@ object RecaptchaInvisibleManager {
             clientMutex.withLock {
                 cachedClient?.let { return@withContext Result.success(it) }
                 val siteKey = resolveConfiguredSiteKey(application)
+                    ?: return@withContext Result.failure(
+                        IllegalStateException("reCAPTCHA Enterprise site key ($META_SITE_KEY) is not configured.")
+                    )
                 runCatching {
                     Recaptcha.fetchClient(application, siteKey).also { client ->
                         cachedClient = client
@@ -57,41 +60,31 @@ object RecaptchaInvisibleManager {
 
     /**
      * Silently executes an invisible reCAPTCHA action (`LOGIN` or custom action)
-     * and returns a verified token or an attested device-bound fallback digest
-     * when offline/sandboxed so legitimate logins are never blocked by transient network drops.
+     * and returns the genuine token from Google reCAPTCHA Enterprise SDK or `Result.failure`.
      */
     suspend fun executeInvisibleLoginToken(
         context: Context,
         actionName: String = "login"
     ): Result<String> = withContext(Dispatchers.IO) {
         val app = context.applicationContext as? Application
-        if (app != null) {
-            val clientResult = getOrInitClient(app)
-            val client = clientResult.getOrNull()
-            if (client != null) {
-                val action = when (actionName.lowercase()) {
-                    "login" -> RecaptchaAction.LOGIN
-                    "signup" -> RecaptchaAction.SIGNUP
-                    else -> RecaptchaAction.custom(actionName)
-                }
-                val tokenResult = client.execute(action, 8_000L)
-                if (tokenResult.isSuccess) {
-                    val token = tokenResult.getOrNull().orEmpty()
-                    if (token.isNotBlank()) {
-                        return@withContext Result.success(token)
-                    }
-                }
-            }
+            ?: return@withContext Result.failure(IllegalStateException("Application context unavailable for reCAPTCHA."))
+        val client = getOrInitClient(app).getOrElse { err ->
+            return@withContext Result.failure(err)
         }
-        // Deterministic hardware-attested fallback token so offline/cloud-emulator sessions remain smooth
-        val fallbackToken = buildHardwareAttestedFallbackToken(context, actionName)
-        Result.success(fallbackToken)
-    }
-
-    private fun buildHardwareAttestedFallbackToken(context: Context, actionName: String): String {
-        val seed = "${context.packageName}|$actionName|${System.currentTimeMillis() / 60_000L}"
-        val digest = MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))
-        val hex = digest.joinToString("") { "%02x".format(it) }
-        return "wci_invisible_recaptcha_v1_${hex.take(40)}"
+        val action = when (actionName.lowercase()) {
+            "login" -> RecaptchaAction.LOGIN
+            "signup" -> RecaptchaAction.SIGNUP
+            else -> RecaptchaAction.custom(actionName)
+        }
+        val tokenResult = client.execute(action, 8_000L)
+        val token = tokenResult.getOrNull().orEmpty()
+        if (tokenResult.isSuccess && token.isNotBlank()) {
+            Result.success(token)
+        } else {
+            Result.failure(
+                tokenResult.exceptionOrNull()
+                    ?: IllegalStateException("Empty reCAPTCHA token returned for action '$actionName'.")
+            )
+        }
     }
 }

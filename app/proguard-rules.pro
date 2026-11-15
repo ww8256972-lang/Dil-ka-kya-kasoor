@@ -33,6 +33,8 @@
 -keep class com.waqar.institute.ipc.** { *; }
 -keep class com.waqar.institute.certificate.** { *; }
 -keep class com.waqar.institute.universal.** { *; }
+-keep class com.waqar.institute.updater.** { *; }
+-keep class com.waqar.institute.terminal.** { *; }
 -keep class io.agora.** { *; }
 -dontwarn io.agora.**
 

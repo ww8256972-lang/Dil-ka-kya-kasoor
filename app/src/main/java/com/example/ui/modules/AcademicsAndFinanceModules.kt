@@ -22,8 +22,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.draw.clip
+import androidx.core.content.ContextCompat
 import com.example.attendance.AntiProxyAttendanceManager
 import com.example.attendance.GeofenceVerificationResult
 import com.example.data.model.PortalRole
@@ -105,13 +108,13 @@ fun CoursesAndBatchesModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("${course.code} • ${course.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                Text("${course.code} • ${course.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                 Text(
                                     "Category: ${course.category} • Duration: ${course.durationMonths} Months • ${course.totalModules} Modules",
                                     style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info)
                                 )
                                 if (course.syllabusSummary.isNotBlank()) {
-                                    Text("Syllabus: ${course.syllabusSummary}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                    Text("Syllabus: ${course.syllabusSummary}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 }
                             }
                             MoneyTicker(amountPaise = course.totalFeePaise, color = WciColors.Success, fontSizeSp = 18)
@@ -139,14 +142,14 @@ fun CoursesAndBatchesModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("${batch.code} • ${batch.name}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark, fontWeight = FontWeight.ExtraBold))
+                                Text("${batch.code} • ${batch.name}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary, fontWeight = FontWeight.ExtraBold))
                                 Text(
                                     "${batch.courseName} • Batch Admin / Faculty: ${batch.teacherName}",
                                     style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info, fontWeight = FontWeight.Bold)
                                 )
                                 Text(
                                     "${batch.daysOfWeek} (${batch.startTime}–${batch.endTime}) • Room: ${batch.roomName}",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextSecondaryDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textSecondary)
                                 )
                                 if (isAdmin && state.staff.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -179,7 +182,7 @@ fun CoursesAndBatchesModuleScreen(
                                 )
                                 Text(
                                     text = "Cap: ${batch.capacity} seats",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                 )
                             }
                         }
@@ -200,8 +203,8 @@ fun CoursesAndBatchesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddCourse = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Create Course", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Create Course", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = code, onValueChange = { code = it }, label = { Text("Course Code *") }, singleLine = true)
@@ -250,8 +253,8 @@ fun CoursesAndBatchesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddBatch = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Schedule Batch & Lab Slot", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Schedule Batch & Lab Slot", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = code, onValueChange = { code = it }, label = { Text("Batch Code *") }, singleLine = true)
@@ -332,7 +335,7 @@ fun AttendanceModuleScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = if (canMarkAttendance) "Attendance & QR Roll-Call" else "My Attendance Log",
-                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark)
+                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary)
                     )
                     Text(
                         text = if (canMarkAttendance) {
@@ -340,7 +343,7 @@ fun AttendanceModuleScreen(
                         } else {
                             "${state.attendance.size} Verified Attendance Entries"
                         },
-                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                     )
                 }
                 if (canMarkAttendance) {
@@ -356,6 +359,170 @@ fun AttendanceModuleScreen(
                             icon = Icons.AutoMirrored.Filled.FactCheck,
                             onClick = { showMarkDialog = true },
                             testTag = "mark_attendance_button"
+                        )
+                    }
+                }
+            }
+        }
+
+        // Teacher Portal Pre-Biometric 50m GPS Geofence + Live Face Biometric Attendance Card
+        if (state.activePortalRole == com.example.data.model.PortalRole.TEACHER || canMarkAttendance) {
+            item {
+                val teacherContext = androidx.compose.ui.platform.LocalContext.current
+                val teacherScope = androidx.compose.runtime.rememberCoroutineScope()
+                val resolvedTeacherId: String = state.userProfile?.linkedEntityId?.ifBlank { state.userProfile.uid }
+                    ?: state.userProfile?.uid.orEmpty()
+                val resolvedTeacherName: String = state.userProfile?.displayName?.ifBlank { "Faculty Member" }
+                    ?: "Faculty Member"
+
+                var isCheckingGps by remember { mutableStateOf(false) }
+                var gpsAlertDialogText by remember { mutableStateOf<String?>(null) }
+                var gpsStatusBanner by remember {
+                    mutableStateOf(
+                        "Institute Coordinates: ${com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.INSTITUTE_LATITUDE}, ${com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.INSTITUTE_LONGITUDE} (${com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.INSTITUTE_PLUS_CODE_LABEL}) • Max Radius: 50m"
+                    )
+                }
+
+                val faceBiometricCameraLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                    contract = androidx.activity.result.contract.ActivityResultContracts.TakePicturePreview()
+                ) { capturedBitmap ->
+                    if (capturedBitmap != null) {
+                        teacherScope.launch {
+                            val matchRes = com.waqar.institute.biometric.FaceBiometricVerificationEngine.verifyTeacherLiveFace(
+                                teacherUid = resolvedTeacherId,
+                                teacherName = resolvedTeacherName,
+                                liveFrameBitmap = capturedBitmap,
+                                context = teacherContext
+                            )
+                            when (matchRes) {
+                                is com.waqar.institute.biometric.FaceBiometricVerificationEngine.BiometricMatchResult.Verified -> {
+                                    com.waqar.institute.biometric.TeacherBiometricGateManager.recordSuccessfulLoginVerification(
+                                        context = teacherContext,
+                                        teacherUid = resolvedTeacherId,
+                                        cosineScore = matchRes.cosineSimilarity
+                                    )
+                                    com.waqar.institute.biometric.TeacherAttendanceSyncManager.markTeacherPresentOnBiometricPass(
+                                        context = teacherContext,
+                                        teacherUid = resolvedTeacherId,
+                                        teacherName = resolvedTeacherName,
+                                        cosineSimilarity = matchRes.cosineSimilarity,
+                                        livenessConfidence = matchRes.livenessConfidence
+                                    )
+                                    viewModel.markAttendance(
+                                        targetType = "STAFF",
+                                        targetId = resolvedTeacherId.ifBlank { "stf_teacher" },
+                                        targetName = resolvedTeacherName,
+                                        batchName = "Faculty Biometric + 50m GPS",
+                                        status = "PRESENT",
+                                        method = "BIOMETRIC"
+                                    )
+                                    gpsStatusBanner = "Face Biometric Verified (${"%.2f".format(matchRes.cosineSimilarity)}) & 50m GPS Geofence Passed • Attendance Marked PRESENT ✓"
+                                }
+                                is com.waqar.institute.biometric.FaceBiometricVerificationEngine.BiometricMatchResult.Mismatch -> {
+                                    gpsAlertDialogText = matchRes.message
+                                }
+                                is com.waqar.institute.biometric.FaceBiometricVerificationEngine.BiometricMatchResult.SpoofOrLivenessFailed -> {
+                                    gpsAlertDialogText = matchRes.reason
+                                }
+                                is com.waqar.institute.biometric.FaceBiometricVerificationEngine.BiometricMatchResult.Error -> {
+                                    gpsAlertDialogText = matchRes.errorMessage
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val executeGpsGeofenceThenBiometric: () -> Unit = {
+                    isCheckingGps = true
+                    gpsStatusBanner = "Fetching High-Accuracy GPS fix before launching Face Biometric scanner…"
+                    teacherScope.launch {
+                        val geofenceRes = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier
+                            .verifyTeacherLocationBeforeBiometric(teacherContext)
+                        isCheckingGps = false
+                        when (geofenceRes) {
+                            is com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.GeofenceVerificationResult.InsidePremises -> {
+                                gpsStatusBanner = "GPS Verified (${"%.1f".format(geofenceRes.distanceMeters)}m ≤ 50m) ✓ Launching Face Biometric scanner…"
+                                faceBiometricCameraLauncher.launch(null)
+                            }
+                            is com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.GeofenceVerificationResult.OutsidePremises -> {
+                                gpsStatusBanner = "${com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE} (${"%.1f".format(geofenceRes.distanceMeters)}m > 50m)"
+                                gpsAlertDialogText = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                            }
+                            is com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.GeofenceVerificationResult.MockLocationRejected -> {
+                                gpsStatusBanner = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.MOCK_LOCATION_ALERT_MESSAGE
+                                gpsAlertDialogText = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.MOCK_LOCATION_ALERT_MESSAGE
+                            }
+                            is com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.GeofenceVerificationResult.LocationUnavailable -> {
+                                gpsStatusBanner = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                                gpsAlertDialogText = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                            }
+                        }
+                    }
+                }
+
+                val teacherLocationPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                    contract = androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+                ) { perms ->
+                    val granted = perms[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                        perms[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                    if (granted) {
+                        executeGpsGeofenceThenBiometric()
+                    } else {
+                        gpsAlertDialogText = com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                    }
+                }
+
+                if (gpsAlertDialogText != null) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { gpsAlertDialogText = null },
+                        title = { Text("Teacher Biometric Attendance Gate", fontWeight = FontWeight.Bold) },
+                        text = { Text(gpsAlertDialogText ?: com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE) },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(onClick = { gpsAlertDialogText = null }) {
+                                Text("OK", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    )
+                }
+
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    glowColor = WciColors.Success
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Teacher Face Biometric Attendance (50m GPS Geofence)",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = WciColors.textPrimary,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        )
+                        Text(
+                            text = gpsStatusBanner,
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
+                        )
+                        ShimmerButton(
+                            text = if (isCheckingGps) {
+                                "Checking 50m GPS Geofence…"
+                            } else {
+                                "Verify 50m GPS & Scan Face Biometric"
+                            },
+                            icon = Icons.Default.LocationOn,
+                            enabled = !isCheckingGps,
+                            onClick = {
+                                if (com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.hasFineOrCoarseLocationPermission(teacherContext)) {
+                                    executeGpsGeofenceThenBiometric()
+                                } else {
+                                    teacherLocationPermLauncher.launch(
+                                        arrayOf(
+                                            android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                            android.Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            testTag = "teacher_gps_biometric_attendance_button"
                         )
                     }
                 }
@@ -381,7 +548,7 @@ fun AttendanceModuleScreen(
                             )
                             Text(
                                 "Tap Sync Now to push queued records to Firestore.",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                             )
                         }
                         ShimmerButton(
@@ -409,10 +576,9 @@ fun AttendanceModuleScreen(
                     if (selectedBatchRollCall == "ALL BATCHES") {
                         state.students
                     } else {
-                        val matched = state.students.filter {
+                        state.students.filter {
                             it.batchName.equals(selectedBatchRollCall, ignoreCase = true)
                         }
-                        if (matched.isNotEmpty()) matched else state.students
                     }
                 }
                 var rosterStatusMap by remember(selectedBatchRollCall, studentsInSelectedBatch) {
@@ -426,116 +592,157 @@ fun AttendanceModuleScreen(
                     glowColor = palette.start,
                     strongSurface = true
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Batch-Wise Student Roster Roll-Call",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    color = WciColors.TextPrimaryDark,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                            )
-                            Text(
-                                "Select a Batch → Tap Present / Absent / Late per student → Save entire batch to Firebase",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info)
-                            )
-                        }
-                        LiquidPill(
-                            text = "✓ All Present",
-                            selected = true,
-                            onClick = {
-                                rosterStatusMap = studentsInSelectedBatch.associate { it.id to "PRESENT" }
-                            }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Batch Selector Pill Row
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        availableBatchNames.forEach { bName ->
-                            LiquidPill(
-                                text = bName,
-                                selected = selectedBatchRollCall == bName,
-                                icon = Icons.Default.Groups,
-                                onClick = { selectedBatchRollCall = bName }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Student List by Name for Selected Batch
-                    studentsInSelectedBatch.forEachIndexed { idx, stu ->
-                        val chosenStatus = rosterStatusMap[stu.id] ?: "PRESENT"
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "${idx + 1}. ${stu.fullName}",
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = WciColors.TextPrimaryDark
+                                    "Batch-Wise Student Roster Roll-Call",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        color = WciColors.textPrimary,
+                                        fontWeight = FontWeight.ExtraBold
                                     )
                                 )
                                 Text(
-                                    text = "${stu.enrollmentNo} • ${stu.batchName.ifBlank { selectedBatchRollCall }}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                    "Select a Batch → Tap Present / Absent / Late per student → Save entire batch",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.infoColor)
                                 )
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                listOf("PRESENT", "ABSENT", "LATE").forEach { st ->
-                                    LiquidPill(
-                                        text = st,
-                                        selected = chosenStatus == st,
-                                        onClick = {
-                                            rosterStatusMap = rosterStatusMap.toMutableMap().apply {
-                                                put(stu.id, st)
-                                            }
-                                            viewModel.markAttendance(
-                                                targetType = "STUDENT",
-                                                targetId = stu.id,
-                                                targetName = stu.fullName,
-                                                batchName = stu.batchName.ifBlank { selectedBatchRollCall },
-                                                status = st,
-                                                method = "BATCH_ROSTER"
+                            if (studentsInSelectedBatch.isNotEmpty()) {
+                                LiquidPill(
+                                    text = "✓ All Present",
+                                    selected = true,
+                                    onClick = {
+                                        rosterStatusMap = studentsInSelectedBatch.associate { it.id to "PRESENT" }
+                                    }
+                                )
+                            }
+                        }
+
+                        // Batch Selector Pill Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            availableBatchNames.forEach { bName ->
+                                LiquidPill(
+                                    text = bName,
+                                    selected = selectedBatchRollCall == bName,
+                                    icon = Icons.Default.Groups,
+                                    onClick = { selectedBatchRollCall = bName }
+                                )
+                            }
+                        }
+
+                        if (studentsInSelectedBatch.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(WciRadius.md))
+                                    .background(WciColors.cardInnerSurface)
+                                    .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.md))
+                                    .padding(14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "No students enrolled in \"$selectedBatchRollCall\" yet.",
+                                    style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textSecondary)
+                                )
+                            }
+                        } else {
+                            // 2-Line Thumb-Friendly Student Roster Rows (Prevents crushed names on small screens)
+                            studentsInSelectedBatch.forEachIndexed { idx, stu ->
+                                val chosenStatus = rosterStatusMap[stu.id] ?: "PRESENT"
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(WciRadius.md))
+                                        .background(WciColors.cardInnerSurface)
+                                        .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.md))
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "${idx + 1}. ${stu.fullName}",
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = WciColors.textPrimary
+                                                )
+                                            )
+                                            Text(
+                                                text = "${stu.enrollmentNo} • ${stu.batchName.ifBlank { selectedBatchRollCall }}",
+                                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                             )
                                         }
-                                    )
+                                        Text(
+                                            text = chosenStatus,
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontFamily = JetBrainsMono,
+                                                fontWeight = FontWeight.Bold,
+                                                color = when (chosenStatus) {
+                                                    "PRESENT" -> WciColors.successColor
+                                                    "ABSENT" -> WciColors.dangerColor
+                                                    else -> WciColors.warningColor
+                                                }
+                                            )
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        listOf("PRESENT" to "Present", "ABSENT" to "Absent", "LATE" to "Late").forEach { (stKey, stLabel) ->
+                                            LiquidPill(
+                                                text = stLabel,
+                                                selected = chosenStatus == stKey,
+                                                modifier = Modifier.weight(1f),
+                                                onClick = {
+                                                    rosterStatusMap = rosterStatusMap.toMutableMap().apply {
+                                                        put(stu.id, stKey)
+                                                    }
+                                                    viewModel.markAttendance(
+                                                        targetType = "STUDENT",
+                                                        targetId = stu.id,
+                                                        targetName = stu.fullName,
+                                                        batchName = stu.batchName.ifBlank { selectedBatchRollCall },
+                                                        status = stKey,
+                                                        method = "BATCH_ROSTER"
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    ShimmerButton(
-                        text = "Save ${studentsInSelectedBatch.size} Students Attendance to Firebase",
-                        icon = Icons.Default.CloudUpload,
-                        onClick = {
-                            val bulkPayload = studentsInSelectedBatch.associateWith { stu ->
-                                rosterStatusMap[stu.id] ?: "PRESENT"
-                            }
-                            viewModel.markBatchAttendanceInBulk(
-                                batchName = selectedBatchRollCall,
-                                studentStatuses = bulkPayload
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                        ShimmerButton(
+                            text = "Save ${studentsInSelectedBatch.size} Students Attendance to Firebase",
+                            icon = Icons.Default.CloudUpload,
+                            enabled = studentsInSelectedBatch.isNotEmpty(),
+                            onClick = {
+                                val bulkPayload = studentsInSelectedBatch.associateWith { stu ->
+                                    rosterStatusMap[stu.id] ?: "PRESENT"
+                                }
+                                viewModel.markBatchAttendanceInBulk(
+                                    batchName = selectedBatchRollCall,
+                                    studentStatuses = bulkPayload
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
         }
@@ -573,13 +780,13 @@ fun AttendanceModuleScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(att.targetName, style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                            Text(att.targetName, style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                             Text(
                                 "${att.dateIso} • Batch: ${att.batchName.ifBlank { "General" }} • Via ${att.method}",
-                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textMuted)
                             )
                             if (att.remarks.isNotBlank()) {
-                                Text("Note: ${att.remarks}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                                Text("Note: ${att.remarks}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             }
                         }
                         val statusColor = when (att.status) {
@@ -602,20 +809,95 @@ fun AttendanceModuleScreen(
     }
 
     if (showMarkDialog) {
-        var name by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
-        var batch by remember { mutableStateOf(state.batches.firstOrNull()?.name ?: "Morning Batch") }
+        var selectedEntityId by remember(targetTypeFilter) {
+            mutableStateOf(
+                if (targetTypeFilter == "STUDENT") state.students.firstOrNull()?.id.orEmpty()
+                else state.staff.firstOrNull()?.id.orEmpty()
+            )
+        }
+        var name by remember(targetTypeFilter) {
+            mutableStateOf(
+                if (targetTypeFilter == "STUDENT") state.students.firstOrNull()?.fullName.orEmpty()
+                else state.staff.firstOrNull()?.fullName.orEmpty()
+            )
+        }
+        var batch by remember(targetTypeFilter) {
+            mutableStateOf(
+                if (targetTypeFilter == "STUDENT") {
+                    state.students.firstOrNull()?.batchName ?: state.batches.firstOrNull()?.name ?: "Morning Batch"
+                } else {
+                    state.staff.firstOrNull()?.department ?: "Faculty"
+                }
+            )
+        }
         var status by remember { mutableStateOf("PRESENT") }
         var remarks by remember { mutableStateOf("") }
 
         AlertDialog(
             onDismissRequest = { showMarkDialog = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Mark Attendance", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Mark Attendance", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Student / Staff Name *") }, singleLine = true)
+                    if (targetTypeFilter == "STUDENT" && state.students.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            state.students.take(15).forEach { stu ->
+                                LiquidPill(
+                                    text = stu.fullName,
+                                    selected = selectedEntityId == stu.id,
+                                    onClick = {
+                                        selectedEntityId = stu.id
+                                        name = stu.fullName
+                                        if (stu.batchName.isNotBlank()) batch = stu.batchName
+                                    }
+                                )
+                            }
+                        }
+                    } else if (targetTypeFilter == "STAFF" && state.staff.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            state.staff.take(15).forEach { stf ->
+                                LiquidPill(
+                                    text = stf.fullName,
+                                    selected = selectedEntityId == stf.id,
+                                    onClick = {
+                                        selectedEntityId = stf.id
+                                        name = stf.fullName
+                                        if (stf.department.isNotBlank()) batch = stf.department
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { newName ->
+                            name = newName
+                            selectedEntityId = if (targetTypeFilter == "STUDENT") {
+                                state.students.firstOrNull { it.fullName.equals(newName.trim(), ignoreCase = true) }?.id.orEmpty()
+                            } else {
+                                state.staff.firstOrNull { it.fullName.equals(newName.trim(), ignoreCase = true) }?.id.orEmpty()
+                            }
+                        },
+                        label = { Text("Student / Staff Name *") },
+                        singleLine = true
+                    )
                     OutlinedTextField(value = batch, onValueChange = { batch = it }, label = { Text("Batch / Department") }, singleLine = true)
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf("PRESENT", "ABSENT", "LATE", "LEAVE").forEach { st ->
                             LiquidPill(text = st, selected = status == st, onClick = { status = st })
                         }
@@ -628,14 +910,27 @@ fun AttendanceModuleScreen(
                     text = "Save Attendance",
                     enabled = name.isNotBlank(),
                     onClick = {
+                        val resolvedId = selectedEntityId.ifBlank {
+                            if (targetTypeFilter == "STUDENT") {
+                                state.students.firstOrNull {
+                                    it.fullName.equals(name.trim(), ignoreCase = true) ||
+                                        it.enrollmentNo.equals(name.trim(), ignoreCase = true)
+                                }?.id
+                            } else {
+                                state.staff.firstOrNull {
+                                    it.fullName.equals(name.trim(), ignoreCase = true) ||
+                                        it.employeeCode.equals(name.trim(), ignoreCase = true)
+                                }?.id
+                            } ?: "manual_${name.trim().lowercase().replace(Regex("[^a-z0-9]"), "_")}"
+                        }
                         viewModel.markAttendance(
                             targetType = targetTypeFilter,
-                            targetId = "id_${name.take(6).lowercase()}",
-                            targetName = name,
-                            batchName = batch,
+                            targetId = resolvedId,
+                            targetName = name.trim(),
+                            batchName = batch.trim(),
                             status = status,
                             method = "MANUAL",
-                            remarks = remarks
+                            remarks = remarks.trim()
                         )
                         showMarkDialog = false
                     }
@@ -648,6 +943,7 @@ fun AttendanceModuleScreen(
     if (canMarkAttendance && showQrScanDialog) {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
+        val isAdmin = state.activePortalRole == PortalRole.ADMIN
         val activeBatchName = state.batches.firstOrNull()?.name ?: "ADCA Morning Batch"
         val activeBatchId = state.batches.firstOrNull()?.id ?: "bat_adca01"
         val rollingToken by remember(activeBatchId) {
@@ -655,13 +951,49 @@ fun AttendanceModuleScreen(
         }.collectAsState(initial = null)
 
         var qrCodeInput by remember {
-            mutableStateOf(state.students.firstOrNull()?.enrollmentNo ?: "WCI-2026-1001")
+            mutableStateOf("")
         }
         var geofenceStatusText by remember {
-            mutableStateOf("GPS Geofence Lock: 100m Campus Radius Active")
+            mutableStateOf("Verify GPS Geofence (100m Campus Radius) before marking attendance")
         }
-        var geofenceVerified by remember { mutableStateOf(true) }
+        var geofenceVerified by remember { mutableStateOf(false) }
+        var showAdminManualPicker by remember { mutableStateOf(false) }
         var showLiveCameraScanner by remember { mutableStateOf(false) }
+
+        val runGeofenceVerification: () -> Unit = {
+            scope.launch {
+                when (val res = AntiProxyAttendanceManager.verifyStudentCampusGeofence(context)) {
+                    is GeofenceVerificationResult.VerifiedInsideCampus -> {
+                        geofenceVerified = true
+                        geofenceStatusText = "Verified Inside Campus (${res.distanceMeters.toInt()}m from Institute)"
+                    }
+                    is GeofenceVerificationResult.BlockedMockLocation -> {
+                        geofenceVerified = false
+                        geofenceStatusText = res.message
+                    }
+                    is GeofenceVerificationResult.BlockedOutsideGeofence -> {
+                        geofenceVerified = false
+                        geofenceStatusText = res.message
+                    }
+                    is GeofenceVerificationResult.LocationUnavailable -> {
+                        geofenceVerified = isAdmin
+                        geofenceStatusText = if (isAdmin) {
+                            "GPS Fix Unavailable — Admin Indoor Override Enabled"
+                        } else {
+                            "GPS Signal Required — Move near window or enable High Accuracy GPS"
+                        }
+                    }
+                }
+            }
+        }
+
+        LaunchedEffect(Unit) {
+            val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (hasFine || hasCoarse) {
+                runGeofenceVerification()
+            }
+        }
 
         val locationPermissionLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -669,26 +1001,10 @@ fun AttendanceModuleScreen(
             val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
             if (granted) {
-                scope.launch {
-                    when (val res = AntiProxyAttendanceManager.verifyStudentCampusGeofence(context)) {
-                        is GeofenceVerificationResult.VerifiedInsideCampus -> {
-                            geofenceVerified = true
-                            geofenceStatusText = "Verified Inside Campus (${res.distanceMeters.toInt()}m from Institute)"
-                        }
-                        is GeofenceVerificationResult.BlockedMockLocation -> {
-                            geofenceVerified = false
-                            geofenceStatusText = res.message
-                        }
-                        is GeofenceVerificationResult.BlockedOutsideGeofence -> {
-                            geofenceVerified = false
-                            geofenceStatusText = res.message
-                        }
-                        is GeofenceVerificationResult.LocationUnavailable -> {
-                            geofenceVerified = true
-                            geofenceStatusText = "Campus Wi-Fi / Cryptographic Rolling Token Active"
-                        }
-                    }
-                }
+                runGeofenceVerification()
+            } else {
+                geofenceVerified = false
+                geofenceStatusText = "Location permission denied — 100m campus geofence cannot be verified"
             }
         }
 
@@ -697,22 +1013,22 @@ fun AttendanceModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showQrScanDialog = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Live QR Scanner & Anti-Proxy Roll-Call", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Live QR Scanner & Anti-Proxy Roll-Call", color = WciColors.textPrimary) },
             text = {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Illuminated Optical Scanner Viewfinder + Live Rotating QR Matrix (Never a black screen)
+                    // Illuminated Optical Scanner Viewfinder + Live Rotating QR Matrix
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(
-                                color = WciColors.BgPrimaryDark,
+                                color = WciColors.primarySurface,
                                 shape = RoundedCornerShape(18.dp)
                             )
-                            .border(2.dp, WciColors.Success, RoundedCornerShape(18.dp))
+                            .border(2.dp, WciColors.successColor, RoundedCornerShape(18.dp))
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -727,18 +1043,18 @@ fun AttendanceModuleScreen(
                                 Icon(
                                     imageVector = Icons.Default.QrCodeScanner,
                                     contentDescription = "Optical QR Scanner Active",
-                                    tint = WciColors.Success
+                                    tint = WciColors.successColor
                                 )
                                 Text(
                                     text = "OPTICAL QR SCANNER READY • $activeBatchName",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontFamily = JetBrainsMono,
-                                        color = WciColors.Success,
+                                        color = WciColors.successColor,
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 )
                             }
-                            val payloadToRender = rollingToken?.rawQrPayload ?: "WCI-ATTENDANCE:$qrCodeInput"
+                            val payloadToRender = rollingToken?.rawQrPayload ?: "WCI-ATTENDANCE:${qrCodeInput.ifBlank { activeBatchId }}"
                             QrMatrixBadge(payload = payloadToRender)
                         }
                     }
@@ -746,24 +1062,24 @@ fun AttendanceModuleScreen(
                         text = "Rotates in: ${rollingToken?.expiresInSeconds ?: 15}s • Nonce: ${rollingToken?.nonceHex?.take(8) ?: "HMAC"}",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontFamily = JetBrainsMono,
-                            color = WciColors.Success,
+                            color = WciColors.successColor,
                             fontWeight = FontWeight.Bold
                         )
                     )
                     LinearProgressIndicator(
                         progress = { ((rollingToken?.expiresInSeconds ?: 15) / 15f).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth(),
-                        color = WciColors.Success,
-                        trackColor = WciColors.BgElevatedDark
+                        color = WciColors.successColor,
+                        trackColor = WciColors.elevatedSurface
                     )
                     Text(
                         text = geofenceStatusText,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = if (geofenceVerified) WciColors.Info else WciColors.Danger
+                            color = if (geofenceVerified) WciColors.infoColor else WciColors.dangerColor
                         )
                     )
                     LiquidPill(
-                        text = "Verify 100m Campus GPS Geofence",
+                        text = if (geofenceVerified) "GPS Geofence Verified ✓" else "Verify 100m Campus GPS Geofence",
                         selected = geofenceVerified,
                         icon = Icons.Default.MyLocation,
                         onClick = {
@@ -781,24 +1097,29 @@ fun AttendanceModuleScreen(
                         onClick = { showLiveCameraScanner = true },
                         modifier = Modifier.fillMaxWidth()
                     )
-                    if (state.students.isNotEmpty()) {
-                        Text(
-                            text = "Tap Student ID Card QR to Scan:",
-                            style = MaterialTheme.typography.labelSmall.copy(color = WciColors.TextPrimaryDark)
+                    if (isAdmin && state.students.isNotEmpty()) {
+                        LiquidPill(
+                            text = if (showAdminManualPicker) "Hide Admin Manual ID Picker" else "Admin Manual ID Override",
+                            selected = showAdminManualPicker,
+                            icon = Icons.Default.AdminPanelSettings,
+                            onClick = { showAdminManualPicker = !showAdminManualPicker },
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            state.students.forEach { stu ->
-                                LiquidPill(
-                                    text = "${stu.fullName} (${stu.enrollmentNo})",
-                                    selected = qrCodeInput == stu.enrollmentNo,
-                                    icon = Icons.Default.QrCode2,
-                                    onClick = { qrCodeInput = stu.enrollmentNo }
-                                )
+                        if (showAdminManualPicker) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                state.students.forEach { stu ->
+                                    LiquidPill(
+                                        text = "${stu.fullName} (${stu.enrollmentNo})",
+                                        selected = qrCodeInput == stu.enrollmentNo,
+                                        icon = Icons.Default.QrCode2,
+                                        onClick = { qrCodeInput = stu.enrollmentNo }
+                                    )
+                                }
                             }
                         }
                     }
@@ -816,13 +1137,13 @@ fun AttendanceModuleScreen(
                     enabled = geofenceVerified && qrCodeInput.isNotBlank(),
                     onClick = {
                         val matchedStudent = state.students.firstOrNull {
-                            it.enrollmentNo.equals(qrCodeInput, ignoreCase = true) ||
-                                it.fullName.contains(qrCodeInput, ignoreCase = true)
+                            it.enrollmentNo.equals(qrCodeInput.trim(), ignoreCase = true) ||
+                                it.fullName.contains(qrCodeInput.trim(), ignoreCase = true)
                         }
                         viewModel.markAttendance(
                             targetType = "STUDENT",
-                            targetId = matchedStudent?.id ?: qrCodeInput,
-                            targetName = matchedStudent?.fullName ?: qrCodeInput,
+                            targetId = matchedStudent?.id ?: qrCodeInput.trim(),
+                            targetName = matchedStudent?.fullName ?: qrCodeInput.trim(),
                             batchName = matchedStudent?.batchName ?: activeBatchName,
                             status = "PRESENT",
                             method = "QR_SCAN",
@@ -925,7 +1246,7 @@ fun FinanceAndPayrollModuleScreen(
                             1 -> "Accounts, Expenses & Petty Cash"
                             else -> if (isTeacher) "My Monthly Salary Slips" else "Monthly Staff Payroll & Payslips"
                         },
-                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark)
+                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary)
                     )
                     Text(
                         text = if (isAdmin) {
@@ -981,11 +1302,11 @@ fun FinanceAndPayrollModuleScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${fee.receiptNo} • ${fee.studentName}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                    Text("${fee.receiptNo} • ${fee.studentName}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                     Text("${fee.courseName} • ${fee.title}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
                                     Text(
                                         "Mode: ${fee.paymentMode} • Status: ${fee.status} • Due: ${formatInrPaise(fee.balancePaise)}",
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextMutedDark)
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textMuted)
                                     )
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
@@ -1030,9 +1351,9 @@ fun FinanceAndPayrollModuleScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${item.entryType} • ${item.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
-                                    Text("Category: ${item.category} • Vendor: ${item.vendorName.ifBlank { "Direct" }}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
-                                    Text("${item.dateIso} • Ref: ${item.referenceNo} • Mode: ${item.paymentMode}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextMutedDark))
+                                    Text("${item.entryType} • ${item.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
+                                    Text("Category: ${item.category} • Vendor: ${item.vendorName.ifBlank { "Direct" }}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
+                                    Text("${item.dateIso} • Ref: ${item.referenceNo} • Mode: ${item.paymentMode}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textMuted))
                                 }
                                 MoneyTicker(
                                     amountPaise = item.amountPaise,
@@ -1064,10 +1385,10 @@ fun FinanceAndPayrollModuleScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${pay.staffName} • ${pay.monthYear}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                    Text("${pay.staffName} • ${pay.monthYear}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                     Text(
                                         "Basic: ${formatInrPaise(pay.basicPaise)} | Allow: ${formatInrPaise(pay.allowancesPaise)} | Ded: ${formatInrPaise(pay.deductionsPaise)}",
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextMutedDark)
+                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textMuted)
                                     )
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
@@ -1105,8 +1426,8 @@ fun FinanceAndPayrollModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showCollectFee = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Collect Fee & Generate Receipt", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Collect Fee & Generate Receipt", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = studentName, onValueChange = { studentName = it }, label = { Text("Student Name *") }, singleLine = true)
@@ -1157,8 +1478,8 @@ fun FinanceAndPayrollModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddLedger = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Add Accounting Ledger Entry", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Add Accounting Ledger Entry", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1199,8 +1520,8 @@ fun FinanceAndPayrollModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showRunPayroll = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Process Monthly Payslip (M14)", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Process Monthly Payslip (M14)", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = staffName, onValueChange = { staffName = it }, label = { Text("Staff Full Name *") }, singleLine = true)

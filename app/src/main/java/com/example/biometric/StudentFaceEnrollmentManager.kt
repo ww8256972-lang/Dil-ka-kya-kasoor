@@ -4,12 +4,14 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import com.example.security.HardwareKeystoreVault
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.face.FaceLandmark
 import kotlinx.coroutines.tasks.await
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -21,7 +23,7 @@ import kotlin.math.sqrt
  *    (inter-ocular ratio, nose-to-eye bridge ratios, mouth-to-eye geometry, head Euler angles,
  *    and eye-open / smiling liveness probabilities).
  * 3. Compute Cosine Similarity between the enrolled admission face embedding and the live
- *    pre-exam selfie to verify identity (`similarity >= 0.86f`) and block proxy exam takers.
+ *    pre-exam selfie to verify identity (`similarity >= 0.85f`) and block proxy exam takers.
  */
 data class EnrolledFaceTemplate(
     val studentId: String,
@@ -34,6 +36,9 @@ data class EnrolledFaceTemplate(
 
 object StudentFaceEnrollmentManager {
     private const val PREFS_NAME = "wci_biometric_face_templates"
+    private const val SECURE_KEY_PREFIX = "stu_bio_face_v2_"
+    private const val MAX_HEAD_EULER_DEGREES = 22.0f
+    private const val MIN_LIVE_EYE_OPEN = 0.45f
 
     private val detectorOptions = FaceDetectorOptions.Builder()
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
@@ -42,9 +47,23 @@ object StudentFaceEnrollmentManager {
         .setMinFaceSize(0.18f)
         .build()
 
+    private fun openSecurePrefs(context: Context): android.content.SharedPreferences? {
+        return runCatching {
+            HardwareKeystoreVault.openEncryptedPreferences(context.applicationContext ?: context)
+        }.getOrNull()
+    }
+
+    private fun hasMandatoryLandmarks(face: Face): Boolean {
+        return face.getLandmark(FaceLandmark.LEFT_EYE) != null &&
+            face.getLandmark(FaceLandmark.RIGHT_EYE) != null &&
+            face.getLandmark(FaceLandmark.NOSE_BASE) != null &&
+            face.getLandmark(FaceLandmark.MOUTH_LEFT) != null &&
+            face.getLandmark(FaceLandmark.MOUTH_RIGHT) != null
+    }
+
     /**
      * Extracts a normalized facial feature vector from a base64 `data:image/jpeg;base64,...` photo URI
-     * or `Bitmap` and saves it locally tied to `studentId`.
+     * or `Bitmap` and saves it securely tied to `studentId`.
      */
     suspend fun enrollFaceFromPhotoDataUri(
         context: Context,
@@ -71,12 +90,15 @@ object StudentFaceEnrollmentManager {
             "Multiple faces (${faces.size}) detected! Only the registered student must appear in the photo."
         }
         val face = faces.first()
+        require(hasMandatoryLandmarks(face)) {
+            "Face landmarks unclear in admission portrait. Upload a well-lit front-facing photo."
+        }
         val vector = extractNormalizedGeometryVector(face)
         val template = EnrolledFaceTemplate(
             studentId = studentId,
             featureVector = vector,
-            leftEyeOpenProb = face.leftEyeOpenProbability ?: 0.9f,
-            rightEyeOpenProb = face.rightEyeOpenProbability ?: 0.9f,
+            leftEyeOpenProb = face.leftEyeOpenProbability ?: 0.85f,
+            rightEyeOpenProb = face.rightEyeOpenProbability ?: 0.85f,
             smilingProb = face.smilingProbability ?: 0.5f,
             enrolledAtEpochMs = System.currentTimeMillis()
         )
@@ -86,7 +108,7 @@ object StudentFaceEnrollmentManager {
 
     /**
      * Compares a live selfie `Bitmap` against the student's enrolled admission photo (or stored template)
-     * using Cosine Similarity and ML Kit liveness checks (eyes open, single face).
+     * using Cosine Similarity and ML Kit liveness checks (both eyes open, single face, head pose, core landmarks).
      */
     suspend fun verifyLiveSelfieAgainstStudent(
         context: Context,
@@ -107,37 +129,43 @@ object StudentFaceEnrollmentManager {
         }
 
         val liveFace = liveFaces.first()
-        val leftEye = liveFace.leftEyeOpenProbability ?: 0.85f
-        val rightEye = liveFace.rightEyeOpenProbability ?: 0.85f
-        if (leftEye < 0.25f && rightEye < 0.25f) {
-            throw SecurityException("Liveness Check Failed: Please keep both eyes open facing the camera.")
+        if (!hasMandatoryLandmarks(liveFace)) {
+            throw SecurityException("Facial landmarks unclear or covered. Remove obstructions and face the camera directly.")
+        }
+        if (abs(liveFace.headEulerAngleX) > MAX_HEAD_EULER_DEGREES ||
+            abs(liveFace.headEulerAngleY) > MAX_HEAD_EULER_DEGREES
+        ) {
+            throw SecurityException("Look straight at the camera without tilting your head (${liveFace.headEulerAngleY.toInt()}°).")
+        }
+
+        val leftEye = liveFace.leftEyeOpenProbability
+        val rightEye = liveFace.rightEyeOpenProbability
+        if (leftEye == null || rightEye == null) {
+            throw SecurityException("Liveness Check Failed: Eye visibility could not be confirmed.")
+        }
+        if (leftEye < MIN_LIVE_EYE_OPEN || rightEye < MIN_LIVE_EYE_OPEN) {
+            throw SecurityException("Liveness Check Failed: Keep both eyes clearly open facing the camera.")
         }
 
         val liveVector = extractNormalizedGeometryVector(liveFace)
 
-        // Retrieve stored template or extract on the fly from admissionPhotoDataUri
+        // Retrieve stored template or extract from Admin-enrolled admissionPhotoDataUri
         val storedTemplate = loadTemplateFromVault(context, studentId)
             ?: if (admissionPhotoDataUri.isNotBlank()) {
                 enrollFaceFromPhotoDataUri(context, studentId, admissionPhotoDataUri).getOrNull()
             } else null
 
         if (storedTemplate == null) {
-            // First-time biometric registration on exam entry
-            val newTemplate = EnrolledFaceTemplate(
-                studentId = studentId,
-                featureVector = liveVector,
-                leftEyeOpenProb = leftEye,
-                rightEyeOpenProb = rightEye,
-                smilingProb = liveFace.smilingProbability ?: 0.5f,
-                enrolledAtEpochMs = System.currentTimeMillis()
+            throw SecurityException(
+                "No enrolled student admission photo found for ID $studentId. Contact Admin to upload your admission photo before taking this proctored exam."
             )
-            saveTemplateToVault(context, newTemplate)
-            return@runCatching 0.98f
         }
 
         val similarity = computeCosineSimilarity(storedTemplate.featureVector, liveVector)
         if (similarity < similarityThreshold) {
-            throw SecurityException("Biometric Face Mismatch: Only the registered student can take this exam.")
+            throw SecurityException(
+                "Biometric Face Mismatch (${(similarity * 100).toInt()}% < ${(similarityThreshold * 100).toInt()}%): Only the registered student can take this exam."
+            )
         }
         similarity
     }
@@ -160,31 +188,34 @@ object StudentFaceEnrollmentManager {
         val box = face.boundingBox
         val w = box.width().toFloat().coerceAtLeast(1f)
         val h = box.height().toFloat().coerceAtLeast(1f)
+        val cx = box.exactCenterX()
+        val cy = box.exactCenterY()
 
-        fun normX(type: Int): Float {
-            val pt = face.getLandmark(type)?.position ?: return 0.5f
-            return ((pt.x - box.left) / w).coerceIn(0f, 1f)
+        fun relX(type: Int, neutralOffset: Float): Float {
+            val pt = face.getLandmark(type)?.position ?: return 0f
+            return (((pt.x - cx) / w) - neutralOffset).coerceIn(-0.5f, 0.5f)
         }
 
-        fun normY(type: Int): Float {
-            val pt = face.getLandmark(type)?.position ?: return 0.5f
-            return ((pt.y - box.top) / h).coerceIn(0f, 1f)
+        fun relY(type: Int, neutralOffset: Float): Float {
+            val pt = face.getLandmark(type)?.position ?: return 0f
+            return (((pt.y - cy) / h) - neutralOffset).coerceIn(-0.5f, 0.5f)
         }
 
-        val leftEyeX = normX(FaceLandmark.LEFT_EYE)
-        val leftEyeY = normY(FaceLandmark.LEFT_EYE)
-        val rightEyeX = normX(FaceLandmark.RIGHT_EYE)
-        val rightEyeY = normY(FaceLandmark.RIGHT_EYE)
-        val noseX = normX(FaceLandmark.NOSE_BASE)
-        val noseY = normY(FaceLandmark.NOSE_BASE)
-        val mouthLeftX = normX(FaceLandmark.MOUTH_LEFT)
-        val mouthRightX = normX(FaceLandmark.MOUTH_RIGHT)
-        val mouthBottomY = normY(FaceLandmark.MOUTH_BOTTOM)
-        val leftCheekX = normX(FaceLandmark.LEFT_CHEEK)
-        val rightCheekX = normX(FaceLandmark.RIGHT_CHEEK)
-        val aspectRatio = (w / h).coerceIn(0.5f, 1.5f)
+        // Zero-centered facial geometry deviations from canonical neutral face proportions
+        val leftEyeX = relX(FaceLandmark.LEFT_EYE, -0.18f)
+        val leftEyeY = relY(FaceLandmark.LEFT_EYE, -0.12f)
+        val rightEyeX = relX(FaceLandmark.RIGHT_EYE, +0.18f)
+        val rightEyeY = relY(FaceLandmark.RIGHT_EYE, -0.12f)
+        val noseX = relX(FaceLandmark.NOSE_BASE, 0.0f)
+        val noseY = relY(FaceLandmark.NOSE_BASE, +0.06f)
+        val mouthLeftX = relX(FaceLandmark.MOUTH_LEFT, -0.14f)
+        val mouthRightX = relX(FaceLandmark.MOUTH_RIGHT, +0.14f)
+        val mouthBottomY = relY(FaceLandmark.MOUTH_BOTTOM, +0.28f)
+        val leftCheekX = relX(FaceLandmark.LEFT_CHEEK, -0.26f)
+        val rightCheekX = relX(FaceLandmark.RIGHT_CHEEK, +0.26f)
+        val aspectRatio = ((w / h) - 0.85f).coerceIn(-0.4f, 0.4f)
 
-        return floatArrayOf(
+        val raw = floatArrayOf(
             leftEyeX,
             leftEyeY,
             rightEyeX,
@@ -198,17 +229,36 @@ object StudentFaceEnrollmentManager {
             rightCheekX,
             aspectRatio
         )
+        var normSq = 0f
+        for (v in raw) normSq += v * v
+        val denom = sqrt(normSq)
+        return if (denom > 1e-5f) {
+            FloatArray(raw.size) { i -> raw[i] / denom }
+        } else {
+            // Fallback for synthetic exact-neutral face so unit vector stays well-defined
+            FloatArray(raw.size) { i -> if (i == 0) 1f else 0f }
+        }
     }
 
     private fun saveTemplateToVault(context: Context, template: EnrolledFaceTemplate) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val serialized = template.featureVector.joinToString(",") { "%.4f".format(it) }
-        prefs.edit().putString("face_${template.studentId}", serialized).apply()
+        val serialized = template.featureVector.joinToString(",") { "%.4f".format(java.util.Locale.US, it) }
+        val secPrefs = openSecurePrefs(context)
+        if (secPrefs != null) {
+            secPrefs.edit().putString("$SECURE_KEY_PREFIX${template.studentId}", serialized).apply()
+        } else {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putString("face_v2_${template.studentId}", serialized).apply()
+        }
     }
 
     fun loadTemplateFromVault(context: Context, studentId: String): EnrolledFaceTemplate? {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString("face_$studentId", null) ?: return null
+        val secPrefs = openSecurePrefs(context)
+        var raw = secPrefs?.getString("$SECURE_KEY_PREFIX$studentId", null)
+        if (raw == null) {
+            val fallbackPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            raw = fallbackPrefs.getString("face_v2_$studentId", null)
+        }
+        raw ?: return null
         val floats = raw.split(",").mapNotNull { it.toFloatOrNull() }.toFloatArray()
         if (floats.size != 12) return null
         return EnrolledFaceTemplate(

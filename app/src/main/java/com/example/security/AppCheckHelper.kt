@@ -52,53 +52,80 @@ fun ensureFirebaseInitialized(context: Context) {
     }
 }
 
+enum class AppCheckDistributionStrategy {
+    DEBUG_PROVIDER,
+    RECAPTCHA_ENTERPRISE_SIDELOAD,
+    PLAY_INTEGRITY_FALLBACK
+}
+
+fun resolveReleaseAppCheckStrategy(recaptchaSiteKey: String?): AppCheckDistributionStrategy {
+    val cleanKey = recaptchaSiteKey?.trim().orEmpty()
+    val isPlaceholderKey = cleanKey.startsWith("6LeIxAcTAAAAAJcZVRqy")
+    return if (cleanKey.isNotBlank() && !isPlaceholderKey) {
+        AppCheckDistributionStrategy.RECAPTCHA_ENTERPRISE_SIDELOAD
+    } else {
+        AppCheckDistributionStrategy.DEBUG_PROVIDER
+    }
+}
+
 /**
- * Configures Firebase App Check before any UI or Firebase SDK operations.
- * Uses PlayIntegrityAppCheckProviderFactory in release builds and DebugAppCheckProviderFactory
- * in debug builds (per firebase-ai-logic-android/references/app-check.md).
+ * Configures Firebase App Check for Debug and Sideloaded Release APKs (shared via WhatsApp/Telegram).
+ * Uses DebugAppCheckProviderFactory instead of PlayIntegrityAppCheckProviderFactory so sideloaded
+ * APKs distributed outside Google Play Store are never blocked by Firebase Play Integrity checks.
  */
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
         ensureFirebaseInitialized(context)
 
-        if (BuildConfig.DEBUG) {
-            val debugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)
-            if (!debugToken.isNullOrEmpty()) {
-                val persistenceKey = FirebaseApp.getInstance().persistenceKey
-                val prefs = context.getSharedPreferences(
-                    "$DEBUG_STORE_PREFIX$persistenceKey",
-                    Context.MODE_PRIVATE
-                )
-                prefs.edit()
-                    .putString(DEBUG_SECRET_KEY, debugToken)
-                    .commit()
-                Log.d(TAG, "App Check debug secret configured successfully.")
-            } else {
-                Log.w(TAG, "No debug token found in Intent extra.")
-            }
+        val debugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)
+        if (!debugToken.isNullOrEmpty()) {
+            val persistenceKey = FirebaseApp.getInstance().persistenceKey
+            val prefs = context.getSharedPreferences(
+                "$DEBUG_STORE_PREFIX$persistenceKey",
+                Context.MODE_PRIVATE
+            )
+            prefs.edit()
+                .putString(DEBUG_SECRET_KEY, debugToken)
+                .commit()
+            Log.d(TAG, "App Check debug/sideload secret configured successfully.")
+        }
 
+        if (BuildConfig.DEBUG) {
             FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
                 DebugAppCheckProviderFactory.getInstance()
             )
-            Log.d(TAG, "DebugAppCheckProviderFactory installed.")
+            Log.d(TAG, "DebugAppCheckProviderFactory installed for debug build.")
         } else {
-            runCatching {
-                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                    PlayIntegrityAppCheckProviderFactory.getInstance()
-                )
-                Log.d(TAG, "PlayIntegrityAppCheckProviderFactory installed.")
-            }.onFailure {
-                val resId = context.resources.getIdentifier(
-                    RECAPTCHA_SITE_KEY_RES,
-                    "string",
-                    context.packageName
-                )
-                if (resId != 0) {
-                    val siteKey = context.getString(resId)
-                    if (siteKey.isNotBlank()) {
+            val resId = context.resources.getIdentifier(
+                RECAPTCHA_SITE_KEY_RES,
+                "string",
+                context.packageName
+            )
+            val siteKey = if (resId != 0) runCatching { context.getString(resId) }.getOrNull() else null
+            when (resolveReleaseAppCheckStrategy(siteKey)) {
+                AppCheckDistributionStrategy.RECAPTCHA_ENTERPRISE_SIDELOAD -> {
+                    val installedRecaptcha = runCatching {
                         FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                            RecaptchaAppCheckProviderFactory.getInstance(siteKey)
+                            RecaptchaAppCheckProviderFactory.getInstance(siteKey!!.trim())
                         )
+                        Log.d(TAG, "RecaptchaAppCheckProviderFactory installed for sideloaded release APK.")
+                        true
+                    }.getOrDefault(false)
+                    if (!installedRecaptcha) {
+                        runCatching {
+                            FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                                DebugAppCheckProviderFactory.getInstance()
+                            )
+                            Log.d(TAG, "Fallback DebugAppCheckProviderFactory installed for sideloaded APK.")
+                        }
+                    }
+                }
+                else -> {
+                    runCatching {
+                        FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                            DebugAppCheckProviderFactory.getInstance()
+                        )
+                        Log.d(TAG, "DebugAppCheckProviderFactory installed for sideloaded release APK.")
                     }
                 }
             }

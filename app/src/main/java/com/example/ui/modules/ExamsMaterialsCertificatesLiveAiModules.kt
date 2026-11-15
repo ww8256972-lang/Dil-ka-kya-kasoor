@@ -59,6 +59,9 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.selection.DisableSelection
+
 private data class DraftCustomMcq(
     val question: String,
     val optA: String,
@@ -69,34 +72,7 @@ private data class DraftCustomMcq(
 )
 
 private fun parseCustomExamQuestions(questionsJson: String, courseName: String): List<ExamQuestionItem> {
-    if (questionsJson.isBlank() || questionsJson == "[]") return emptyList()
-    return runCatching {
-        val arr = JSONArray(questionsJson)
-        val list = mutableListOf<ExamQuestionItem>()
-        for (i in 0 until arr.length()) {
-            val obj = arr.getJSONObject(i)
-            val qText = obj.optString("questionText").trim()
-            val optsArr = obj.optJSONArray("options")
-            val opts = mutableListOf<String>()
-            if (optsArr != null) {
-                for (j in 0 until optsArr.length()) {
-                    opts.add(optsArr.optString(j))
-                }
-            }
-            if (qText.isNotBlank() && opts.size >= 2) {
-                list.add(
-                    ExamQuestionItem(
-                        id = obj.optString("id", "CUSTOM_Q_${i + 1}"),
-                        category = obj.optString("category", courseName.ifBlank { "Custom Exam" }),
-                        questionText = qText,
-                        options = opts,
-                        correctOptionIndex = obj.optInt("correctOptionIndex", 0).coerceIn(0, opts.lastIndex)
-                    )
-                )
-            }
-        }
-        list
-    }.getOrDefault(emptyList())
+    return com.example.exam.PdfMcqBankParser.parseCustomExamBank(questionsJson, courseName).questions
 }
 
 private enum class ExamWindowStatus { UPCOMING, LIVE, ENDED, UNSCHEDULED }
@@ -182,6 +158,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
     var showAddMaterial by remember { mutableStateOf(false) }
     var showIssueCertificate by remember { mutableStateOf(false) }
     var activeExamAttempt by remember { mutableStateOf<ExamRecord?>(null) }
+    var inspectMasterKeyExam by remember { mutableStateOf<ExamRecord?>(null) }
     var submittedResultSummary by remember { mutableStateOf<String?>(null) }
     var resultCountdownSeconds by remember { mutableIntStateOf(300) }
 
@@ -192,7 +169,12 @@ fun ExamsMaterialsCertificatesModuleScreen(
     val currentStuId = activeStudentRecord?.id ?: state.userProfile?.linkedEntityId.orEmpty()
     val currentStuRoll = activeStudentRecord?.enrollmentNo.orEmpty()
     val currentStuName = activeStudentRecord?.fullName ?: state.userProfile?.displayName.orEmpty()
-    val nowSnapshot = System.currentTimeMillis()
+    val nowSnapshot by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            delay(10_000L)
+            value = System.currentTimeMillis()
+        }
+    }
     val evaluatedExams = remember(state.exams, nowSnapshot) {
         state.exams.map { exam ->
             exam to evaluateExamScheduleWindow(exam.scheduledDateIso, exam.durationMinutes, nowSnapshot)
@@ -247,7 +229,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         2 -> "LMS Study Material & Assignments"
                         else -> "Verifiable QR Certificates & IDs"
                     },
-                    style = MaterialTheme.typography.headlineMedium.copy(color = Color.White, fontWeight = FontWeight.ExtraBold),
+                    style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary, fontWeight = FontWeight.ExtraBold),
                     modifier = Modifier.weight(1f)
                 )
                 val showActionBtn = when (activeTab) {
@@ -293,10 +275,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             Box(
                                 modifier = Modifier
                                     .background(
-                                        Color(0xFF818CF8).copy(alpha = 0.28f),
+                                        Color(0xFF818CF8).copy(alpha = 0.24f),
                                         RoundedCornerShape(WciRadius.pill)
                                     )
-                                    .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(WciRadius.pill))
+                                    .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.pill))
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
                                 Text(
@@ -308,10 +290,11 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontFamily = JetBrainsMono,
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = if (heroEvaluation?.status == ExamWindowStatus.LIVE) WciColors.Success else Color.White
+                                        color = if (heroEvaluation?.status == ExamWindowStatus.LIVE) WciColors.successColor else WciColors.textPrimary
                                     )
                                 )
                             }
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = if (latestScheduledExam != null) {
                                     "${latestScheduledExam.scheduledDateIso.ifBlank { "Unscheduled" }} • ${latestScheduledExam.durationMinutes} Mins"
@@ -320,7 +303,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = JetBrainsMono,
-                                    color = WciColors.Success
+                                    color = WciColors.successColor
                                 )
                             )
                         }
@@ -328,7 +311,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         Text(
                             text = latestScheduledExam?.title ?: "Upcoming Exam - Scheduled by Admin",
                             style = MaterialTheme.typography.headlineMedium.copy(
-                                color = Color.White,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
@@ -344,15 +327,17 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 else ->
                                     "No active exam window is currently open. When Admin/Faculty schedules an exam date and time window, it unlocks here automatically."
                             },
-                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                         )
                         Spacer(modifier = Modifier.height(14.dp))
-                        Row(
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 val datePart = latestScheduledExam?.scheduledDateIso?.substringBefore(" ")?.takeIf { it.isNotBlank() } ?: "--"
                                 val timePart = latestScheduledExam?.scheduledDateIso?.substringAfter(" ", "")?.ifBlank { "--:--" } ?: "--:--"
                                 listOf(
@@ -362,10 +347,12 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 ).forEach { (v, u) ->
                                     Box(
                                         modifier = Modifier
+                                            .weight(1f)
                                             .clip(RoundedCornerShape(14.dp))
-                                            .background(Color(0xFF1A255C).copy(alpha = 0.90f))
-                                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                            .background(WciColors.containerSurface)
+                                            .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(14.dp))
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                             Text(
@@ -373,14 +360,14 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                                 style = MaterialTheme.typography.titleSmall.copy(
                                                     fontFamily = JetBrainsMono,
                                                     fontWeight = FontWeight.ExtraBold,
-                                                    color = Color(0xFF00E5FF)
+                                                    color = WciColors.infoColor
                                                 )
                                             )
                                             Text(
                                                 text = u,
                                                 style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontSize = 10.sp,
-                                                    color = WciColors.TextSecondaryDark
+                                                    fontSize = 12.sp,
+                                                    color = WciColors.textSecondary
                                                 )
                                             )
                                         }
@@ -390,7 +377,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             if (canManageAssessments) {
                                 ShimmerButton(
                                     text = "+ Schedule Exam",
-                                    onClick = { showCreateExam = true }
+                                    onClick = { showCreateExam = true },
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                             } else if (state.activePortalRole == PortalRole.STUDENT && latestScheduledExam != null) {
                                 when {
@@ -399,7 +387,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             text = "Submitted ✓ • View Marks",
                                             selected = false,
                                             icon = Icons.Default.Verified,
-                                            onClick = { activeTab = 1 }
+                                            onClick = { activeTab = 1 },
+                                            modifier = Modifier.fillMaxWidth()
                                         )
                                     }
                                     heroEvaluation?.status == ExamWindowStatus.LIVE -> {
@@ -407,7 +396,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             text = "Start Exam Now",
                                             selected = true,
                                             icon = Icons.Default.PlayArrow,
-                                            onClick = { activeExamAttempt = latestScheduledExam }
+                                            onClick = { activeExamAttempt = latestScheduledExam },
+                                            modifier = Modifier.fillMaxWidth()
                                         )
                                     }
                                     heroEvaluation?.status == ExamWindowStatus.UPCOMING -> {
@@ -417,7 +407,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             icon = Icons.Default.Lock,
                                             onClick = {
                                                 viewModel.postMessage("Upcoming Exam opens at ${latestScheduledExam.scheduledDateIso}")
-                                            }
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
                                         )
                                     }
                                     else -> {
@@ -427,7 +418,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             icon = Icons.Default.LockClock,
                                             onClick = {
                                                 viewModel.postMessage("This exam window has closed.")
-                                            }
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
                                         )
                                     }
                                 }
@@ -448,9 +440,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
                 } else {
                     items(evaluatedExams, key = { it.first.id }) { (exam, eval) ->
-                        val customQCount = remember(exam.questionsJson) {
-                            parseCustomExamQuestions(exam.questionsJson, exam.courseName).size
+                        val parsedBank = remember(exam.questionsJson, exam.courseName) {
+                            com.example.exam.PdfMcqBankParser.parseCustomExamBank(exam.questionsJson, exam.courseName)
                         }
+                        val customQCount = parsedBank.questions.size
                         val alreadyAttempted = if (state.activePortalRole == PortalRole.STUDENT) {
                             hasStudentAlreadyAttemptedExam(
                                 exam = exam,
@@ -489,8 +482,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                                 style = MaterialTheme.typography.bodySmall.copy(
                                                     fontFamily = JetBrainsMono,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF00E5FF),
-                                                    fontSize = 10.sp
+                                                    color = WciColors.infoColor,
+                                                    fontSize = 12.sp
                                                 )
                                             )
                                         }
@@ -498,7 +491,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             text = "${exam.scheduledDateIso.ifBlank { "Unscheduled" }} • ${exam.durationMinutes} Mins",
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 fontFamily = JetBrainsMono,
-                                                color = if (eval.status == ExamWindowStatus.LIVE) WciColors.Success else WciColors.Warning
+                                                color = if (eval.status == ExamWindowStatus.LIVE) WciColors.successColor else WciColors.warningColor
                                             )
                                         )
                                     }
@@ -506,30 +499,47 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     Text(
                                         text = exam.title,
                                         style = MaterialTheme.typography.titleMedium.copy(
-                                            color = Color.White,
+                                            color = WciColors.textPrimary,
                                             fontWeight = FontWeight.ExtraBold
                                         )
                                     )
                                     Text(
                                         text = "${exam.courseName} • Batch: ${exam.batchName}",
-                                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info)
+                                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.infoColor)
                                     )
                                     Text(
-                                        text = "Max Marks: ${exam.totalMarks} • Passing: ${exam.passingMarks} • ${if (customQCount > 0) "$customQCount Custom Admin MCQs" else "50 Pool MCQs"}",
+                                        text = if (customQCount > 0) {
+                                            "Max Marks: ${exam.totalMarks} • Pool: $customQCount Qs (${parsedBank.perStudentCount}/Student • Anti-Cheat 1 Q/Screen)"
+                                        } else {
+                                            "Max Marks: ${exam.totalMarks} • Passing: ${exam.passingMarks} • 50 Unique Pool MCQs (1 Q/Screen)"
+                                        },
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = JetBrainsMono,
-                                            color = WciColors.TextSecondaryDark
+                                            color = WciColors.textSecondary
                                         )
                                     )
                                 }
                                 when {
                                     canManageAssessments -> {
-                                        LiquidPill(
-                                            text = "Preview CBT",
-                                            selected = true,
-                                            icon = Icons.Default.PlayArrow,
-                                            onClick = { activeExamAttempt = exam }
-                                        )
+                                        Column(
+                                            horizontalAlignment = Alignment.End,
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            LiquidPill(
+                                                text = "Preview CBT",
+                                                selected = true,
+                                                icon = Icons.Default.PlayArrow,
+                                                onClick = { activeExamAttempt = exam }
+                                            )
+                                            if (customQCount > 0) {
+                                                LiquidPill(
+                                                    text = "Serial Key ($customQCount)",
+                                                    selected = false,
+                                                    icon = Icons.Default.Verified,
+                                                    onClick = { inspectMasterKeyExam = exam }
+                                                )
+                                            }
+                                        }
                                     }
                                     state.activePortalRole == PortalRole.STUDENT -> {
                                         when {
@@ -635,8 +645,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = JetBrainsMono,
                                             fontWeight = FontWeight.ExtraBold,
-                                            color = Color(0xFF00E5FF),
-                                            fontSize = 11.sp
+                                            color = WciColors.infoColor,
+                                            fontSize = 12.sp
                                         )
                                     )
                                 }
@@ -657,17 +667,17 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
                                                 color = Color.White,
-                                                fontSize = 11.sp
+                                                fontSize = 12.sp
                                             )
                                         )
                                     }
                                     Box(
                                         modifier = Modifier
                                             .background(
-                                                Color(0xFF14F195).copy(alpha = 0.22f),
+                                                WciColors.successColor.copy(alpha = 0.18f),
                                                 RoundedCornerShape(WciRadius.pill)
                                             )
-                                            .border(1.dp, Color(0xFF14F195), RoundedCornerShape(WciRadius.pill))
+                                            .border(1.dp, WciColors.successColor, RoundedCornerShape(WciRadius.pill))
                                             .padding(horizontal = 10.dp, vertical = 3.dp)
                                     ) {
                                         Text(
@@ -675,8 +685,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
-                                                color = Color(0xFF14F195),
-                                                fontSize = 11.sp
+                                                color = WciColors.successColor,
+                                                fontSize = 12.sp
                                             )
                                         )
                                     }
@@ -695,7 +705,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     Text(
                                         text = res.studentName,
                                         style = MaterialTheme.typography.headlineMedium.copy(
-                                            color = Color.White,
+                                            color = WciColors.textPrimary,
                                             fontWeight = FontWeight.ExtraBold
                                         )
                                     )
@@ -703,7 +713,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     Text(
                                         text = res.examTitle,
                                         style = MaterialTheme.typography.titleSmall.copy(
-                                            color = Color(0xFF00E5FF),
+                                            color = WciColors.infoColor,
                                             fontWeight = FontWeight.SemiBold
                                         )
                                     )
@@ -711,7 +721,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     Text(
                                         text = "${state.preferences.instituteName} • Session ${state.preferences.academicSession}",
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            color = WciColors.TextSecondaryDark
+                                            color = WciColors.textSecondary
                                         )
                                     )
                                 }
@@ -735,16 +745,16 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(WciRadius.md))
-                                        .background(Color(0xFF121A45).copy(alpha = 0.85f))
-                                        .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(WciRadius.md))
+                                        .background(WciColors.containerSurface)
+                                        .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.md))
                                         .padding(10.dp)
                                 ) {
                                     Column {
                                         Text(
                                             text = "MARKS OBTAINED",
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                fontSize = 10.sp,
-                                                color = WciColors.TextMutedDark
+                                                fontSize = 12.sp,
+                                                color = WciColors.textMuted
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
@@ -753,7 +763,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             style = MaterialTheme.typography.titleMedium.copy(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
-                                                color = Color.White
+                                                color = WciColors.textPrimary
                                             )
                                         )
                                     }
@@ -762,16 +772,16 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(WciRadius.md))
-                                        .background(Color(0xFF121A45).copy(alpha = 0.85f))
-                                        .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(WciRadius.md))
+                                        .background(WciColors.containerSurface)
+                                        .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.md))
                                         .padding(10.dp)
                                 ) {
                                     Column {
                                         Text(
                                             text = "PERCENTAGE",
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                fontSize = 10.sp,
-                                                color = WciColors.TextMutedDark
+                                                fontSize = 12.sp,
+                                                color = WciColors.textMuted
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
@@ -780,7 +790,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                             style = MaterialTheme.typography.titleMedium.copy(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
-                                                color = Color(0xFF00E5FF)
+                                                color = WciColors.infoColor
                                             )
                                         )
                                     }
@@ -789,7 +799,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .clip(RoundedCornerShape(WciRadius.md))
-                                        .background(Color(0xFF121A45).copy(alpha = 0.85f))
+                                        .background(WciColors.containerSurface)
                                         .border(1.dp, statusColor.copy(alpha = 0.5f), RoundedCornerShape(WciRadius.md))
                                         .padding(10.dp)
                                 ) {
@@ -797,8 +807,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         Text(
                                             text = "VERDICT",
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                fontSize = 10.sp,
-                                                color = WciColors.TextMutedDark
+                                                fontSize = 12.sp,
+                                                color = WciColors.textMuted
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
@@ -825,7 +835,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 Text(
                                     text = res.remarks.ifBlank { "Verified by Controller of Examinations" },
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = WciColors.TextSecondaryDark
+                                        color = WciColors.textSecondary
                                     ),
                                     modifier = Modifier.weight(1f)
                                 )
@@ -865,10 +875,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
                 } else {
                     items(state.materials, key = { it.id }) { mat ->
                         GlassCard(modifier = Modifier.fillMaxWidth()) {
-                            Text("${mat.materialType} • ${mat.title}", style = MaterialTheme.typography.titleMedium.copy(color = Color.White, fontWeight = FontWeight.Bold))
-                            Text("${mat.courseName} • Batch: ${mat.batchName} • Due: ${mat.dueDateIso}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
+                            Text("${mat.materialType} • ${mat.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary, fontWeight = FontWeight.Bold))
+                            Text("${mat.courseName} • Batch: ${mat.batchName} • Due: ${mat.dueDateIso}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.infoColor))
                             Spacer(modifier = Modifier.height(4.dp))
-                            Text(mat.contentUrlOrBody, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text(mat.contentUrlOrBody, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(8.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -985,6 +995,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
     }
 
     if (showCreateExam) {
+        val coroutineScope = rememberCoroutineScope()
         var title by remember { mutableStateOf("") }
         var course by remember { mutableStateOf(state.courses.firstOrNull()?.title ?: "ADCA") }
         var batch by remember { mutableStateOf(state.batches.firstOrNull()?.name ?: "Morning Batch") }
@@ -994,6 +1005,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
         var duration by remember { mutableStateOf("45") }
         var totalMarks by remember { mutableStateOf("100") }
         var passMarks by remember { mutableStateOf("40") }
+        var questionsPerStudentStr by remember { mutableStateOf("4") }
+        var uploadedPdfName by remember { mutableStateOf("") }
+        var pdfExtractStatus by remember { mutableStateOf("") }
+        var isParsingPdf by remember { mutableStateOf(false) }
 
         var activeQuestionTab by remember { mutableIntStateOf(0) }
         var customQuestions by remember {
@@ -1035,17 +1050,94 @@ fun ExamsMaterialsCertificatesModuleScreen(
             )
         }
 
-        val currentDraft = customQuestions[activeQuestionTab]
+        val pdfMcqPickerLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { uri: Uri? ->
+            if (uri != null) {
+                var displayName = uri.lastPathSegment ?: "Question_Bank.pdf"
+                runCatching {
+                    context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (cursor.moveToFirst() && nameIdx >= 0) {
+                            displayName = cursor.getString(nameIdx) ?: displayName
+                        }
+                    }
+                }
+                uploadedPdfName = displayName
+                if (title.isBlank()) {
+                    title = displayName.substringBeforeLast(".").take(80)
+                }
+                isParsingPdf = true
+                pdfExtractStatus = "Extracting serial-wise Questions, Options & Real Answers from $displayName..."
+                coroutineScope.launch {
+                    val result = com.example.exam.PdfMcqBankParser.extractMcqsFromDocumentUri(
+                        context = context,
+                        uri = uri,
+                        defaultCategory = course
+                    )
+                    isParsingPdf = false
+                    if (result.questions.isNotEmpty()) {
+                        customQuestions = result.questions.map { q ->
+                            DraftCustomMcq(
+                                question = q.questionText,
+                                optA = q.options.getOrElse(0) { "Option A" },
+                                optB = q.options.getOrElse(1) { "Option B" },
+                                optC = q.options.getOrElse(2) { "Option C" },
+                                optD = q.options.getOrElse(3) { "Option D" },
+                                correctIndex = q.correctOptionIndex.coerceIn(0, 3)
+                            )
+                        }
+                        activeQuestionTab = 0
+                        questionsPerStudentStr = result.questionsPerStudent.toString()
+                        pdfExtractStatus = "✓ Extracted ${result.questions.size} serial questions (${result.extractionMethod}) with Real Answers! Each student gets ${result.questionsPerStudent} unique questions."
+                        viewModel.postMessage("PDF Loaded: ${result.questions.size} serial questions extracted!")
+                    } else {
+                        pdfExtractStatus = result.warnings.firstOrNull()
+                            ?: "Could not detect MCQs in $displayName."
+                    }
+                }
+            }
+        }
+
+        val safeTabIdx = activeQuestionTab.coerceIn(0, (customQuestions.size - 1).coerceAtLeast(0))
+        val currentDraft = customQuestions.getOrNull(safeTabIdx) ?: DraftCustomMcq("", "", "", "", "", 0)
 
         AlertDialog(
             onDismissRequest = { showCreateExam = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Schedule Online CBT Exam (24h Window)", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Upload Q&A PDF / Schedule Proctored Exam", color = WciColors.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    LiquidPill(
+                        text = when {
+                            isParsingPdf -> "Reading PDF Questions & Real Answers..."
+                            uploadedPdfName.isNotBlank() -> "PDF Uploaded: $uploadedPdfName (${customQuestions.size} Qs) ✓"
+                            else -> "Upload Option-Wise Q&A PDF (Auto Serial Extract)"
+                        },
+                        selected = uploadedPdfName.isNotBlank(),
+                        icon = Icons.Default.PictureAsPdf,
+                        onClick = {
+                            if (!isParsingPdf) {
+                                pdfMcqPickerLauncher.launch(arrayOf("application/pdf", "text/plain"))
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("upload_qa_pdf_button")
+                    )
+                    if (isParsingPdf) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = WciColors.Info)
+                    }
+                    if (pdfExtractStatus.isNotBlank()) {
+                        Text(
+                            text = pdfExtractStatus,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = if (pdfExtractStatus.startsWith("✓")) WciColors.Success else WciColors.Warning
+                            )
+                        )
+                    }
+
                     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Exam Title *") }, singleLine = true)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = course, onValueChange = { course = it }, label = { Text("Course *") }, modifier = Modifier.weight(1f), singleLine = true)
@@ -1079,22 +1171,108 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         OutlinedTextField(value = totalMarks, onValueChange = { totalMarks = it }, label = { Text("Total Marks") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         OutlinedTextField(value = passMarks, onValueChange = { passMarks = it }, label = { Text("Pass Marks") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
-
-                    HorizontalDivider(color = WciColors.GlassBorderSubtle)
-                    Text(
-                        text = "Write 4 Exam Questions (4 Options Each + Select 1 Real Answer):",
-                        style = MaterialTheme.typography.titleSmall.copy(color = WciColors.Info, fontWeight = FontWeight.ExtraBold)
+                    OutlinedTextField(
+                        value = questionsPerStudentStr,
+                        onValueChange = { questionsPerStudentStr = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Unique Qs Per Student (Pool: ${customQuestions.size} • 1 Q/Screen)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
+
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Serial Questions (${customQuestions.size}) • Real Answers Verified:",
+                            style = MaterialTheme.typography.titleSmall.copy(color = WciColors.Info, fontWeight = FontWeight.ExtraBold),
+                            modifier = Modifier.weight(1f)
+                        )
+                        LiquidPill(
+                            text = "+ Add Q",
+                            selected = false,
+                            onClick = {
+                                customQuestions = customQuestions + DraftCustomMcq(
+                                    question = "",
+                                    optA = "",
+                                    optB = "",
+                                    optC = "",
+                                    optD = "",
+                                    correctIndex = 0
+                                )
+                                activeQuestionTab = customQuestions.lastIndex
+                                questionsPerStudentStr = customQuestions.size.toString()
+                            }
+                        )
+                    }
+
+                    // Immediate Serial-Wise Question + Real Answer Preview List
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 170.dp)
+                            .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                            .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(10.dp))
+                            .verticalScroll(rememberScrollState())
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        customQuestions.forEachIndexed { idx, q ->
+                            val ansLetter = listOf("A", "B", "C", "D").getOrElse(q.correctIndex) { "A" }
+                            val ansText = listOf(q.optA, q.optB, q.optC, q.optD).getOrElse(q.correctIndex) { "" }
+                            val isSelected = idx == safeTabIdx
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0xFF1E293B) else Color.Transparent)
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) WciColors.Info else WciColors.glassBorderSubtleColor.copy(alpha = 0.4f),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { activeQuestionTab = idx }
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = "Q.${idx + 1}: ${q.question.ifBlank { "(Tap to edit question)" }}",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        color = WciColors.textPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 2
+                                )
+                                Text(
+                                    text = "A) ${q.optA}  •  B) ${q.optB}  •  C) ${q.optC}  •  D) ${q.optD}",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textSecondary),
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "✓ Real Answer: $ansLetter ($ansText)",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = WciColors.Success,
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        (0 until 4).forEach { qIdx ->
+                        customQuestions.indices.forEach { qIdx ->
                             LiquidPill(
                                 text = "Q${qIdx + 1}",
-                                selected = activeQuestionTab == qIdx,
-                                onClick = { activeQuestionTab = qIdx },
-                                modifier = Modifier.weight(1f)
+                                selected = safeTabIdx == qIdx,
+                                onClick = { activeQuestionTab = qIdx }
                             )
                         }
                     }
@@ -1103,10 +1281,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         value = currentDraft.question,
                         onValueChange = { newText ->
                             customQuestions = customQuestions.toMutableList().also {
-                                it[activeQuestionTab] = currentDraft.copy(question = newText)
+                                it[safeTabIdx] = currentDraft.copy(question = newText)
                             }
                         },
-                        label = { Text("Question ${activeQuestionTab + 1} Text *") },
+                        label = { Text("Question ${safeTabIdx + 1} Text *") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1114,7 +1292,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             value = currentDraft.optA,
                             onValueChange = { v ->
                                 customQuestions = customQuestions.toMutableList().also {
-                                    it[activeQuestionTab] = currentDraft.copy(optA = v)
+                                    it[safeTabIdx] = currentDraft.copy(optA = v)
                                 }
                             },
                             label = { Text("Option A") },
@@ -1125,7 +1303,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             value = currentDraft.optB,
                             onValueChange = { v ->
                                 customQuestions = customQuestions.toMutableList().also {
-                                    it[activeQuestionTab] = currentDraft.copy(optB = v)
+                                    it[safeTabIdx] = currentDraft.copy(optB = v)
                                 }
                             },
                             label = { Text("Option B") },
@@ -1138,7 +1316,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             value = currentDraft.optC,
                             onValueChange = { v ->
                                 customQuestions = customQuestions.toMutableList().also {
-                                    it[activeQuestionTab] = currentDraft.copy(optC = v)
+                                    it[safeTabIdx] = currentDraft.copy(optC = v)
                                 }
                             },
                             label = { Text("Option C") },
@@ -1149,7 +1327,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             value = currentDraft.optD,
                             onValueChange = { v ->
                                 customQuestions = customQuestions.toMutableList().also {
-                                    it[activeQuestionTab] = currentDraft.copy(optD = v)
+                                    it[safeTabIdx] = currentDraft.copy(optD = v)
                                 }
                             },
                             label = { Text("Option D") },
@@ -1159,7 +1337,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
 
                     Text(
-                        text = "Select 1 Real Correct Option for Question ${activeQuestionTab + 1}:",
+                        text = "Real Correct Answer for Question ${safeTabIdx + 1} (Hidden from Students):",
                         style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Success)
                     )
                     Row(
@@ -1172,7 +1350,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 selected = currentDraft.correctIndex == idx,
                                 onClick = {
                                     customQuestions = customQuestions.toMutableList().also {
-                                        it[activeQuestionTab] = currentDraft.copy(correctIndex = idx)
+                                        it[safeTabIdx] = currentDraft.copy(correctIndex = idx)
                                     }
                                 },
                                 modifier = Modifier.weight(1f)
@@ -1183,26 +1361,30 @@ fun ExamsMaterialsCertificatesModuleScreen(
             },
             confirmButton = {
                 ShimmerButton(
-                    text = "Publish Exam to Portal",
-                    enabled = title.isNotBlank(),
+                    text = "Publish Exam (${customQuestions.count { it.question.isNotBlank() }} Qs)",
+                    enabled = title.isNotBlank() && !isParsingPdf,
                     onClick = {
-                        val jsonArr = JSONArray()
-                        customQuestions.forEachIndexed { idx, q ->
-                            if (q.question.isNotBlank()) {
-                                val obj = JSONObject()
-                                obj.put("id", "CUSTOM_Q_${idx + 1}")
-                                obj.put("category", course)
-                                obj.put("questionText", q.question.trim())
-                                val opts = JSONArray()
-                                opts.put(q.optA.ifBlank { "Option A" })
-                                opts.put(q.optB.ifBlank { "Option B" })
-                                opts.put(q.optC.ifBlank { "Option C" })
-                                opts.put(q.optD.ifBlank { "Option D" })
-                                obj.put("options", opts)
-                                obj.put("correctOptionIndex", q.correctIndex)
-                                jsonArr.put(obj)
-                            }
+                        val validItems = customQuestions.mapIndexedNotNull { idx, q ->
+                            if (q.question.isBlank()) return@mapIndexedNotNull null
+                            ExamQuestionItem(
+                                id = "PDF_Q%03d".format(idx + 1),
+                                category = course.ifBlank { "Institute Exam" },
+                                questionText = q.question.trim(),
+                                options = listOf(
+                                    q.optA.ifBlank { "Option A" }.trim(),
+                                    q.optB.ifBlank { "Option B" }.trim(),
+                                    q.optC.ifBlank { "Option C" }.trim(),
+                                    q.optD.ifBlank { "Option D" }.trim()
+                                ),
+                                correctOptionIndex = q.correctIndex.coerceIn(0, 3)
+                            )
                         }
+                        val perStudent = (questionsPerStudentStr.toIntOrNull() ?: validItems.size)
+                            .coerceIn(1, validItems.size.coerceAtLeast(1))
+                        val serializedJson = com.example.exam.PdfMcqBankParser.serializeCustomExamBankJson(
+                            questions = validItems,
+                            questionsPerStudent = perStudent
+                        )
                         val formattedSchedule = "${examDateIso.trim()} ${examTime24h.trim()}-${examEndTime24h.trim()}".take(30)
                         viewModel.createExam(
                             title = title,
@@ -1213,13 +1395,88 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             totalMarks = totalMarks.toIntOrNull() ?: 100,
                             passingMarks = passMarks.toIntOrNull() ?: 40,
                             scheduledDateIso = formattedSchedule,
-                            questionsJson = jsonArr.toString()
+                            questionsJson = serializedJson
                         )
                         showCreateExam = false
                     }
                 )
             },
             dismissButton = { TextButton(onClick = { showCreateExam = false }) { Text("Cancel") } }
+        )
+    }
+
+    inspectMasterKeyExam?.let { masterExam ->
+        val masterBank = remember(masterExam.questionsJson, masterExam.courseName) {
+            com.example.exam.PdfMcqBankParser.parseCustomExamBank(masterExam.questionsJson, masterExam.courseName)
+        }
+        AlertDialog(
+            onDismissRequest = { inspectMasterKeyExam = null },
+            containerColor = WciColors.elevatedSurface,
+            title = {
+                Column {
+                    Text(
+                        text = "Serial Question Bank & Real Answer Key",
+                        color = WciColors.textPrimary,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
+                    )
+                    Text(
+                        text = "${masterExam.title} • ${masterBank.questions.size} Total Qs (${masterBank.perStudentCount} unique/student)",
+                        style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Info)
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    masterBank.questions.forEachIndexed { idx, q ->
+                        val ansLetter = listOf("A", "B", "C", "D").getOrElse(q.correctOptionIndex) { "A" }
+                        val ansVal = q.options.getOrElse(q.correctOptionIndex) { "" }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                                .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(10.dp))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                text = "Q.${idx + 1} (${q.id}): ${q.questionText}",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = WciColors.textPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                            q.options.forEachIndexed { optIdx, opt ->
+                                val letter = listOf("A", "B", "C", "D").getOrElse(optIdx) { "${optIdx + 1}" }
+                                Text(
+                                    text = if (optIdx == q.correctOptionIndex) "✓ $letter) $opt" else "   $letter) $opt",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = if (optIdx == q.correctOptionIndex) WciColors.Success else WciColors.textSecondary,
+                                        fontWeight = if (optIdx == q.correctOptionIndex) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                )
+                            }
+                            Text(
+                                text = "Real Answer: Option $ansLetter ($ansVal)",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = JetBrainsMono,
+                                    color = WciColors.Success
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                ShimmerButton(
+                    text = "Close",
+                    onClick = { inspectMasterKeyExam = null }
+                )
+            }
         )
     }
 
@@ -1232,8 +1489,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddResult = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Record Exam Marks", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Record Exam Marks", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = examTitle, onValueChange = { examTitle = it }, label = { Text("Exam Title *") }, singleLine = true)
@@ -1306,8 +1563,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddMaterial = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Upload Study Material / Attach File", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Upload Study Material / Attach File", color = WciColors.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -1356,8 +1613,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showIssueCertificate = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Issue Verifiable QR Certificate", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Issue Verifiable QR Certificate", color = WciColors.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -1423,7 +1680,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
     activeExamAttempt?.let { exam ->
         val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-        val isAdminPreview = state.activePortalRole == PortalRole.ADMIN
+        val isAdminPreview = state.activePortalRole == PortalRole.ADMIN || state.activePortalRole == PortalRole.TEACHER
         val ownerUid = state.userProfile?.uid ?: "stu_cbt"
         val studentId = state.userProfile?.linkedEntityId?.ifBlank { state.userProfile.uid } ?: "stu_cbt"
         val studentName = state.userProfile?.displayName ?: "CBT Candidate"
@@ -1444,15 +1701,13 @@ fun ExamsMaterialsCertificatesModuleScreen(
         val faceGateStatus by faceAuthViewModel.status.collectAsState()
 
         val shuffledQuestions = remember(exam.id, exam.questionsJson, studentId, proctoredState.questions) {
-            val customParsed = parseCustomExamQuestions(exam.questionsJson, exam.courseName)
-            when {
-                customParsed.isNotEmpty() -> customParsed
-                proctoredState.questions.isNotEmpty() -> proctoredState.questions
-                else -> QuestionBank.selectAndShuffleQuestionsForStudent(
+            if (proctoredState.questions.isNotEmpty()) {
+                proctoredState.questions
+            } else {
+                examRepo.generateShuffledPaperForExam(
                     studentId = studentId,
-                    examId = exam.id,
-                    courseFilter = exam.courseName,
-                    targetCount = 50
+                    exam = exam,
+                    fallbackQuestionCount = 50
                 )
             }
         }
@@ -1595,12 +1850,12 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { activeExamAttempt = null },
-            containerColor = WciColors.BgElevatedDark,
+            containerColor = WciColors.elevatedSurface,
             title = {
                 Column {
                     Text(
                         text = if (isAdminPreview) "Admin Preview CBT • ${exam.title}" else "Proctored CBT • ${exam.title}",
-                        color = WciColors.TextPrimaryDark,
+                        color = WciColors.textPrimary,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                     )
                     Text(
@@ -1648,16 +1903,8 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 runCatching {
                                     selfieCameraLauncher.launch(null)
                                 }.onFailure {
-                                    val photoUri = studentRecord?.photoUri.orEmpty()
-                                    faceAuthViewModel.verifyStudentFaceForExam(
-                                        context = context,
-                                        studentId = studentId,
-                                        admissionPhotoDataUri = photoUri,
-                                        liveSelfieBitmap = null,
-                                        onVerifiedSuccess = {
-                                            faceVerified = true
-                                        }
-                                    )
+                                    faceStatusText = "Front camera unavailable on this device. Proctored CBT requires a working camera."
+                                    viewModel.postMessage(faceStatusText)
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
@@ -1669,34 +1916,46 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.Danger)
                         )
                     } else if (currentQuestion != null) {
-                        Text(
-                            text = "Question ${currentIdx + 1} of ${shuffledQuestions.size} (${currentQuestion.category}) • Answered: ${selectedAnswers.size}/${shuffledQuestions.size}",
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontFamily = JetBrainsMono,
-                                color = WciColors.Info
-                            )
-                        )
-                        Text(
-                            text = currentQuestion.questionText,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = WciColors.TextPrimaryDark
-                            )
-                        )
-                        val chosenIdx = selectedAnswers[currentQuestion.id] ?: -1
-                        currentQuestion.options.forEachIndexed { idx, opt ->
-                            val prefix = listOf("A", "B", "C", "D").getOrElse(idx) { "${idx + 1}" }
-                            LiquidPill(
-                                text = "$prefix) $opt",
-                                selected = chosenIdx == idx,
-                                onClick = {
-                                    proctoredExamViewModel.selectOption(currentQuestion.id, idx)
-                                    selectedAnswers = selectedAnswers.toMutableMap().apply {
-                                        put(currentQuestion.id, idx)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                        // Strict 1-Question-Per-Screen Anti-Cheat Focus View (Copy/Select Disabled)
+                        DisableSelection {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "1 Question/Screen • Unique Student Set • Anti-Cheat Copy/AI Locked",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = WciColors.Warning,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                                Text(
+                                    text = "Question ${currentIdx + 1} of ${shuffledQuestions.size} (${currentQuestion.category}) • Answered: ${selectedAnswers.size}/${shuffledQuestions.size}",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontFamily = JetBrainsMono,
+                                        color = WciColors.Info
+                                    )
+                                )
+                                Text(
+                                    text = currentQuestion.questionText,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = WciColors.textPrimary
+                                    )
+                                )
+                                val chosenIdx = selectedAnswers[currentQuestion.id] ?: -1
+                                currentQuestion.options.forEachIndexed { idx, opt ->
+                                    val prefix = listOf("A", "B", "C", "D").getOrElse(idx) { "${idx + 1}" }
+                                    LiquidPill(
+                                        text = "$prefix) $opt",
+                                        selected = chosenIdx == idx,
+                                        onClick = {
+                                            proctoredExamViewModel.selectOption(currentQuestion.id, idx)
+                                            selectedAnswers = selectedAnswers.toMutableMap().apply {
+                                                put(currentQuestion.id, idx)
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1783,7 +2042,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
         val cdSec = resultCountdownSeconds % 60
         AlertDialog(
             onDismissRequest = { submittedResultSummary = null },
-            containerColor = WciColors.BgElevatedDark,
+            containerColor = WciColors.elevatedSurface,
             title = {
                 Text(
                     "Exam Submitted • Result Publication Timer",
@@ -1796,7 +2055,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     Text(
                         text = summary,
                         style = MaterialTheme.typography.bodyLarge.copy(
-                            color = WciColors.TextPrimaryDark,
+                            color = WciColors.textPrimary,
                             fontWeight = FontWeight.ExtraBold
                         )
                     )
@@ -1810,7 +2069,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     )
                     Text(
                         text = "Your answers have been graded and synced to Cloud Firestore. Your official graded marksheet with Rank & PDF download is ready.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                     )
                 }
             },
@@ -1935,7 +2194,7 @@ fun InboxAndLiveClassesModuleScreen(
                                             fontFamily = JetBrainsMono,
                                             fontWeight = FontWeight.ExtraBold,
                                             color = prioColor,
-                                            fontSize = 10.sp
+                                            fontSize = 12.sp
                                         )
                                     )
                                 }
@@ -1943,8 +2202,8 @@ fun InboxAndLiveClassesModuleScreen(
                                     text = "AUDIENCE: ${ann.targetAudience}",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFamily = JetBrainsMono,
-                                        color = WciColors.TextMutedDark,
-                                        fontSize = 11.sp
+                                        color = WciColors.textMuted,
+                                        fontSize = 12.sp
                                     )
                                 )
                             }
@@ -1960,14 +2219,14 @@ fun InboxAndLiveClassesModuleScreen(
                         Text(
                             text = ann.title,
                             style = MaterialTheme.typography.titleMedium.copy(
-                                color = Color.White,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = ann.body,
-                            style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextSecondaryDark)
+                            style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textSecondary)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
@@ -2038,8 +2297,22 @@ fun InboxAndLiveClassesModuleScreen(
                             isHostRole = canBroadcastOrHost
                         )
                     } else {
+                        val uploadedLectureUrl = remember(state.materials, activeSession) {
+                            state.materials.firstOrNull { mat ->
+                                val body = mat.contentUrlOrBody.trim()
+                                val looksLikeVideoUrl = (body.startsWith("http://", ignoreCase = true) ||
+                                    body.startsWith("https://", ignoreCase = true)) &&
+                                    (mat.materialType.equals("VIDEO", ignoreCase = true) ||
+                                        body.contains(".mp4", ignoreCase = true) ||
+                                        body.contains(".m3u8", ignoreCase = true))
+                                val batchMatches = activeSession == null ||
+                                    mat.batchName.equals(activeSession.batchName, ignoreCase = true) ||
+                                    mat.batchName.isBlank()
+                                looksLikeVideoUrl && batchMatches
+                            }?.contentUrlOrBody?.trim()
+                        }
                         ExoPlayerHdLecturePlayer(
-                            streamUrl = ExoPlayerLectureManager.DEFAULT_SAMPLE_LECTURE_STREAM,
+                            streamUrl = uploadedLectureUrl ?: ExoPlayerLectureManager.DEFAULT_SAMPLE_LECTURE_STREAM,
                             title = sessionTitle
                         )
                     }
@@ -2057,9 +2330,9 @@ fun InboxAndLiveClassesModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("${lc.title} (${lc.meetingCode})", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                Text("${lc.title} (${lc.meetingCode})", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                 Text("Batch: ${lc.batchName} • Host: ${lc.teacherName}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
-                                Text("Schedule: ${lc.scheduledTimeIso} (${lc.durationMinutes}m)", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("Schedule: ${lc.scheduledTimeIso} (${lc.durationMinutes}m)", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 if (lc.activePollQuestion.isNotBlank()) {
                                     Text("Live Poll: ${lc.activePollQuestion}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Warning))
                                 }
@@ -2086,8 +2359,8 @@ fun InboxAndLiveClassesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showBroadcastDialog = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Broadcast Notice", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Broadcast Notice", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Announcement Title *") }, singleLine = true)
@@ -2126,8 +2399,8 @@ fun InboxAndLiveClassesModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showScheduleLive = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Start Live Class & Lab Poll", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Start Live Class & Lab Poll", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Session Topic *") }, singleLine = true)
@@ -2210,17 +2483,17 @@ fun AiHubModuleScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             "Waqar Computer Institute AI",
-                            style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark, fontWeight = FontWeight.ExtraBold)
+                            style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary, fontWeight = FontWeight.ExtraBold)
                         )
                         Text(
                             "Instant Sub-ms Knowledge Base • ChatGPT & AI Academic Tutor • Vision Doubt Solver",
-                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                         )
                     }
                     if (state.activePortalRole == PortalRole.ADMIN) {
                         Column(horizontalAlignment = Alignment.End) {
                             CountUpInt(targetValue = totalTokensUsed, suffix = " tok", color = WciColors.Info, fontSizeSp = 18)
-                            Text("${state.aiLogs.size} AI sessions", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                            Text("${state.aiLogs.size} AI sessions", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                         }
                     }
                 }
@@ -2323,7 +2596,7 @@ fun AiHubModuleScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = state.currentAiStreamText,
-                        style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextPrimaryDark)
+                        style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textPrimary)
                     )
                 }
             }
@@ -2333,7 +2606,7 @@ fun AiHubModuleScreen(
         item {
             Text(
                 text = "Recent Waqar AI Answers",
-                style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
+                style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
             )
         }
 
@@ -2363,9 +2636,9 @@ fun AiHubModuleScreen(
                         )
                     }
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text("Q: ${log.promptText}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = WciColors.TextPrimaryDark))
+                    Text("Q: ${log.promptText}", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = WciColors.textPrimary))
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(log.responseText, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                    Text(log.responseText, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                 }
             }
         }

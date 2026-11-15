@@ -105,6 +105,30 @@ object CertificateQrGenerator {
         return encodeIso18004QrMatrix(content.ifBlank { VERIFY_BASE_URL })
     }
 
+    /**
+     * Computes a deterministic, tamper-evident 64-bit truncated SHA-256 verification digest
+     * formatted as `SHA256:<16_HEX>` over all canonical certificate attributes.
+     */
+    fun computeCanonicalVerificationHash(
+        certSerialNo: String,
+        studentIdOrRoll: String,
+        studentName: String,
+        courseName: String,
+        grade: String,
+        issueDateIso: String
+    ): String {
+        val canonicalPayload = listOf(
+            certSerialNo.trim(),
+            studentIdOrRoll.trim(),
+            studentName.trim(),
+            courseName.trim(),
+            grade.trim(),
+            issueDateIso.trim(),
+            "WCI-ISSUER-2026"
+        ).joinToString("|")
+        return "SHA256:${sha256ShortHex(canonicalPayload)}"
+    }
+
     private fun sha256ShortHex(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(StandardCharsets.UTF_8))
         return digest.take(8).joinToString("") { "%02X".format(it) }

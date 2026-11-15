@@ -195,7 +195,14 @@ class CertificateGeneratorViewModel : ViewModel() {
             val issueDateIso = issueDateRaw
 
             val verificationHash = issuedCert?.verificationHash?.takeIf { it.isNotBlank() }
-                ?: "SHA256:${(serialNo + enrollmentNo + studentName).hashCode().toUInt().toString(16).uppercase()}"
+                ?: CertificateQrGenerator.computeCanonicalVerificationHash(
+                    certSerialNo = serialNo,
+                    studentIdOrRoll = enrollmentNo,
+                    studentName = studentName,
+                    courseName = courseTitle,
+                    grade = resolvedGrade,
+                    issueDateIso = issueDateIso
+                )
 
             val fullVerifyUrl = CertificateQrGenerator.buildVerificationUrl(
                 certSerialNo = serialNo,

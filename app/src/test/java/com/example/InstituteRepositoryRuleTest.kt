@@ -195,4 +195,80 @@ class InstituteRepositoryRuleTest : FirestoreEmulatorTestBase() {
             assertNotNull(aliceUid)
         }
     }
+
+    @Test
+    fun nonAdminStudent_cannotReadOtherUserProfile_orDeleteStudentRecord() = runBlocking {
+        val adminUid = signInTestUser("waqar@waqarinstitute.edu")
+        val safeTimestamp = Timestamp(Date(System.currentTimeMillis() - 5000))
+
+        repository.saveUserProfile(
+            UserProfile(
+                uid = adminUid,
+                email = "waqar@waqarinstitute.edu",
+                displayName = "Waqar Admin",
+                role = "admin",
+                username = "waqar_admin",
+                phone = "+919876543210",
+                mfaEnabled = true,
+                totpSecret = "JBSWY3DPEHPK3PXP",
+                linkedEntityId = "staff_001",
+                createdAt = safeTimestamp
+            )
+        )
+
+        repository.saveStudent(
+            StudentRecord(
+                id = "stu_protected_1",
+                enrollmentNo = "WCI-2026-901",
+                fullName = "Protected Student",
+                email = "protected@example.com",
+                phone = "+919811122299",
+                guardianName = "Guardian",
+                guardianPhone = "+919811122298",
+                courseId = "crs_adca",
+                courseName = "ADCA",
+                batchId = "bat_1",
+                batchName = "Batch 1",
+                status = "ACTIVE",
+                totalFeePaise = 1500000L,
+                paidFeePaise = 500000L,
+                attendancePercent = 90,
+                ownerUid = adminUid,
+                createdAt = safeTimestamp
+            )
+        )
+
+        // Switch to non-admin student account
+        val studentUid = signInTestUser("regular.student@waqarinstitute.edu")
+        repository.saveUserProfile(
+            UserProfile(
+                uid = studentUid,
+                email = "regular.student@waqarinstitute.edu",
+                displayName = "Regular Student",
+                role = "student",
+                username = "reg_student",
+                phone = "+919000011111",
+                mfaEnabled = false,
+                totpSecret = "",
+                linkedEntityId = "stu_protected_1",
+                createdAt = safeTimestamp
+            )
+        )
+
+        // 1. Reading admin's UserProfile (containing totpSecret) must fail with PERMISSION_DENIED
+        try {
+            repository.getUserProfile(adminUid)
+            fail("Expected FirestoreOperationException (PERMISSION_DENIED) when student reads another user's profile")
+        } catch (e: FirestoreOperationException) {
+            assertTrue("Expected permission denied on cross-user profile read, got: ${e.message}", e.isPermissionDenied())
+        }
+
+        // 2. Deleting a StudentRecord as a non-admin student must fail with PERMISSION_DENIED
+        try {
+            repository.deleteStudent("stu_protected_1")
+            fail("Expected FirestoreOperationException (PERMISSION_DENIED) when student deletes a student record")
+        } catch (e: FirestoreOperationException) {
+            assertTrue("Expected permission denied on student delete, got: ${e.message}", e.isPermissionDenied())
+        }
+    }
 }

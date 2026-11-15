@@ -87,6 +87,54 @@ object QuestionBank {
         }
     }
 
+    /**
+     * Per-Student Unique Question & Option Shuffler for Admin/Teacher PDF Question Banks.
+     * Uses a deterministic SHA-256 seed derived from `studentId + examId` so:
+     * 1. Different students receive different question subsets and question sequences.
+     * 2. All 4 options (A, B, C, D) are shuffled per student while preserving the exact `correctOptionIndex`.
+     */
+    fun selectUniqueQuestionsForStudent(
+        pool: List<ExamQuestionItem>,
+        studentId: String,
+        examId: String,
+        targetCount: Int = pool.size
+    ): List<ExamQuestionItem> {
+        if (pool.isEmpty()) return emptyList()
+        val safeTarget = targetCount.coerceIn(1, pool.size)
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${studentId.trim().lowercase()}|${examId.trim().lowercase()}".toByteArray(Charsets.UTF_8))
+        var seed = 0L
+        for (b in 0 until 8) {
+            seed = (seed shl 8) or (digest[b].toLong() and 0xFFL)
+        }
+        val rng = Random(seed)
+
+        val working = pool.toMutableList()
+        for (i in working.lastIndex downTo 1) {
+            val j = rng.nextInt(i + 1)
+            val tmp = working[i]
+            working[i] = working[j]
+            working[j] = tmp
+        }
+
+        return working.take(safeTarget).mapIndexed { idx, q ->
+            val indexedOptions = q.options.mapIndexed { optIdx, text -> optIdx to text }.toMutableList()
+            for (k in indexedOptions.lastIndex downTo 1) {
+                val m = rng.nextInt(k + 1)
+                val tmpOpt = indexedOptions[k]
+                indexedOptions[k] = indexedOptions[m]
+                indexedOptions[m] = tmpOpt
+            }
+            val newCorrectIndex = indexedOptions.indexOfFirst { it.first == q.correctOptionIndex }
+                .coerceAtLeast(0)
+            q.copy(
+                id = "${q.id}_U${idx + 1}",
+                options = indexedOptions.map { it.second },
+                correctOptionIndex = newCorrectIndex
+            )
+        }
+    }
+
     private fun build156InstituteQuestions(): List<ExamQuestionItem> {
         val list = mutableListOf<ExamQuestionItem>()
 

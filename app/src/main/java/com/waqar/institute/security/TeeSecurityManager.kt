@@ -143,7 +143,7 @@ object TeeSecurityManager {
     }.getOrElse {
         HardwareKeyAttestation(
             keyAlias = TEE_KEY_ALIAS,
-            isInsideSecureHardware = true,
+            isInsideSecureHardware = false,
             isStrongBoxBacked = hasStrongBoxHardware(context),
             blockMode = KeyProperties.BLOCK_MODE_GCM,
             keySizeBits = 256

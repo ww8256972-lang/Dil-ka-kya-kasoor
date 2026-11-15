@@ -15,12 +15,16 @@ import java.util.concurrent.ConcurrentHashMap
 @Keep
 object ZkpAndCrdtConsensusEngine {
 
-    // Safe 256-bit prime modulus and generator for Schnorr Fiat-Shamir ZKP
-    private val P_MODULUS = BigInteger(
-        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74",
+    // Verified 768-bit RFC 2409 Safe Prime (p = 2q + 1 where both p and q are prime)
+    internal val P_MODULUS = BigInteger(
+        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74" +
+            "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437" +
+            "4FE1356D6D51C245E485B576625E7EC6F44C42E9A63A3620FFFFFFFFFFFFFFFF",
         16
     )
-    private val G_GENERATOR = BigInteger.valueOf(5L)
+    // Prime subgroup order q = (p - 1) / 2 and generator g = 4 (= 2^2 mod p) of exact order q
+    internal val Q_ORDER: BigInteger = P_MODULUS.subtract(BigInteger.ONE).shiftRight(1)
+    internal val G_GENERATOR: BigInteger = BigInteger.valueOf(4L)
     private val random = SecureRandom()
 
     data class SchnorrZkProof(
@@ -36,17 +40,17 @@ object ZkpAndCrdtConsensusEngine {
      */
     fun generateSchnorrZeroKnowledgeProof(secretWitness: String, contextChallenge: String): SchnorrZkProof {
         val xBytes = MessageDigest.getInstance("SHA-256").digest(secretWitness.toByteArray(Charsets.UTF_8))
-        val x = BigInteger(1, xBytes).mod(P_MODULUS.subtract(BigInteger.ONE)).add(BigInteger.ONE)
+        val x = BigInteger(1, xBytes).mod(Q_ORDER.subtract(BigInteger.ONE)).add(BigInteger.ONE)
         val y = G_GENERATOR.modPow(x, P_MODULUS)
 
-        val vBytes = ByteArray(32).also { random.nextBytes(it) }
-        val v = BigInteger(1, vBytes).mod(P_MODULUS.subtract(BigInteger.ONE)).add(BigInteger.ONE)
+        val vBytes = ByteArray(48).also { random.nextBytes(it) }
+        val v = BigInteger(1, vBytes).mod(Q_ORDER.subtract(BigInteger.ONE)).add(BigInteger.ONE)
         val t = G_GENERATOR.modPow(v, P_MODULUS)
 
         val cDigest = MessageDigest.getInstance("SHA-256")
             .digest("${G_GENERATOR.toString(16)}|${y.toString(16)}|${t.toString(16)}|$contextChallenge".toByteArray(Charsets.UTF_8))
-        val c = BigInteger(1, cDigest).mod(P_MODULUS.subtract(BigInteger.ONE))
-        val s = v.add(c.multiply(x)).mod(P_MODULUS.subtract(BigInteger.ONE))
+        val c = BigInteger(1, cDigest).mod(Q_ORDER)
+        val s = v.add(c.multiply(x)).mod(Q_ORDER)
 
         return SchnorrZkProof(
             publicCommitmentYHex = y.toString(16).uppercase(),
@@ -57,19 +61,33 @@ object ZkpAndCrdtConsensusEngine {
     }
 
     /**
-     * Verifies a Schnorr Fiat-Shamir Zero-Knowledge Proof in constant algebraic form: g^s * y^(-c) == t (mod p).
+     * Verifies a Schnorr Fiat-Shamir Zero-Knowledge Proof in prime-order subgroup `q = (p - 1) / 2`:
+     * 1. Validates domain & subgroup membership (`1 < y, t < p`, `y^q == t^q == 1 mod p`, `0 <= c, s < q`).
+     * 2. Recomputes Fiat-Shamir challenge `cExpected = H(g | y | t | contextChallenge) mod q`
+     *    and verifies `c == cExpected`.
+     * 3. Verifies Schnorr algebraic equality `g^s mod p == t * y^c mod p`.
      */
     fun verifySchnorrZeroKnowledgeProof(proof: SchnorrZkProof, contextChallenge: String): Boolean = runCatching {
-        val y = BigInteger(proof.publicCommitmentYHex, 16)
-        val t = BigInteger(proof.ephemeralCommitmentTHex, 16)
+        val y = BigInteger(proof.publicCommitmentYHex.trim(), 16)
+        val t = BigInteger(proof.ephemeralCommitmentTHex.trim(), 16)
+        val c = BigInteger(proof.challengeCHex.trim(), 16)
+        val s = BigInteger(proof.responseSHex.trim(), 16)
+
+        if (y <= BigInteger.ONE || y >= P_MODULUS) return@runCatching false
+        if (t <= BigInteger.ONE || t >= P_MODULUS) return@runCatching false
+        if (c < BigInteger.ZERO || c >= Q_ORDER) return@runCatching false
+        if (s < BigInteger.ZERO || s >= Q_ORDER) return@runCatching false
+        if (y.modPow(Q_ORDER, P_MODULUS) != BigInteger.ONE) return@runCatching false
+        if (t.modPow(Q_ORDER, P_MODULUS) != BigInteger.ONE) return@runCatching false
+
         val cExpectedBytes = MessageDigest.getInstance("SHA-256")
-            .digest("${G_GENERATOR.toString(16)}|${y.toString(16).lowercase()}|${t.toString(16).lowercase()}|$contextChallenge".toByteArray(Charsets.UTF_8))
-        val c = BigInteger(proof.challengeCHex, 16)
-        val s = BigInteger(proof.responseSHex, 16)
+            .digest("${G_GENERATOR.toString(16)}|${y.toString(16)}|${t.toString(16)}|$contextChallenge".toByteArray(Charsets.UTF_8))
+        val cExpected = BigInteger(1, cExpectedBytes).mod(Q_ORDER)
+        if (c != cExpected) return@runCatching false
 
         val lhs = G_GENERATOR.modPow(s, P_MODULUS)
         val rhs = t.multiply(y.modPow(c, P_MODULUS)).mod(P_MODULUS)
-        lhs == rhs && cExpectedBytes.isNotEmpty()
+        lhs == rhs
     }.getOrDefault(false)
 
     // Distributed Vector Clock + LWW-Element-Set CRDT State Resolver

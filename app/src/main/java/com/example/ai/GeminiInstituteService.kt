@@ -93,11 +93,43 @@ class GeminiInstituteService {
     }
 
     suspend fun askInstituteTutor(prompt: String): String = withContext(Dispatchers.IO) {
+        lookupSubMillisecondAnswer("TUTOR_CHAT", prompt)?.let { return@withContext it }
+        AiLocalCacheRepository.getCachedResponse(null, "TUTOR_CHAT", "EN", prompt)?.let {
+            return@withContext it
+        }
         runCatching {
+            var latestText = ""
+            OpenAiCloudFunctionSseClient.streamFromCloudFunctionProxy(
+                systemPrompt = "You are $BRAND_NAME, the official AI Academic & Operations Assistant of Waqar Computer Institute.",
+                userPrompt = prompt,
+                role = "Student"
+            ).collect { partial ->
+                latestText = partial
+            }
+            if (latestText.isBlank()) throw IllegalStateException("Empty SSE response")
+            AiLocalCacheRepository.putCachedResponse(
+                context = null,
+                featureType = "TUTOR_CHAT",
+                languageCode = "EN",
+                prompt = prompt,
+                responseText = latestText,
+                modelName = OpenAiCloudFunctionSseClient.PROXY_MODEL_NAME
+            )
+            latestText
+        }.recoverCatching {
             val response = geminiModel.generateContent(prompt)
-            response.text?.takeIf { it.isNotBlank() } ?: "No response generated."
+            val text = response.text?.takeIf { it.isNotBlank() } ?: "No response generated."
+            AiLocalCacheRepository.putCachedResponse(
+                context = null,
+                featureType = "TUTOR_CHAT",
+                languageCode = "EN",
+                prompt = prompt,
+                responseText = text,
+                modelName = MODEL_NAME
+            )
+            text
         }.getOrElse {
-            "Offline AI Mode: Unable to reach Firebase AI Logic service. Please verify network connectivity."
+            "Offline AI Mode: Unable to reach Cloud Functions SSE Proxy or Firebase AI Logic service. Please verify network connectivity."
         }
     }
 
@@ -106,6 +138,8 @@ class GeminiInstituteService {
     private fun lookupSubMillisecondAnswer(featureType: String, prompt: String): String? {
         val normalizedKey = "${featureType.uppercase()}|${prompt.trim().lowercase()}"
         responseMemoryCache[normalizedKey]?.let { return it }
+        AiLocalCacheRepository.getInstantL1CacheHit(featureType, "EN", prompt)?.let { return it }
+        AiLocalCacheRepository.getInstantL1CacheHit(featureType, "HI", prompt)?.let { return it }
 
         if (featureType == "TUTOR_CHAT" && prompt.length < 90) {
             val lower = prompt.lowercase()
@@ -147,10 +181,23 @@ class GeminiInstituteService {
 
         val cacheKey = "${featureType.uppercase()}|${userPrompt.trim().lowercase()}"
 
-        // 2. Sub-Millisecond (<1ms) Instant Knowledge Base / Memory Cache Hit
+        // 2A. Sub-Millisecond (<0.1ms) Instant Knowledge Base / L1 Memory Cache Hit
         val cachedInstant = lookupSubMillisecondAnswer(featureType, userPrompt)
         if (cachedInstant != null) {
             emit(cachedInstant)
+            return@flow
+        }
+
+        // 2B. Sub-Millisecond (<1ms) Room + SQLCipher Local Database Cache Hit
+        val cachedRoom = AiLocalCacheRepository.getCachedResponse(
+            context = null,
+            featureType = featureType,
+            languageCode = languageCode,
+            prompt = userPrompt
+        )
+        if (!cachedRoom.isNullOrBlank()) {
+            responseMemoryCache[cacheKey] = cachedRoom
+            emit(cachedRoom)
             return@flow
         }
 
@@ -179,24 +226,35 @@ class GeminiInstituteService {
             appendLine("User Request: $userPrompt")
         }
 
-        // 3. Stream live from Firebase AI Logic (gemini-3.8-flash with gemini-2.5-flash fallback) with 60s timeout
+        // 3. Primary Stream: Firebase Cloud Functions SSE Proxy (OpenAI/ChatGPT with App Check attestation)
+        //    Fallback Stream: Firebase AI Logic (gemini-2.5-flash -> gemini-2.0-flash)
         val accumulated = StringBuilder()
-        runCatching {
+        var modelUsed = OpenAiCloudFunctionSseClient.PROXY_MODEL_NAME
+
+        val sseProxySucceeded = runCatching {
             withTimeout(AI_TIMEOUT_MILLIS) {
-                val responseStream = geminiModel.generateContentStream(systemFraming)
-                responseStream.collect { chunk ->
-                    val piece = chunk.text.orEmpty()
-                    if (piece.isNotEmpty()) {
-                        accumulated.append(piece)
-                        emit(accumulated.toString())
+                OpenAiCloudFunctionSseClient.streamFromCloudFunctionProxy(
+                    systemPrompt = systemFraming,
+                    userPrompt = userPrompt,
+                    role = role
+                ).collect { partialText ->
+                    if (partialText.isNotEmpty()) {
+                        accumulated.setLength(0)
+                        accumulated.append(partialText)
+                        emit(partialText)
                     }
                 }
             }
-        }.onFailure { primaryErr ->
+            accumulated.isNotEmpty()
+        }.getOrDefault(false)
+
+        if (!sseProxySucceeded) {
+            accumulated.setLength(0)
+            modelUsed = MODEL_NAME
             runCatching {
                 withTimeout(AI_TIMEOUT_MILLIS) {
-                    val fallbackStream = fallbackGeminiModel.generateContentStream(systemFraming)
-                    fallbackStream.collect { chunk ->
+                    val responseStream = geminiModel.generateContentStream(systemFraming)
+                    responseStream.collect { chunk ->
                         val piece = chunk.text.orEmpty()
                         if (piece.isNotEmpty()) {
                             accumulated.append(piece)
@@ -204,14 +262,37 @@ class GeminiInstituteService {
                         }
                     }
                 }
-            }.onFailure {
-                throw primaryErr
+            }.onFailure { primaryErr ->
+                accumulated.setLength(0)
+                modelUsed = FALLBACK_MODEL_NAME
+                runCatching {
+                    withTimeout(AI_TIMEOUT_MILLIS) {
+                        val fallbackStream = fallbackGeminiModel.generateContentStream(systemFraming)
+                        fallbackStream.collect { chunk ->
+                            val piece = chunk.text.orEmpty()
+                            if (piece.isNotEmpty()) {
+                                accumulated.append(piece)
+                                emit(accumulated.toString())
+                            }
+                        }
+                    }
+                }.onFailure {
+                    throw primaryErr
+                }
             }
         }
 
         val finalOutput = accumulated.toString()
         if (finalOutput.isNotBlank()) {
             responseMemoryCache[cacheKey] = finalOutput
+            AiLocalCacheRepository.putCachedResponse(
+                context = null,
+                featureType = featureType,
+                languageCode = languageCode,
+                prompt = userPrompt,
+                responseText = finalOutput,
+                modelName = modelUsed
+            )
             AiRateLimiterManager.recordTokensConsumed(
                 userId = userId,
                 role = resolvedRole,

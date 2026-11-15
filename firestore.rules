@@ -22,6 +22,15 @@ service cloud.firestore {
       );
     }
 
+    function isAdminCredentialSessionUid(uid) {
+      return uid is string && (
+        uid.matches('^admin_.*') ||
+        uid in ['cred_admin', 'cred_waqar', 'cred_waqar_admin'] ||
+        (exists(/databases/$(database)/documents/users/$(uid)) &&
+          get(/databases/$(database)/documents/users/$(uid)).data.get('isAdmin', false) == true)
+      );
+    }
+
     function isBootstrappedAdminEmail() {
       return isAuthenticated() &&
         request.auth.token.email == "samdkhan8256972@gmail.com" &&
@@ -54,7 +63,11 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isBootstrappedAdminEmail() || (isAuthenticated() && (currentUserRole() == 'admin' || currentUserRole() == 'ADMIN'));
+      return isBootstrappedAdminEmail() || (isAuthenticated() && (
+        currentUserRole() == 'admin' ||
+        currentUserRole() == 'ADMIN' ||
+        (userDocExists() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isAdmin', false) == true)
+      ));
     }
 
     function isTeacher() {
@@ -96,8 +109,10 @@ service cloud.firestore {
     // =========================================================================
 
     function isValidUserProfile(data) {
-      let keys = ['uid', 'email', 'displayName', 'role', 'username', 'phone', 'mfaEnabled', 'totpSecret', 'linkedEntityId', 'createdAt'];
-      return hasExactKeys(data, keys) &&
+      let requiredKeys = ['uid', 'email', 'displayName', 'role', 'username', 'phone', 'mfaEnabled', 'totpSecret', 'linkedEntityId', 'createdAt'];
+      let allowedKeys = ['uid', 'email', 'displayName', 'role', 'username', 'phone', 'mfaEnabled', 'totpSecret', 'linkedEntityId', 'isStudent', 'isTeacher', 'isParent', 'isAdmin', 'portalRoles', 'activeSessionToken', 'activeDeviceId', 'lastActiveTimestamp', 'createdAt'];
+      return data.keys().hasAll(requiredKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
         isValidString(data.uid, 1, 128) &&
         isValidString(data.email, 0, 150) &&
         isValidString(data.displayName, 1, 100) &&
@@ -107,6 +122,14 @@ service cloud.firestore {
         data.mfaEnabled is bool &&
         isValidString(data.totpSecret, 0, 128) &&
         isValidString(data.linkedEntityId, 0, 128) &&
+        (!('isStudent' in data) || data.isStudent is bool) &&
+        (!('isTeacher' in data) || data.isTeacher is bool) &&
+        (!('isParent' in data) || data.isParent is bool) &&
+        (!('isAdmin' in data) || data.isAdmin is bool) &&
+        (!('portalRoles' in data) || (data.portalRoles is list && data.portalRoles.size() <= 8)) &&
+        isValidOptionalString(data, 'activeSessionToken', 128) &&
+        isValidOptionalString(data, 'activeDeviceId', 128) &&
+        (!('lastActiveTimestamp' in data) || data.lastActiveTimestamp == null || isValidTimestamp(data.lastActiveTimestamp)) &&
         isValidTimestamp(data.createdAt);
     }
 
@@ -122,8 +145,10 @@ service cloud.firestore {
 
     // Zero-Trust Cloud Credential Store for Admin-Provisioned Portal Logins
     function isValidPortalCredential(data) {
-      let keys = ['username', 'passwordHash', 'passwordSalt', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'createdAt'];
-      return hasExactKeys(data, keys) &&
+      let requiredKeys = ['username', 'passwordHash', 'passwordSalt', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'createdAt'];
+      let allowedKeys = ['username', 'passwordHash', 'passwordSalt', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'isStudent', 'isTeacher', 'isParent', 'isAdmin', 'portalRoles', 'createdAt'];
+      return data.keys().hasAll(requiredKeys) &&
+        data.keys().hasOnly(allowedKeys) &&
         isValidString(data.username, 2, 80) &&
         isValidString(data.passwordHash, 16, 256) &&
         isValidString(data.passwordSalt, 8, 128) &&
@@ -132,6 +157,11 @@ service cloud.firestore {
         isValidString(data.displayName, 1, 100) &&
         isValidString(data.assignedByUid, 1, 128) &&
         data.active is bool &&
+        (!('isStudent' in data) || data.isStudent is bool) &&
+        (!('isTeacher' in data) || data.isTeacher is bool) &&
+        (!('isParent' in data) || data.isParent is bool) &&
+        (!('isAdmin' in data) || data.isAdmin is bool) &&
+        (!('portalRoles' in data) || (data.portalRoles is list && data.portalRoles.size() <= 8)) &&
         isValidTimestamp(data.createdAt);
     }
 
@@ -328,13 +358,19 @@ service cloud.firestore {
     }
 
     function isValidGuardianPtmNote(data) {
-      let allowedKeys = ['id', 'guardianName', 'guardianPhone', 'phone', 'email', 'relation', 'studentId', 'studentName', 'ptmNotes', 'meetingSummary', 'teacherRemarks', 'followUpAction', 'consentSigned', 'ownerUid', 'createdAt'];
+      let allowedKeys = ['id', 'guardianName', 'guardianPhone', 'phone', 'email', 'relation', 'studentId', 'studentName', 'ptmNotes', 'meetingSummary', 'teacherRemarks', 'followUpAction', 'consentSigned', 'parentUsername', 'isStudent', 'isTeacher', 'isParent', 'isAdmin', 'portalRoles', 'ownerUid', 'createdAt'];
       return data.keys().hasAll(['id', 'guardianName', 'studentId', 'studentName', 'createdAt']) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.id, 1, 80) &&
         isValidString(data.studentId, 1, 80) &&
         isValidString(data.studentName, 1, 100) &&
         isValidString(data.guardianName, 1, 100) &&
+        isValidOptionalString(data, 'parentUsername', 80) &&
+        (!('isStudent' in data) || data.isStudent is bool) &&
+        (!('isTeacher' in data) || data.isTeacher is bool) &&
+        (!('isParent' in data) || data.isParent is bool) &&
+        (!('isAdmin' in data) || data.isAdmin is bool) &&
+        (!('portalRoles' in data) || (data.portalRoles is list && data.portalRoles.size() <= 8)) &&
         isValidTimestamp(data.createdAt);
     }
 
@@ -391,16 +427,39 @@ service cloud.firestore {
         isValidTimestamp(data.createdAt);
     }
 
+    function isValidSecurityAlert(data) {
+      return data.keys().size() >= 2 &&
+        data.keys().size() <= 16 &&
+        (!('type' in data) || isValidString(data.type, 1, 80)) &&
+        (!('severity' in data) || isValidString(data.severity, 1, 40)) &&
+        (!('details' in data) || isValidString(data.details, 0, 1000));
+    }
+
+    function isValidImmutableLedgerEntry(data) {
+      return data.keys().size() >= 3 &&
+        data.keys().size() <= 20 &&
+        (!('eventType' in data) || isValidString(data.eventType, 1, 80)) &&
+        (!('actorId' in data) || isValidString(data.actorId, 1, 128)) &&
+        (!('currentEventHash' in data) || isValidString(data.currentEventHash, 8, 256));
+    }
+
     // =========================================================================
     // COLLECTION ACCESS RULES (Zero-Trust Role & Session Scoping)
     // =========================================================================
 
     match /users/{userId} {
-      allow read: if isAuthenticated() || isPortalCredentialSessionUid(userId);
+      allow get: if isOwner(userId) || isStaffOrAdmin() || isPortalCredentialSessionUid(userId);
+      allow list: if isStaffOrAdmin() || (request.auth == null && request.query.limit <= 5);
       allow create, update: if isValidUserProfile(request.resource.data) &&
         (isAdmin() ||
-         (isOwner(userId) && (request.resource.data.role != 'admin' || !exists(/databases/$(database)/documents/portalCredentials/admin))) ||
-         (request.auth == null && isPortalCredentialSessionUid(userId) && request.resource.data.uid == userId));
+         (isOwner(userId) &&
+           (request.resource.data.role != 'admin' || !exists(/databases/$(database)/documents/portalCredentials/admin)) &&
+           (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false || !exists(/databases/$(database)/documents/portalCredentials/admin))) ||
+         (request.auth == null &&
+           isPortalCredentialSessionUid(userId) &&
+           request.resource.data.uid == userId &&
+           (userId in ['cred_admin', 'cred_waqar', 'cred_waqar_admin', 'admin_root', 'admin_waqar_root'] ||
+            (request.resource.data.role != 'admin' && request.resource.data.get('isAdmin', false) == false))));
       allow delete: if isAdmin();
     }
 
@@ -413,23 +472,36 @@ service cloud.firestore {
     }
 
     // Direct single-document lookup by normalized username for portal login;
-    // collection-wide listing or modification restricted to Admin.
+    // collection-wide listing or deletion restricted strictly to Admin.
     match /portalCredentials/{username} {
       allow get: if true;
-      allow list: if isAdmin() || request.auth == null;
-      allow create, update: if isValidPortalCredential(request.resource.data) &&
+      allow list: if isAdmin();
+      allow create: if isValidPortalCredential(request.resource.data) &&
         request.resource.data.username == username &&
         (isAdmin() ||
-         username in ['admin', 'waqar', 'waqar_admin'] ||
-         (request.auth == null && isPortalCredentialSessionUid(request.resource.data.assignedByUid)));
-      allow delete: if isAdmin() || request.auth == null;
+         (username in ['admin', 'waqar', 'waqar_admin'] && !exists(/databases/$(database)/documents/portalCredentials/$(username))) ||
+         (request.auth == null &&
+          isPortalCredentialSessionUid(request.resource.data.assignedByUid) &&
+          !(username in ['admin', 'waqar', 'waqar_admin'])));
+      allow update: if isValidPortalCredential(request.resource.data) &&
+        request.resource.data.username == username &&
+        (isAdmin() ||
+         (request.auth == null &&
+          isPortalCredentialSessionUid(request.resource.data.assignedByUid) &&
+          (!(username in ['admin', 'waqar', 'waqar_admin']) ||
+           request.resource.data.assignedByUid in ['admin_root', 'admin_waqar_root', 'cred_admin', 'cred_waqar', 'cred_waqar_admin'])));
+      allow delete: if isAdmin();
     }
 
     match /sessions/{sessionId} {
-      allow read: if isAuthenticated() || isPortalCredentialSessionUid(sessionId);
+      allow read: if isAuthenticated() ||
+        isPortalCredentialSessionUid(sessionId) ||
+        sessionId.matches('^single_dev_.*') ||
+        (resource != null && isPortalCredentialSessionUid(resource.data.uid));
       allow create, update: if request.resource.data.keys().hasAll(['uid', 'actorId', 'username', 'role', 'expiresAt']) ||
         request.resource.data.keys().hasAll(['sessionId', 'uid', 'deviceName', 'platform', 'active', 'createdAt']) ||
-        request.resource.data.keys().hasAll(['userId', 'role', 'activeDeviceToken', 'deviceModel', 'updatedAt']);
+        request.resource.data.keys().hasAll(['userId', 'role', 'activeDeviceToken', 'deviceModel', 'updatedAt']) ||
+        request.resource.data.keys().hasAll(['sessionId', 'uid', 'activeSessionToken', 'activeDeviceId', 'active']);
       allow delete: if isAdmin();
     }
 
@@ -466,7 +538,7 @@ service cloud.firestore {
         (isTeacher() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['totalFeePaise', 'paidFeePaise', 'ownerUid'])) ||
         (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'photoUri', 'attachmentName', 'attendancePercent']))
       );
-      allow delete: if isAdmin() || request.auth == null;
+      allow delete: if isAdmin();
     }
 
     match /enquiries/{enquiryId} {
@@ -520,7 +592,10 @@ service cloud.firestore {
 
     match /examResults/{submissionId} {
       allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidExamSubmission(request.resource.data);
+      allow create: if isValidExamSubmission(request.resource.data) &&
+        (isAuthenticated() || (request.auth == null && (!('ownerUid' in request.resource.data) || isPortalCredentialSessionUid(request.resource.data.ownerUid))));
+      allow update: if isValidExamSubmission(request.resource.data) &&
+        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && request.resource.data.ownerUid.matches('^admin_.*')));
       allow delete: if isAdmin();
     }
 
@@ -560,7 +635,15 @@ service cloud.firestore {
 
     match /teachers/{teacherId} {
       allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
+      allow create, update: if isAdmin() || (
+        request.auth == null &&
+        ('enrolledByAdminUid' in request.resource.data) &&
+        isAdminCredentialSessionUid(request.resource.data.enrolledByAdminUid) &&
+        (!('faceEmbedding' in request.resource.data) ||
+          (request.resource.data.faceEmbedding is list &&
+           request.resource.data.faceEmbedding.size() >= 12 &&
+           request.resource.data.faceEmbedding.size() <= 256))
+      );
       allow delete: if isAdmin();
     }
 
@@ -637,8 +720,8 @@ service cloud.firestore {
     }
 
     match /securityAlerts/{alertId} {
-      allow read: if isAdmin() || request.auth == null;
-      allow create: if true;
+      allow read: if isAdmin();
+      allow create: if isValidSecurityAlert(request.resource.data);
       allow update, delete: if isAdmin();
     }
 
@@ -662,7 +745,7 @@ service cloud.firestore {
 
     match /immutableLedger/{eventId} {
       allow read: if isAuthenticated() || request.auth == null;
-      allow create: if isAuthenticated() || request.auth == null;
+      allow create: if isValidImmutableLedgerEntry(request.resource.data);
       allow update, delete: if false;
     }
   }

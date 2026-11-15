@@ -47,10 +47,19 @@ object PlayIntegrityEnforcer {
         }
     }
 
+    @Volatile
+    private var cloudProjectNumber: Long = 0L
+
+    fun configureCloudProjectNumber(projectNumber: Long) {
+        if (projectNumber > 0L) {
+            cloudProjectNumber = projectNumber
+        }
+    }
+
     /**
      * Generates a 256-bit high-entropy cryptographic nonce bound to the user/action and requests
-     * a hardware-backed Play Integrity attestation token. Gracefully falls back with OLLVM
-     * local hardware attestation when Play Services is offline or in development preview.
+     * a Play Integrity token. Does NOT fabricate `MEETS_STRONG_INTEGRITY` locally — reports honest
+     * token issuance status pending backend server verification (`isHardwareVerified = false`).
      */
     suspend fun requestHardwareIntegrityAttestation(
         context: Context,
@@ -72,15 +81,23 @@ object PlayIntegrityEnforcer {
 
         runCatching {
             val integrityManager = IntegrityManagerFactory.create(context.applicationContext)
-            val request = IntegrityTokenRequest.builder()
+            val requestBuilder = IntegrityTokenRequest.builder()
                 .setNonce(nonceBase64)
-                .build()
-            val response = integrityManager.requestIntegrityToken(request).await()
+            if (cloudProjectNumber > 0L) {
+                requestBuilder.setCloudProjectNumber(cloudProjectNumber)
+            }
+            val response = integrityManager.requestIntegrityToken(requestBuilder.build()).await()
             val token = response.token()
+            val tokenIssued = token.isNotBlank()
             PlayIntegrityAttestationReport(
-                isHardwareVerified = token.isNotBlank(),
-                deviceRecognitionVerdict = "MEETS_STRONG_INTEGRITY",
-                appLicensingVerdict = "LICENSED_GOOGLE_PLAY",
+                // Verdict cannot be trusted until decrypted & validated by Google Play Integrity server
+                isHardwareVerified = false,
+                deviceRecognitionVerdict = if (tokenIssued) {
+                    "TOKEN_ISSUED_PENDING_SERVER_VERIFY"
+                } else {
+                    "INTEGRITY_TOKEN_EMPTY"
+                },
+                appLicensingVerdict = if (tokenIssued) "PENDING_SERVER_VERDICT" else "UNVERIFIED",
                 ollvmNativeDigestHex = ollvmHex,
                 cryptographicNonceBase64 = nonceBase64
             )

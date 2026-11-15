@@ -82,7 +82,61 @@ object ImmutableEventSourcedLedger {
         return entry
     }
 
-    fun verifyMerkleChainIntegrity(): Boolean = chain.isNotEmpty() || headHash.length == 64
+    private const val GENESIS_HASH =
+        "0000000000000000000000000000000000000000000000000000000000000000"
+
+    @Synchronized
+    fun verifyMerkleChainIntegrity(): Boolean {
+        if (chain.isEmpty()) {
+            return headHash == GENESIS_HASH
+        }
+        var expectedPrev = GENESIS_HASH
+        for ((index, entry) in chain.withIndex()) {
+            val expectedSeq = (index + 1).toLong()
+            if (entry.sequenceIndex != expectedSeq) return false
+            if (entry.prevEventHash != expectedPrev) return false
+
+            val rawBlock = "${entry.sequenceIndex}|${entry.prevEventHash}|${entry.eventType}|${entry.actorId}|${entry.payloadSummary}|${entry.vectorClock}|${entry.timestampMs}"
+            val recomputedHash = MessageDigest.getInstance("SHA-256")
+                .digest(rawBlock.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02X".format(it) }
+
+            if (!MessageDigest.isEqual(
+                    recomputedHash.toByteArray(Charsets.UTF_8),
+                    entry.currentEventHash.toByteArray(Charsets.UTF_8)
+                )
+            ) {
+                return false
+            }
+            expectedPrev = entry.currentEventHash
+        }
+        return expectedPrev == headHash
+    }
+
+    /**
+     * Verifies an arbitrary exported or deserialized event list against the same SHA-256 Merkle rules.
+     */
+    fun verifyExternalMerkleChain(entries: List<LedgerEventEntry>): Boolean {
+        if (entries.isEmpty()) return true
+        var expectedPrev = GENESIS_HASH
+        for ((index, entry) in entries.withIndex()) {
+            if (entry.sequenceIndex != (index + 1).toLong()) return false
+            if (entry.prevEventHash != expectedPrev) return false
+            val rawBlock = "${entry.sequenceIndex}|${entry.prevEventHash}|${entry.eventType}|${entry.actorId}|${entry.payloadSummary}|${entry.vectorClock}|${entry.timestampMs}"
+            val recomputedHash = MessageDigest.getInstance("SHA-256")
+                .digest(rawBlock.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02X".format(it) }
+            if (!MessageDigest.isEqual(
+                    recomputedHash.toByteArray(Charsets.UTF_8),
+                    entry.currentEventHash.toByteArray(Charsets.UTF_8)
+                )
+            ) {
+                return false
+            }
+            expectedPrev = entry.currentEventHash
+        }
+        return true
+    }
 
     fun latestMerkleRootHex(): String = headHash.take(16)
 }

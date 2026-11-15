@@ -261,6 +261,11 @@ object HardwareKeystoreVault {
     private const val KEY_SQLCIPHER_PASSPHRASE = "sqlcipher_db_passphrase_v1"
     private const val KEY_ACTIVE_SESSION_TOKEN = "active_portal_session_token"
     private const val GCM_TAG_BITS = 128
+    private const val GCM_V1_PREFIX = "GCM1:"
+
+    @Volatile
+    var isEncryptedPrefsActive: Boolean = false
+        private set
 
     fun isStrongBoxSupported(context: Context): Boolean = hasStrongBox(context)
 
@@ -312,58 +317,86 @@ object HardwareKeystoreVault {
 
     fun encryptWithHardwareKey(context: Context, plaintext: ByteArray): String {
         val secretKey = getOrCreateHardwareAesKey(context)
-            ?: return Base64.encodeToString(plaintext, Base64.NO_WRAP)
-        return runCatching {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-            val iv = cipher.iv
-            val cipherBytes = cipher.doFinal(plaintext)
-            val combined = ByteArray(1 + iv.size + cipherBytes.size)
-            combined[0] = iv.size.toByte()
-            System.arraycopy(iv, 0, combined, 1, iv.size)
-            System.arraycopy(cipherBytes, 0, combined, 1 + iv.size, cipherBytes.size)
-            Base64.encodeToString(combined, Base64.NO_WRAP)
-        }.getOrElse { Base64.encodeToString(plaintext, Base64.NO_WRAP) }
+            ?: throw SecurityException("AndroidKeyStore AES-256-GCM key unavailable; refusing plaintext secret storage.")
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
+        val cipherBytes = cipher.doFinal(plaintext)
+        val combined = ByteArray(1 + iv.size + cipherBytes.size)
+        combined[0] = iv.size.toByte()
+        System.arraycopy(iv, 0, combined, 1, iv.size)
+        System.arraycopy(cipherBytes, 0, combined, 1 + iv.size, cipherBytes.size)
+        return GCM_V1_PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
     fun decryptWithHardwareKey(context: Context, encodedPayload: String): ByteArray {
+        val secretKey = getOrCreateHardwareAesKey(context)
+            ?: throw SecurityException("AndroidKeyStore AES-256-GCM key unavailable for decryption.")
+        if (encodedPayload.startsWith(GCM_V1_PREFIX)) {
+            val raw = Base64.decode(encodedPayload.removePrefix(GCM_V1_PREFIX), Base64.NO_WRAP)
+            val ivLen = raw[0].toInt() and 0xFF
+            require(ivLen in 12..16 && raw.size > 1 + ivLen) { "Invalid AES-GCM envelope." }
+            val iv = raw.copyOfRange(1, 1 + ivLen)
+            val cipherBytes = raw.copyOfRange(1 + ivLen, raw.size)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_BITS, iv))
+            return cipher.doFinal(cipherBytes)
+        }
+        // Legacy format migration path for existing upgrading installations
         val raw = Base64.decode(encodedPayload, Base64.NO_WRAP)
-        val secretKey = getOrCreateHardwareAesKey(context) ?: return raw
         return runCatching {
             val ivLen = raw[0].toInt() and 0xFF
+            require(ivLen in 12..16 && raw.size > 1 + ivLen)
             val iv = raw.copyOfRange(1, 1 + ivLen)
             val cipherBytes = raw.copyOfRange(1 + ivLen, raw.size)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_BITS, iv))
             cipher.doFinal(cipherBytes)
-        }.getOrElse { raw }
+        }.getOrElse {
+            if (raw.size == 32) raw else throw SecurityException("Corrupted hardware-sealed secret payload.")
+        }
     }
 
     fun openEncryptedPreferences(context: Context): SharedPreferences {
-        return runCatching {
+        val appCtx = context.applicationContext ?: context
+        fun createEncrypted(): SharedPreferences {
             val masterKey = runCatching {
-                val masterKeyBuilder = MasterKey.Builder(context.applicationContext)
+                val masterKeyBuilder = MasterKey.Builder(appCtx)
                     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                if (hasStrongBox(context)) {
+                if (hasStrongBox(appCtx)) {
                     runCatching { masterKeyBuilder.setRequestStrongBoxBacked(true) }
                 }
                 masterKeyBuilder.build()
             }.getOrElse {
-                MasterKey.Builder(context.applicationContext)
+                MasterKey.Builder(appCtx)
                     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                     .setRequestStrongBoxBacked(false)
                     .build()
             }
-
-            EncryptedSharedPreferences.create(
-                context.applicationContext,
+            return EncryptedSharedPreferences.create(
+                appCtx,
                 ENCRYPTED_PREFS_NAME,
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        }.getOrElse {
-            context.applicationContext.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
+        }
+
+        return runCatching {
+            createEncrypted().also { isEncryptedPrefsActive = true }
+        }.recoverCatching { err ->
+            // Only clear & recreate if an actual EncryptedSharedPreferences keyset existed (OS restore/OEM invalidation);
+            // avoid wiping fallback prefs on environments without AndroidKeyStore (e.g. JVM Robolectric or broken TEE).
+            val rawPrefs = appCtx.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
+            val hasKeyset = rawPrefs.contains("__androidx_security_crypto_encrypted_prefs_key_keyset__") ||
+                rawPrefs.contains("__androidx_security_crypto_encrypted_prefs_value_keyset__")
+            if (!hasKeyset) throw err
+            rawPrefs.edit().clear().commit()
+            createEncrypted().also { isEncryptedPrefsActive = true }
+        }.getOrElse { err ->
+            isEncryptedPrefsActive = false
+            Log.e("HardwareKeystoreVault", "EncryptedSharedPreferences unavailable: ${err.localizedMessage}")
+            appCtx.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
         }
     }
 

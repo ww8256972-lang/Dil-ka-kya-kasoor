@@ -2,9 +2,9 @@ package com.example.security
 
 import android.content.Context
 import com.aheaditec.talsec_security.security.api.SuspiciousAppInfo
+import com.aheaditec.talsec_security.security.api.Talsec
 import com.aheaditec.talsec_security.security.api.TalsecConfig
 import com.aheaditec.talsec_security.security.api.ThreatListener
-import com.example.BuildConfig
 import com.scottyab.rootbeer.RootBeer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,16 +24,18 @@ object RaspAndRootShieldManager : ThreatListener.ThreatDetected {
     private val _securityViolation = MutableStateFlow<String?>(null)
     val securityViolation: StateFlow<String?> = _securityViolation
 
+    @Volatile
+    private var talsecInitialized: Boolean = false
+
     fun initializeShield(context: Context, expectedCertBase64Hash: String) {
         val appContext = context.applicationContext ?: context
 
-        // Run RootBeer and certificate telemetry audit safely without triggering Talsec native self-kill on CI-signed APKs
         runCatching {
             val rootBeer = RootBeer(appContext)
             if (rootBeer.checkSuExists() && rootBeer.detectRootManagementApps()) {
-                _securityViolation.value = null // Logged in EnterpriseRaspGuard for Admin Security Center
+                _securityViolation.value = "RASP_ROOT_BINARY_AND_APP_DETECTED"
             }
-            if (expectedCertBase64Hash.isNotBlank()) {
+            if (expectedCertBase64Hash.isNotBlank() && !talsecInitialized) {
                 val packageInstallers = arrayOf(
                     "com.android.vending",
                     "com.google.android.packageinstaller",
@@ -53,8 +55,9 @@ object RaspAndRootShieldManager : ThreatListener.ThreatDetected {
                     .supportedAlternativeStores(packageInstallers)
                     .prod(false)
                     .build()
-                // Keep config validated for RASP compliance without starting native ptrace/kill daemon on sideloaded builds
-                config.hashCode()
+                ThreatListener(this).registerListener(appContext)
+                Talsec.start(appContext, config)
+                talsecInitialized = true
             }
         }
     }

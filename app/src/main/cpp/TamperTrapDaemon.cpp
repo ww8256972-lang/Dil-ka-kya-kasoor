@@ -1,56 +1,86 @@
 #include <jni.h>
 #include <string>
-#include <fstream>
-#include <sstream>
+#include <cstring>
+#include <cstdlib>
 #include <cstdint>
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <android/log.h>
 
 #define LOG_TAG "WCI_TamperTrapDaemon"
 
 namespace {
 
-    // Scan /proc/self/maps for unauthorized runtime memory injection or rwx segments
-    bool detectUnauthorizedRwxOrPatch() {
-        std::ifstream maps("/proc/self/maps");
-        if (!maps.is_open()) {
+    [[gnu::always_inline]] inline int raw_sys_openat(const char* path, int flags) noexcept {
+        return static_cast<int>(syscall(__NR_openat, AT_FDCWD, path, flags, 0));
+    }
+
+    [[gnu::always_inline]] inline ssize_t raw_sys_read(int fd, void* buf, size_t count) noexcept {
+        return syscall(__NR_read, fd, buf, count);
+    }
+
+    [[gnu::always_inline]] inline int raw_sys_close(int fd) noexcept {
+        return static_cast<int>(syscall(__NR_close, fd));
+    }
+
+    // Scan /proc/self/maps directly via kernel syscalls for unauthorized runtime memory injection or rwx segments
+    bool detectUnauthorizedRwxOrPatch() noexcept {
+        int fd = raw_sys_openat("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
             return false;
         }
-        std::string line;
-        while (std::getline(maps, line)) {
-            // Detect suspicious anonymous RWX regions or known binary patchers
-            if (line.find("rwxp") != std::string::npos) {
-                if (line.find("frida") != std::string::npos ||
-                    line.find("substrate") != std::string::npos ||
-                    line.find("lsplant") != std::string::npos ||
-                    line.find("gameguardian") != std::string::npos ||
-                    line.find("mt_hook") != std::string::npos) {
-                    return true;
+        char buf[4096];
+        std::string currentLine;
+        currentLine.reserve(512);
+        ssize_t n;
+        while ((n = raw_sys_read(fd, buf, sizeof(buf))) > 0) {
+            for (ssize_t i = 0; i < n; ++i) {
+                char c = buf[i];
+                if (c == '\n') {
+                    if (currentLine.find("rwxp") != std::string::npos) {
+                        if (currentLine.find("frida") != std::string::npos ||
+                            currentLine.find("substrate") != std::string::npos ||
+                            currentLine.find("lsplant") != std::string::npos ||
+                            currentLine.find("gameguardian") != std::string::npos ||
+                            currentLine.find("mt_hook") != std::string::npos ||
+                            currentLine.find("memfd:") != std::string::npos) {
+                            raw_sys_close(fd);
+                            return true;
+                        }
+                    }
+                    currentLine.clear();
+                } else if (currentLine.size() < 1024) {
+                    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                    currentLine.push_back(c);
                 }
             }
         }
+        raw_sys_close(fd);
         return false;
     }
 
-    // Verify TracerPid in /proc/self/status for ptrace attachment
-    bool detectActivePtraceDebugger() {
-        std::ifstream status("/proc/self/status");
-        if (!status.is_open()) {
+    // Verify TracerPid in /proc/self/status via raw syscall for ptrace attachment
+    bool detectActivePtraceDebugger() noexcept {
+        int fd = raw_sys_openat("/proc/self/status", O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
             return false;
         }
-        std::string line;
-        while (std::getline(status, line)) {
-            if (line.rfind("TracerPid:", 0) == 0) {
-                std::string pidPart = line.substr(10);
-                int tracerPid = std::stoi(pidPart);
-                if (tracerPid > 0) {
-                    return true;
-                }
-                break;
-            }
+        char buf[4096];
+        ssize_t n = raw_sys_read(fd, buf, sizeof(buf) - 1);
+        raw_sys_close(fd);
+        if (n <= 0) {
+            return false;
         }
-        return false;
+        buf[n] = '\0';
+        const char* tracer = std::strstr(buf, "TracerPid:");
+        if (tracer == nullptr) {
+            return false;
+        }
+        char* endPtr = nullptr;
+        long tracerPid = std::strtol(tracer + 10, &endPtr, 10);
+        return tracerPid > 0;
     }
 
 } // anonymous namespace

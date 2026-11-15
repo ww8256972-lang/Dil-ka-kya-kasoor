@@ -15,10 +15,12 @@ struct SharedZeroCopyRingBuffer {
     uint8_t slots[RING_CAPACITY_SLOTS][SLOT_PAYLOAD_BYTES];
 };
 
-static SharedZeroCopyRingBuffer* gSharedRing = nullptr;
+static std::atomic<SharedZeroCopyRingBuffer*> gSharedRing{nullptr};
 
 SharedZeroCopyRingBuffer* getOrMapZeroCopyRing() noexcept {
-    if (gSharedRing != nullptr) return gSharedRing;
+    SharedZeroCopyRingBuffer* existing = gSharedRing.load(std::memory_order_acquire);
+    if (existing != nullptr) return existing;
+
     void* mapped = mmap(
         nullptr,
         sizeof(SharedZeroCopyRingBuffer),
@@ -28,10 +30,16 @@ SharedZeroCopyRingBuffer* getOrMapZeroCopyRing() noexcept {
         0
     );
     if (mapped == MAP_FAILED) return nullptr;
-    gSharedRing = reinterpret_cast<SharedZeroCopyRingBuffer*>(mapped);
-    gSharedRing->writeSeq.store(0ULL, std::memory_order_relaxed);
-    gSharedRing->readSeq.store(0ULL, std::memory_order_relaxed);
-    return gSharedRing;
+    auto* candidate = reinterpret_cast<SharedZeroCopyRingBuffer*>(mapped);
+    candidate->writeSeq.store(0ULL, std::memory_order_relaxed);
+    candidate->readSeq.store(0ULL, std::memory_order_relaxed);
+
+    SharedZeroCopyRingBuffer* expected = nullptr;
+    if (!gSharedRing.compare_exchange_strong(expected, candidate, std::memory_order_acq_rel)) {
+        munmap(mapped, sizeof(SharedZeroCopyRingBuffer));
+        return expected;
+    }
+    return candidate;
 }
 
 } // namespace wci_ipc_ring
@@ -43,8 +51,9 @@ Java_com_waqar_institute_ipc_ZeroCopyIpcRingManager_nativePublishZeroCopyFrame(
     jobject /* thiz */,
     jbyteArray frameBytes) {
     auto* ring = wci_ipc_ring::getOrMapZeroCopyRing();
-    if (ring == nullptr || frameBytes == nullptr) return -1L;
+    if (env == nullptr || ring == nullptr || frameBytes == nullptr) return -1L;
     jsize len = env->GetArrayLength(frameBytes);
+    if (len <= 0) return -1L;
     size_t copyLen = (static_cast<size_t>(len) < (wci_ipc_ring::SLOT_PAYLOAD_BYTES - 1))
         ? static_cast<size_t>(len)
         : (wci_ipc_ring::SLOT_PAYLOAD_BYTES - 1);
@@ -58,5 +67,9 @@ Java_com_waqar_institute_ipc_ZeroCopyIpcRingManager_nativePublishZeroCopyFrame(
         static_cast<jsize>(copyLen),
         reinterpret_cast<jbyte*>(ring->slots[slotIdx])
     );
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return -1L;
+    }
     return static_cast<jlong>(seq + 1ULL);
 }

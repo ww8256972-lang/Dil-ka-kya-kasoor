@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.PropertyName
 
 enum class PortalRole(val key: String, val label: String, val hindiLabel: String) {
     ADMIN("admin", "Admin", "एडमिन (Owner)"),
@@ -24,20 +25,59 @@ data class UserProfile(
     val mfaEnabled: Boolean = false,
     val totpSecret: String = "",
     val linkedEntityId: String = "",
+    @get:PropertyName("isStudent") @PropertyName("isStudent") val isStudent: Boolean = false,
+    @get:PropertyName("isTeacher") @PropertyName("isTeacher") val isTeacher: Boolean = false,
+    @get:PropertyName("isParent") @PropertyName("isParent") val isParent: Boolean = false,
+    @get:PropertyName("isAdmin") @PropertyName("isAdmin") val isAdmin: Boolean = false,
+    val portalRoles: List<String> = emptyList(),
+    val activeSessionToken: String = "",
+    val activeDeviceId: String = "",
+    val lastActiveTimestamp: Timestamp? = null,
     val createdAt: Timestamp = Timestamp.now()
 ) {
-    fun toMap(): Map<String, Any> = mapOf(
-        "uid" to uid,
-        "email" to email,
-        "displayName" to displayName,
-        "role" to role,
-        "username" to username,
-        "phone" to phone,
-        "mfaEnabled" to mfaEnabled,
-        "totpSecret" to totpSecret,
-        "linkedEntityId" to linkedEntityId,
-        "createdAt" to createdAt
-    )
+    fun effectivePortalRoles(): List<String> {
+        val set = linkedSetOf<String>()
+        if (role.isNotBlank()) set.add(role.lowercase())
+        portalRoles.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank) }.forEach { set.add(it) }
+        if (isAdmin) set.add(PortalRole.ADMIN.key)
+        if (isTeacher) set.add(PortalRole.TEACHER.key)
+        if (isStudent) set.add(PortalRole.STUDENT.key)
+        if (isParent) set.add(PortalRole.PARENT.key)
+        return set.toList()
+    }
+
+    fun supportsRole(targetRole: PortalRole): Boolean =
+        when (targetRole) {
+            PortalRole.ADMIN -> isAdmin || role.equals("admin", ignoreCase = true) || portalRoles.any { it.equals("admin", ignoreCase = true) }
+            PortalRole.TEACHER -> isTeacher || role.equals("teacher", ignoreCase = true) || portalRoles.any { it.equals("teacher", ignoreCase = true) }
+            PortalRole.STUDENT -> isStudent || role.equals("student", ignoreCase = true) || portalRoles.any { it.equals("student", ignoreCase = true) }
+            PortalRole.PARENT -> isParent || role.equals("parent", ignoreCase = true) || portalRoles.any { it.equals("parent", ignoreCase = true) }
+        }
+
+    fun toMap(): Map<String, Any> {
+        val roles = effectivePortalRoles()
+        val map = mutableMapOf<String, Any>(
+            "uid" to uid,
+            "email" to email,
+            "displayName" to displayName,
+            "role" to role,
+            "username" to username,
+            "phone" to phone,
+            "mfaEnabled" to mfaEnabled,
+            "totpSecret" to totpSecret,
+            "linkedEntityId" to linkedEntityId,
+            "isStudent" to (isStudent || "student" in roles),
+            "isTeacher" to (isTeacher || "teacher" in roles),
+            "isParent" to (isParent || "parent" in roles),
+            "isAdmin" to (isAdmin || "admin" in roles),
+            "portalRoles" to roles,
+            "createdAt" to createdAt
+        )
+        if (activeSessionToken.isNotBlank()) map["activeSessionToken"] = activeSessionToken
+        if (activeDeviceId.isNotBlank()) map["activeDeviceId"] = activeDeviceId
+        if (lastActiveTimestamp != null) map["lastActiveTimestamp"] = lastActiveTimestamp
+        return map
+    }
 }
 
 data class UsernameAlias(
@@ -62,16 +102,25 @@ data class DeviceSession(
     val deviceName: String = "",
     val platform: String = "Android",
     val active: Boolean = true,
+    val activeSessionToken: String = "",
+    val activeDeviceId: String = "",
+    val lastActiveTimestamp: Timestamp? = null,
     val createdAt: Timestamp = Timestamp.now()
 ) {
-    fun toMap(): Map<String, Any> = mapOf(
-        "sessionId" to sessionId,
-        "uid" to uid,
-        "deviceName" to deviceName,
-        "platform" to platform,
-        "active" to active,
-        "createdAt" to createdAt
-    )
+    fun toMap(): Map<String, Any> {
+        val map = mutableMapOf<String, Any>(
+            "sessionId" to sessionId,
+            "uid" to uid,
+            "deviceName" to deviceName,
+            "platform" to platform,
+            "active" to active,
+            "createdAt" to createdAt
+        )
+        if (activeSessionToken.isNotBlank()) map["activeSessionToken"] = activeSessionToken
+        if (activeDeviceId.isNotBlank()) map["activeDeviceId"] = activeDeviceId
+        if (lastActiveTimestamp != null) map["lastActiveTimestamp"] = lastActiveTimestamp
+        return map
+    }
 }
 
 data class PortalCredential(
@@ -83,19 +132,51 @@ data class PortalCredential(
     val displayName: String = "",
     val assignedByUid: String = "",
     val active: Boolean = true,
+    @get:PropertyName("isStudent") @PropertyName("isStudent") val isStudent: Boolean = false,
+    @get:PropertyName("isTeacher") @PropertyName("isTeacher") val isTeacher: Boolean = false,
+    @get:PropertyName("isParent") @PropertyName("isParent") val isParent: Boolean = false,
+    @get:PropertyName("isAdmin") @PropertyName("isAdmin") val isAdmin: Boolean = false,
+    val portalRoles: List<String> = emptyList(),
     val createdAt: Timestamp = Timestamp.now()
 ) {
-    fun toMap(): Map<String, Any> = mapOf(
-        "username" to username,
-        "passwordHash" to passwordHash,
-        "passwordSalt" to passwordSalt,
-        "role" to role,
-        "linkedEntityId" to linkedEntityId,
-        "displayName" to displayName,
-        "assignedByUid" to assignedByUid,
-        "active" to active,
-        "createdAt" to createdAt
-    )
+    fun effectivePortalRoles(): List<String> {
+        val set = linkedSetOf<String>()
+        if (role.isNotBlank()) set.add(role.lowercase())
+        portalRoles.mapNotNull { it.trim().lowercase().takeIf(String::isNotBlank) }.forEach { set.add(it) }
+        if (isAdmin) set.add(PortalRole.ADMIN.key)
+        if (isTeacher) set.add(PortalRole.TEACHER.key)
+        if (isStudent) set.add(PortalRole.STUDENT.key)
+        if (isParent) set.add(PortalRole.PARENT.key)
+        return set.toList()
+    }
+
+    fun supportsRole(targetRole: PortalRole): Boolean =
+        when (targetRole) {
+            PortalRole.ADMIN -> isAdmin || role.equals("admin", ignoreCase = true) || portalRoles.any { it.equals("admin", ignoreCase = true) }
+            PortalRole.TEACHER -> isTeacher || role.equals("teacher", ignoreCase = true) || portalRoles.any { it.equals("teacher", ignoreCase = true) }
+            PortalRole.STUDENT -> isStudent || role.equals("student", ignoreCase = true) || portalRoles.any { it.equals("student", ignoreCase = true) }
+            PortalRole.PARENT -> isParent || role.equals("parent", ignoreCase = true) || portalRoles.any { it.equals("parent", ignoreCase = true) }
+        }
+
+    fun toMap(): Map<String, Any> {
+        val roles = effectivePortalRoles()
+        return mapOf(
+            "username" to username,
+            "passwordHash" to passwordHash,
+            "passwordSalt" to passwordSalt,
+            "role" to role,
+            "linkedEntityId" to linkedEntityId,
+            "displayName" to displayName,
+            "assignedByUid" to assignedByUid,
+            "active" to active,
+            "isStudent" to (isStudent || "student" in roles),
+            "isTeacher" to (isTeacher || "teacher" in roles),
+            "isParent" to (isParent || "parent" in roles),
+            "isAdmin" to (isAdmin || "admin" in roles),
+            "portalRoles" to roles,
+            "createdAt" to createdAt
+        )
+    }
 }
 
 data class StudentRecord(
@@ -208,6 +289,7 @@ data class BatchRecord(
     val name: String = "",
     val courseId: String = "",
     val courseName: String = "",
+    val teacherId: String = "",
     val teacherName: String = "",
     val roomName: String = "",
     val daysOfWeek: String = "Mon-Sat",
@@ -225,6 +307,7 @@ data class BatchRecord(
         "name" to name,
         "courseId" to courseId,
         "courseName" to courseName,
+        "teacherId" to teacherId,
         "teacherName" to teacherName,
         "roomName" to roomName,
         "daysOfWeek" to daysOfWeek,
@@ -538,22 +621,37 @@ data class GuardianLink(
     val studentName: String = "",
     val ptmNotes: String = "",
     val consentSigned: Boolean = true,
+    val parentUsername: String = "",
+    @get:PropertyName("isStudent") @PropertyName("isStudent") val isStudent: Boolean = false,
+    @get:PropertyName("isTeacher") @PropertyName("isTeacher") val isTeacher: Boolean = false,
+    @get:PropertyName("isParent") @PropertyName("isParent") val isParent: Boolean = true,
+    @get:PropertyName("isAdmin") @PropertyName("isAdmin") val isAdmin: Boolean = false,
+    val portalRoles: List<String> = listOf("parent"),
     val ownerUid: String = "",
     val createdAt: Timestamp = Timestamp.now()
 ) {
-    fun toMap(): Map<String, Any> = mapOf(
-        "id" to id,
-        "guardianName" to guardianName,
-        "phone" to phone,
-        "email" to email,
-        "relation" to relation,
-        "studentId" to studentId,
-        "studentName" to studentName,
-        "ptmNotes" to ptmNotes,
-        "consentSigned" to consentSigned,
-        "ownerUid" to ownerUid,
-        "createdAt" to createdAt
-    )
+    fun toMap(): Map<String, Any> {
+        val map = mutableMapOf<String, Any>(
+            "id" to id,
+            "guardianName" to guardianName,
+            "phone" to phone,
+            "email" to email,
+            "relation" to relation,
+            "studentId" to studentId,
+            "studentName" to studentName,
+            "ptmNotes" to ptmNotes,
+            "consentSigned" to consentSigned,
+            "isStudent" to isStudent,
+            "isTeacher" to isTeacher,
+            "isParent" to isParent,
+            "isAdmin" to isAdmin,
+            "portalRoles" to (portalRoles.ifEmpty { listOf("parent") }),
+            "ownerUid" to ownerUid,
+            "createdAt" to createdAt
+        )
+        if (parentUsername.isNotBlank()) map["parentUsername"] = parentUsername
+        return map
+    }
 }
 
 data class AnnouncementItem(

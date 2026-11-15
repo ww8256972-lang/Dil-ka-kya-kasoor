@@ -47,15 +47,19 @@ Java_com_waqar_institute_biometric_FaceBiometricVerificationEngine_nativeCompute
     jobject /* thiz */,
     jfloatArray liveVec,
     jfloatArray enrolledVec) {
-    if (liveVec == nullptr || enrolledVec == nullptr) return 0.0f;
+    if (env == nullptr || liveVec == nullptr || enrolledVec == nullptr) return 0.0f;
     jsize lenA = env->GetArrayLength(liveVec);
     jsize lenB = env->GetArrayLength(enrolledVec);
     jsize len = (lenA < lenB) ? lenA : lenB;
-    if (len <= 0) return 0.0f;
+    if (len <= 0 || len > 16384) return 0.0f;
     std::vector<float> bufA(static_cast<size_t>(len));
     std::vector<float> bufB(static_cast<size_t>(len));
     env->GetFloatArrayRegion(liveVec, 0, len, bufA.data());
     env->GetFloatArrayRegion(enrolledVec, 0, len, bufB.data());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return 0.0f;
+    }
     return wci_biometric_cpp::computeCosineSimilarity128D(
         bufA.data(),
         bufB.data(),
@@ -69,13 +73,19 @@ Java_com_waqar_institute_biometric_FaceBiometricVerificationEngine_nativeNormali
     JNIEnv* env,
     jobject /* thiz */,
     jfloatArray rawVec) {
-    if (rawVec == nullptr) return env->NewFloatArray(0);
+    if (env == nullptr || rawVec == nullptr) return env != nullptr ? env->NewFloatArray(0) : nullptr;
     jsize len = env->GetArrayLength(rawVec);
-    if (len <= 0) return env->NewFloatArray(0);
+    if (len <= 0 || len > 16384) return env->NewFloatArray(0);
     std::vector<float> buf(static_cast<size_t>(len));
     env->GetFloatArrayRegion(rawVec, 0, len, buf.data());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return env->NewFloatArray(0);
+    }
     wci_biometric_cpp::normalizeL2Vector(buf.data(), static_cast<size_t>(len));
     jfloatArray out = env->NewFloatArray(len);
-    env->SetFloatArrayRegion(out, 0, len, buf.data());
+    if (out != nullptr) {
+        env->SetFloatArrayRegion(out, 0, len, buf.data());
+    }
     return out;
 }

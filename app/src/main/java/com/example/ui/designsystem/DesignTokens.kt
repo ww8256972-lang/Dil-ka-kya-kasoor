@@ -59,24 +59,76 @@ object WciColors {
     val TextMutedDark = Color(0xFFC8D6FF)
     val TextDisabledDark = Color(0xFF8E9ECF)
 
-    // Daylight Iridescent Sapphire Palette (Ensures crisp contrast without washed-out yellow)
-    val BgPrimaryLight = Color(0xFF182254)
-    val BgElevatedLight = Color(0xFF212E6E)
-    val BgContainerLight = Color(0xFF2A3B88)
-    val GlassSurfaceLight = Color(0xD91E2B68)
-    val GlassBorderLightMode = Color(0x66FFFFFF)
-    val TextPrimaryLight = Color(0xFFFFFFFF)
-    val TextSecondaryLight = Color(0xFFE0E7FF)
-    val TextMutedLight = Color(0xFFBBD0FF)
+    // Daylight Frosted Slate-Sapphire Palette (Genuine high-contrast light mode)
+    val BgPrimaryLight = Color(0xFFF1F5F9)
+    val BgElevatedLight = Color(0xFFFFFFFF)
+    val BgContainerLight = Color(0xFFE2E8F0)
+    val GlassSurfaceLight = Color(0xEEFFFFFF)
+    val GlassBorderLightMode = Color(0x470F172A)
+    val TextPrimaryLight = Color(0xFF0F172A)
+    val TextSecondaryLight = Color(0xFF334155)
+    val TextMutedLight = Color(0xFF475569)
 
-    // Semantic Status Tokens (Crisp Neon)
+    // Semantic Status Tokens (Crisp Neon Dark + Deep High-Contrast Light)
     val Success = Color(0xFF14F195)
+    val SuccessLight = Color(0xFF047857)
     val Warning = Color(0xFF38BDF8) // Crisp Sky Cyan instead of muddy yellow
+    val WarningLight = Color(0xFF0369A1)
     val AmberHighlight = Color(0xFFFF9F43)
     val Danger = Color(0xFFFF4D79)
+    val DangerLight = Color(0xFFBE123C)
     val Info = Color(0xFF00E5FF)
+    val InfoLight = Color(0xFF0284C7)
     val AiAccentStart = Color(0xFFA970FF)
     val AiAccentEnd = Color(0xFF00E5FF)
+
+    val textPrimary: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) TextPrimaryDark else TextPrimaryLight
+
+    val textSecondary: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) TextSecondaryDark else TextSecondaryLight
+
+    val textMuted: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) TextMutedDark else TextMutedLight
+
+    val primarySurface: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) BgPrimaryDark else BgPrimaryLight
+
+    val elevatedSurface: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) BgElevatedDark else BgElevatedLight
+
+    val containerSurface: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) BgContainerDark else BgContainerLight
+
+    val cardInnerSurface: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) Color(0xFF121A45).copy(alpha = 0.85f) else Color(0xFFF8FAFC)
+
+    val glassBorderSubtleColor: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) GlassBorderSubtle else Color(0x260F172A)
+
+    val infoColor: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) Info else InfoLight
+
+    val successColor: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) Success else SuccessLight
+
+    val warningColor: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) Warning else WarningLight
+
+    val dangerColor: Color
+        @androidx.compose.runtime.Composable
+        get() = if (LocalIsDarkTheme.current) Danger else DangerLight
 
     // Role Palettes
     val AdminPalette = RolePalette(

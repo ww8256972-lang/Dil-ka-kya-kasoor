@@ -38,39 +38,31 @@ class ExamFaceAuthViewModel : ViewModel() {
     ) {
         viewModelScope.launch {
             _status.value = FaceVerificationGateStatus.ScanningFace
-            val targetBitmap = liveSelfieBitmap
-                ?: StudentFaceEnrollmentManager.decodeDataUriToBitmap(admissionPhotoDataUri)
+            if (liveSelfieBitmap == null) {
+                _status.value = FaceVerificationGateStatus.BlockedMismatch(
+                    "Live front-camera selfie capture is required to unlock this proctored exam."
+                )
+                return@launch
+            }
 
-            if (targetBitmap == null) {
-                // If running in cloud emulator without physical front camera feed, verify enrolled template
-                val existingTemplate = StudentFaceEnrollmentManager.loadTemplateFromVault(context, studentId)
-                if (existingTemplate != null || studentId.isNotBlank()) {
-                    _status.value = FaceVerificationGateStatus.VerifiedMatch(similarityPercent = 96)
+            val result = StudentFaceEnrollmentManager.verifyLiveSelfieAgainstStudent(
+                context = context,
+                studentId = studentId,
+                admissionPhotoDataUri = admissionPhotoDataUri,
+                liveSelfieBitmap = liveSelfieBitmap
+            )
+            result.fold(
+                onSuccess = { similarity ->
+                    val pct = (similarity * 100f).toInt().coerceIn(85, 100)
+                    _status.value = FaceVerificationGateStatus.VerifiedMatch(similarityPercent = pct)
                     onVerifiedSuccess()
-                    return@launch
+                },
+                onFailure = { err ->
+                    _status.value = FaceVerificationGateStatus.BlockedMismatch(
+                        err.localizedMessage ?: "Biometric Face Mismatch: Only the registered student can take this exam."
+                    )
                 }
-            }
-
-            if (targetBitmap != null) {
-                val result = StudentFaceEnrollmentManager.verifyLiveSelfieAgainstStudent(
-                    context = context,
-                    studentId = studentId,
-                    admissionPhotoDataUri = admissionPhotoDataUri,
-                    liveSelfieBitmap = targetBitmap
-                )
-                result.fold(
-                    onSuccess = { similarity ->
-                        val pct = (similarity * 100f).toInt().coerceIn(85, 99)
-                        _status.value = FaceVerificationGateStatus.VerifiedMatch(similarityPercent = pct)
-                        onVerifiedSuccess()
-                    },
-                    onFailure = { err ->
-                        _status.value = FaceVerificationGateStatus.BlockedMismatch(
-                            err.localizedMessage ?: "Biometric Face Mismatch: Only the registered student can take this exam."
-                        )
-                    }
-                )
-            }
+            )
         }
     }
 

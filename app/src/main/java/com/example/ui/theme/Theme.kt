@@ -91,6 +91,20 @@ val WciTypography = Typography(
         fontSize = 14.sp,
         lineHeight = 19.sp,
         letterSpacing = 0.2.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = PlusJakartaSans,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
+        letterSpacing = 0.2.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = PlusJakartaSans,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.2.sp
     )
 )
 
@@ -121,16 +135,16 @@ fun WaqarInstituteTheme(
         lightColorScheme(
             primary = rolePalette.start,
             secondary = rolePalette.end,
-            tertiary = WciColors.Info,
+            tertiary = WciColors.InfoLight,
             background = WciColors.BgPrimaryLight,
             surface = WciColors.BgElevatedLight,
             surfaceVariant = WciColors.BgContainerLight,
-            onPrimary = Color.White,
-            onSecondary = Color.White,
+            onPrimary = Color(0xFF05060F),
+            onSecondary = Color(0xFF05060F),
             onBackground = WciColors.TextPrimaryLight,
             onSurface = WciColors.TextPrimaryLight,
             onSurfaceVariant = WciColors.TextMutedLight,
-            error = WciColors.Danger
+            error = WciColors.DangerLight
         )
     }
 

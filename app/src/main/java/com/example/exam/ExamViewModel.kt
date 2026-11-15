@@ -1,6 +1,8 @@
 package com.example.exam
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
 import android.os.Build
 import android.view.WindowManager
 import androidx.lifecycle.ViewModel
@@ -8,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.model.ExamRecord
 import com.example.data.model.ExamResult
 import com.example.security.EnterpriseRaspGuard
+import java.lang.ref.WeakReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,6 +43,7 @@ data class ActiveProctoredExamState(
     val focusLossWarnings: Int = 0,
     val isMultiWindowBlocked: Boolean = false,
     val isFlagSecureActive: Boolean = false,
+    val isKioskLockTaskActive: Boolean = false,
     val isSubmitted: Boolean = false,
     val submittedResult: ExamResult? = null,
     val securityAlertBanner: String? = null
@@ -51,6 +55,7 @@ class ExamViewModel(
 
     private val _examState = MutableStateFlow(ActiveProctoredExamState())
     val examState: StateFlow<ActiveProctoredExamState> = _examState.asStateFlow()
+    private var activeExamActivityRef: WeakReference<Activity>? = null
 
     /**
      * Initializes a new 50-question Fisher-Yates shuffled exam session and restores any cached answers.
@@ -62,8 +67,13 @@ class ExamViewModel(
         studentName: String,
         questionCount: Int = 50
     ) {
+        activeExamActivityRef = activity?.let { WeakReference(it) }
+
         // Rule 2: Enforce FLAG_SECURE screenshot & screen-recording shield
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
+        // Kiosk Lock Task Mode: Pin / lock the exam screen during active assessment
+        val kioskActive = engageAndroidKioskLockTaskMode(activity)
 
         // Rule 3: Check multi-window / split-screen mode
         val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -78,11 +88,14 @@ class ExamViewModel(
             else -> null
         }
 
-        val shuffledQuestions = examRepository.generateShuffledExamPaper(
+        val shuffledQuestions = examRepository.generateShuffledPaperForExam(
             studentId = studentId,
-            examId = exam.id,
-            courseName = exam.courseName,
-            questionCount = questionCount
+            exam = exam,
+            fallbackQuestionCount = questionCount
+        )
+        ActiveExamAntiCheatGuard.registerActiveExamSession(
+            studentId = studentId,
+            questions = shuffledQuestions
         )
         val cached = examRepository.getCachedAnswers(
             examId = exam.id,
@@ -101,6 +114,7 @@ class ExamViewModel(
             focusLossWarnings = 0,
             isMultiWindowBlocked = inMultiWindow,
             isFlagSecureActive = true,
+            isKioskLockTaskActive = kioskActive,
             isSubmitted = false,
             submittedResult = null,
             securityAlertBanner = securityWarning
@@ -189,6 +203,8 @@ class ExamViewModel(
         val exam = current.exam ?: return
         if (current.isSubmitted) return
 
+        ActiveExamAntiCheatGuard.clearActiveExamSession(current.studentId)
+        disengageAndroidKioskLockTaskMode(activeExamActivityRef?.get())
         viewModelScope.launch {
             val result = examRepository.submitStudentExamResult(
                 exam = exam,
@@ -200,6 +216,7 @@ class ExamViewModel(
                 ownerUid = ownerUid
             )
             _examState.value = _examState.value.copy(
+                isKioskLockTaskActive = false,
                 isSubmitted = true,
                 submittedResult = result
             )
@@ -207,6 +224,51 @@ class ExamViewModel(
     }
 
     fun releaseExamSecurityShield(activity: Activity?) {
-        activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        val targetActivity = activity ?: activeExamActivityRef?.get()
+        targetActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        disengageAndroidKioskLockTaskMode(targetActivity)
+        activeExamActivityRef = null
+        ActiveExamAntiCheatGuard.clearActiveExamSession(_examState.value.studentId)
+    }
+
+    companion object {
+        /**
+         * Safely activates Android Lock Task (Kiosk / Screen Pinning) Mode for the active exam Activity.
+         */
+        fun engageAndroidKioskLockTaskMode(activity: Activity?): Boolean {
+            if (activity == null) return false
+            return runCatching {
+                val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val alreadyLocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am?.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                } else {
+                    @Suppress("DEPRECATION")
+                    am?.isInLockTaskMode == true
+                }
+                if (!alreadyLocked) {
+                    activity.startLockTask()
+                }
+                true
+            }.getOrDefault(false)
+        }
+
+        /**
+         * Safely stops Android Lock Task (Kiosk / Screen Pinning) Mode when the exam ends or submits.
+         */
+        fun disengageAndroidKioskLockTaskMode(activity: Activity?) {
+            if (activity == null) return
+            runCatching {
+                val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                val isLocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am != null && am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                } else {
+                    @Suppress("DEPRECATION")
+                    am?.isInLockTaskMode == true
+                }
+                if (isLocked) {
+                    activity.stopLockTask()
+                }
+            }
+        }
     }
 }

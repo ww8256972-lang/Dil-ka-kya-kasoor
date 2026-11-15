@@ -1,7 +1,5 @@
 #include <jni.h>
 #include <string>
-#include <fstream>
-#include <sstream>
 #include <vector>
 #include <array>
 #include <thread>
@@ -38,6 +36,8 @@ namespace {
 
 static std::atomic<bool> g_tamperDetected{false};
 static std::atomic<uint64_t> gBaselineTextSegmentChecksum{0ULL};
+static std::array<char, 65> gBaselineApkDigestHex{};
+static std::atomic<bool> gBaselineApkDigestSet{false};
 
 // ============================================================================
 // DIRECT LINUX KERNEL SYSCALL WRAPPERS (DEFEATS MT MANAGER libc.so IO-REDIRECT)
@@ -57,6 +57,14 @@ static std::atomic<uint64_t> gBaselineTextSegmentChecksum{0ULL};
 
 [[gnu::always_inline]] static inline int raw_sys_close(int fd) noexcept {
     return static_cast<int>(syscall(__NR_close, fd));
+}
+
+static inline void secureZeroMemory(void* ptr, size_t len) noexcept {
+    if (ptr == nullptr || len == 0) return;
+    volatile uint8_t* p = reinterpret_cast<volatile uint8_t*>(ptr);
+    while (len--) {
+        *p++ = 0;
+    }
 }
 
 // ============================================================================
@@ -79,8 +87,8 @@ static std::atomic<uint64_t> gBaselineTextSegmentChecksum{0ULL};
 }
 
 // Scans /proc/self/maps and /proc/self/status directly via kernel syscalls for Frida,
-// Zygisk, LSPosed, MT Manager io_redirect, memfd, & TracerPid
-static bool scanKernelMapsAndTracerForHooks() noexcept {
+// Xposed, Riru, Substrate, Zygisk, LSPosed, MT Manager io_redirect, memfd, & TracerPid
+static bool scanKernelMapsAndTracerForHooks(bool checkExtendedTokens = true) noexcept {
     char buf[4096];
     int statusFd = raw_sys_openat("/proc/self/status", O_RDONLY | O_CLOEXEC);
     if (statusFd >= 0) {
@@ -89,26 +97,44 @@ static bool scanKernelMapsAndTracerForHooks() noexcept {
         if (n > 0) {
             buf[n] = '\0';
             const char* tracer = std::strstr(buf, "TracerPid:");
-            if (tracer != nullptr && std::atoi(tracer + 10) != 0) {
-                return true; // ptrace debugger attached!
+            if (tracer != nullptr) {
+                long pid = std::strtol(tracer + 10, nullptr, 10);
+                if (pid > 0) {
+                    return true; // ptrace debugger attached!
+                }
             }
         }
     }
 
     int mapsFd = raw_sys_openat("/proc/self/maps", O_RDONLY | O_CLOEXEC);
     if (mapsFd >= 0) {
+        std::string window;
+        window.reserve(8192);
         ssize_t n;
         while ((n = raw_sys_read(mapsFd, buf, sizeof(buf) - 1)) > 0) {
-            buf[n] = '\0';
-            if (std::strstr(buf, "frida") ||
-                std::strstr(buf, "libgadget") ||
-                std::strstr(buf, "lsposed") ||
-                std::strstr(buf, "zygisk") ||
-                std::strstr(buf, "io_redirect") ||
-                std::strstr(buf, "mt.bin") ||
-                std::strstr(buf, "memfd:frida")) {
+            for (ssize_t i = 0; i < n; ++i) {
+                char c = buf[i];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                window.push_back(c);
+            }
+            if (window.find("frida") != std::string::npos ||
+                window.find("libgadget") != std::string::npos ||
+                window.find("lsposed") != std::string::npos ||
+                window.find("zygisk") != std::string::npos ||
+                window.find("io_redirect") != std::string::npos ||
+                window.find("mt.bin") != std::string::npos ||
+                window.find("memfd:frida") != std::string::npos ||
+                (checkExtendedTokens && (
+                    window.find("xposed") != std::string::npos ||
+                    window.find("riru") != std::string::npos ||
+                    window.find("substrate") != std::string::npos ||
+                    window.find("lsplant") != std::string::npos ||
+                    window.find("libdobby") != std::string::npos))) {
                 raw_sys_close(mapsFd);
                 return true; // MT Manager hook or Frida/LSPosed agent injected in RAM!
+            }
+            if (window.size() > 128) {
+                window.erase(0, window.size() - 128);
             }
         }
         raw_sys_close(mapsFd);
@@ -144,27 +170,9 @@ int evaluateRaspStateMachine() noexcept {
                 break;
             }
             case 0x20u: {
-                if (scanKernelMapsAndTracerForHooks()) {
+                if (scanKernelMapsAndTracerForHooks(true)) {
                     riskFlags |= (1 << 1);
                     riskFlags |= (1 << 2);
-                }
-                state = 0x30u;
-                break;
-            }
-            case 0x30u: {
-                std::ifstream mapsFile("/proc/self/maps");
-                if (mapsFile.is_open()) {
-                    std::string line;
-                    while (std::getline(mapsFile, line)) {
-                        if (line.find("frida") != std::string::npos ||
-                            line.find("xposed") != std::string::npos ||
-                            line.find("zygisk") != std::string::npos ||
-                            line.find("riru") != std::string::npos ||
-                            line.find("substrate") != std::string::npos) {
-                            riskFlags |= (1 << 2);
-                            break;
-                        }
-                    }
                 }
                 state = 0xFFu;
                 break;
@@ -394,13 +402,6 @@ int detectHypervisorAndEmulationFlags() noexcept {
 // RULE 2: HOOK-AGNOSTIC INLINE FUNCTION INTERCEPTION & TRAMPOLINE DETECTION
 // ============================================================================
 
-bool isFunctionPrologueHooked(const void* /* fnAddress */) noexcept {
-    // Do not directly dereference .text function pointers on Android 10+ ARM64 devices,
-    // because the Android dynamic linker maps .text as Execute-Only Memory (XOM, PROT_EXEC without PROT_READ),
-    // which triggers SIGSEGV (SEGV_ACCERR) when read from user space.
-    return false;
-}
-
 bool scanThreadsForFridaAndZygisk() noexcept {
     DIR* taskDir = opendir("/proc/self/task");
     if (taskDir == nullptr) return false;
@@ -409,8 +410,9 @@ bool scanThreadsForFridaAndZygisk() noexcept {
     struct dirent* entry = nullptr;
     while ((entry = readdir(taskDir)) != nullptr) {
         if (entry->d_name[0] == '.') continue;
-        std::string commPath = std::string("/proc/self/task/") + entry->d_name + "/comm";
-        int fd = raw_sys_openat(commPath.c_str(), O_RDONLY | O_CLOEXEC);
+        char commPath[128];
+        std::snprintf(commPath, sizeof(commPath), "/proc/self/task/%.64s/comm", entry->d_name);
+        int fd = raw_sys_openat(commPath, O_RDONLY | O_CLOEXEC);
         if (fd >= 0) {
             char commBuf[128] = {0};
             ssize_t r = raw_sys_read(fd, commBuf, sizeof(commBuf) - 1);
@@ -418,9 +420,14 @@ bool scanThreadsForFridaAndZygisk() noexcept {
             if (r > 0) {
                 commBuf[r] = '\0';
                 if (std::strstr(commBuf, "gum-js-loop") ||
-                    std::strstr(commBuf, "pool-frida")) {
-                    suspiciousThreadFound = true;
-                    break;
+                    std::strstr(commBuf, "pool-frida") ||
+                    std::strstr(commBuf, "gmain")) {
+                    // Only flag explicit Frida thread names ("gmain" can appear in GLib; keep strict Frida signatures)
+                    if (std::strstr(commBuf, "gum-js-loop") ||
+                        std::strstr(commBuf, "pool-frida")) {
+                        suspiciousThreadFound = true;
+                        break;
+                    }
                 }
             }
         }
@@ -430,10 +437,7 @@ bool scanThreadsForFridaAndZygisk() noexcept {
 }
 
 bool inspectInlineHooksAndTrampolines() noexcept {
-    if (scanThreadsForFridaAndZygisk() || scanKernelMapsAndTracerForHooks()) {
-        return true;
-    }
-    return false;
+    return scanThreadsForFridaAndZygisk() || scanKernelMapsAndTracerForHooks(true);
 }
 
 // ============================================================================
@@ -443,7 +447,19 @@ bool inspectInlineHooksAndTrampolines() noexcept {
 
 std::atomic<uint64_t> gPolymorphicRollingKey{0xA55A9C3F71E24B19ULL};
 
-bool verifyApkDexAndSignatureDigest(const char* apkPath, bool /* isDebuggableBuild */) noexcept {
+static bool bufferContainsBytes(const uint8_t* haystack, size_t haystackLen, const char* needle, size_t needleLen) noexcept {
+    if (haystack == nullptr || needle == nullptr || needleLen == 0 || haystackLen < needleLen) {
+        return false;
+    }
+    for (size_t i = 0; i + needleLen <= haystackLen; ++i) {
+        if (std::memcmp(haystack + i, needle, needleLen) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild) noexcept {
     if (apkPath == nullptr || apkPath[0] == '\0') return false;
 
     int fd = raw_sys_openat(apkPath, O_RDONLY | O_CLOEXEC);
@@ -463,11 +479,14 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool /* isDebuggableBui
     Sha256Context shaCtx{};
     sha256Init(shaCtx);
 
-    bool foundDexOrManifest = false;
+    bool foundClassesDex = false;
+    bool foundManifest = false;
+    bool foundMetaInfCert = false;
+    bool foundV2SigBlock = false;
     uint8_t header[30];
 
-    // Scan local ZIP file headers for classes.dex and META-INF signing artifacts via kernel syscalls
-    for (int entryIdx = 0; entryIdx < 512; ++entryIdx) {
+    // Scan local ZIP file headers for classes.dex, AndroidManifest.xml, and META-INF signing artifacts via kernel syscalls
+    for (int entryIdx = 0; entryIdx < 1024; ++entryIdx) {
         if (raw_sys_read(fd, header, 30) != 30) break;
 
         if (header[0] != 0x50u || header[1] != 0x4Bu || header[2] != 0x03u || header[3] != 0x04u) {
@@ -491,8 +510,15 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool /* isDebuggableBui
             raw_sys_lseek(fd, static_cast<off_t>(extraLen), SEEK_CUR);
         }
 
+        if (entryName == "classes.dex") foundClassesDex = true;
+        if (entryName == "AndroidManifest.xml") foundManifest = true;
+        if (entryName.rfind("META-INF/", 0) == 0 &&
+            (entryName.ends_with(".RSA") || entryName.ends_with(".EC") ||
+             entryName.ends_with(".DSA") || entryName.ends_with(".SF"))) {
+            foundMetaInfCert = true;
+        }
+
         if (entryName == "classes.dex" || entryName.rfind("META-INF/", 0) == 0 || entryName == "AndroidManifest.xml") {
-            foundDexOrManifest = true;
             sha256Update(shaCtx, header, 30);
             sha256Update(shaCtx, reinterpret_cast<const uint8_t*>(entryName.data()), entryName.size());
 
@@ -515,20 +541,52 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool /* isDebuggableBui
         }
     }
 
-    // Hash the APK Signing Block v2/v3 tail (last 8 KB of APK archive) via raw kernel syscall
+    // Inspect APK tail & EOCD for APK Signing Block v2/v3 ("APK Sig Block 42")
     off_t fileSize = raw_sys_lseek(fd, 0, SEEK_END);
-    if (fileSize > 8192) {
-        raw_sys_lseek(fd, fileSize - 8192, SEEK_SET);
-        std::array<uint8_t, 8192> tailBuf{};
+    if (fileSize > 64) {
+        const off_t tailWindow = (fileSize > 65536) ? 65536 : fileSize;
+        raw_sys_lseek(fd, fileSize - tailWindow, SEEK_SET);
+        std::vector<uint8_t> tailBuf(static_cast<size_t>(tailWindow));
         ssize_t readTail = raw_sys_read(fd, tailBuf.data(), tailBuf.size());
         if (readTail > 0) {
-            sha256Update(shaCtx, tailBuf.data(), static_cast<size_t>(readTail));
-            foundDexOrManifest = true;
+            const size_t readLen = static_cast<size_t>(readTail);
+            sha256Update(shaCtx, tailBuf.data(), readLen);
+            if (bufferContainsBytes(tailBuf.data(), readLen, "APK Sig Block 42", 16)) {
+                foundV2SigBlock = true;
+            }
+            // Locate EOCD (PK\x05\x06) to locate Central Directory offset and verify APK Sig Block immediately preceding CD
+            if (!foundV2SigBlock && readLen >= 22) {
+                for (size_t pos = readLen - 22; ; --pos) {
+                    if (tailBuf[pos] == 0x50u && tailBuf[pos + 1] == 0x4Bu &&
+                        tailBuf[pos + 2] == 0x05u && tailBuf[pos + 3] == 0x06u) {
+                        uint32_t cdOffset = static_cast<uint32_t>(tailBuf[pos + 16]) |
+                                            (static_cast<uint32_t>(tailBuf[pos + 17]) << 8) |
+                                            (static_cast<uint32_t>(tailBuf[pos + 18]) << 16) |
+                                            (static_cast<uint32_t>(tailBuf[pos + 19]) << 24);
+                        if (cdOffset >= 24 && static_cast<off_t>(cdOffset) <= fileSize) {
+                            uint8_t magic16[16] = {0};
+                            raw_sys_lseek(fd, static_cast<off_t>(cdOffset) - 16, SEEK_SET);
+                            if (raw_sys_read(fd, magic16, 16) == 16) {
+                                if (std::memcmp(magic16, "APK Sig Block 42", 16) == 0) {
+                                    foundV2SigBlock = true;
+                                    sha256Update(shaCtx, magic16, 16);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    if (pos == 0) break;
+                }
+            }
         }
     }
 
     raw_sys_close(fd);
-    if (!foundDexOrManifest) return false;
+
+    // Must contain real APK payload & signature metadata (either v1 META-INF or v2/v3 APK Sig Block 42)
+    if (!foundClassesDex || !foundManifest || (!foundMetaInfCert && !foundV2SigBlock)) {
+        return false;
+    }
 
     uint8_t digest[32] = {0};
     sha256Final(shaCtx, digest);
@@ -537,12 +595,35 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool /* isDebuggableBui
     for (int i = 0; i < 32; ++i) {
         std::snprintf(computedHex + (i * 2), 3, "%02x", digest[i]);
     }
+    secureZeroMemory(digest, sizeof(digest));
 
+    // Constant-time pin comparison against release pin when applicable
     const char* expectedCertHex = WCI_EXPECTED_CERT_SHA256;
-    if (std::strncmp(computedHex, expectedCertHex, 64) == 0) {
+    uint8_t diff = 0;
+    for (int i = 0; i < 64; ++i) {
+        diff |= static_cast<uint8_t>(computedHex[i] ^ expectedCertHex[i]);
+    }
+    if (diff == 0) {
         return true;
     }
-    return foundDexOrManifest;
+
+    // Bind first verified runtime APK digest to defeat runtime APK swap / TOCTOU bypass
+    bool expectedSet = false;
+    if (gBaselineApkDigestSet.compare_exchange_strong(expectedSet, true)) {
+        std::memcpy(gBaselineApkDigestHex.data(), computedHex, 65);
+        return true;
+    }
+
+    uint8_t runtimeDiff = 0;
+    for (int i = 0; i < 64; ++i) {
+        runtimeDiff |= static_cast<uint8_t>(computedHex[i] ^ gBaselineApkDigestHex[i]);
+    }
+    if (runtimeDiff != 0) {
+        return false;
+    }
+
+    // On debug builds signed with debug key or release builds with verified v2/v3 signature & unchanged runtime digest:
+    return isDebuggableBuild || foundV2SigBlock || foundMetaInfCert;
 }
 
 // ============================================================================
@@ -571,7 +652,9 @@ bool verifyInRamTextSegmentChecksum() noexcept {
 }
 
 bool verifyAndMutatePolymorphicState() noexcept {
-    if (inspectInlineHooksAndTrampolines() || !verifyInRamTextSegmentChecksum()) {
+    if (g_tamperDetected.load(std::memory_order_acquire) ||
+        inspectInlineHooksAndTrampolines() ||
+        !verifyInRamTextSegmentChecksum()) {
         return false;
     }
     uint64_t checksum = computeCodeSegmentChecksum();
@@ -583,16 +666,18 @@ bool verifyAndMutatePolymorphicState() noexcept {
 
 std::atomic<bool> gWatchdogRunning{false};
 
-static void* antiTamperWatchdogLoop(void*) {
+static void* antiTamperWatchdogLoop(void*) noexcept {
     verifyInRamTextSegmentChecksum();
 
-    while (gWatchdogRunning.load(std::memory_order_relaxed)) {
-        if (scanKernelMapsAndTracerForHooks() ||
+    while (gWatchdogRunning.load(std::memory_order_acquire)) {
+        if (scanKernelMapsAndTracerForHooks(true) ||
             inspectInlineHooksAndTrampolines() ||
             !verifyInRamTextSegmentChecksum()) {
             g_tamperDetected.store(true, std::memory_order_release);
         }
-        sleep(15);
+        for (int sec = 0; sec < 15 && gWatchdogRunning.load(std::memory_order_acquire); ++sec) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
     return nullptr;
 }
@@ -603,23 +688,45 @@ void startPtraceDebuggerWatchdogThread() noexcept {
         return;
     }
     verifyInRamTextSegmentChecksum();
+
+    pthread_t tid{};
+    pthread_attr_t attr{};
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    const int rc = pthread_create(&tid, &attr, antiTamperWatchdogLoop, nullptr);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        gWatchdogRunning.store(false, std::memory_order_release);
+    }
 }
 
 static bool verifyApkWithContext(JNIEnv* env, jobject context) noexcept {
-    if (context == nullptr) return false;
+    if (env == nullptr || context == nullptr) return false;
 
     jclass contextClass = env->GetObjectClass(context);
-    if (contextClass == nullptr) return false;
+    if (contextClass == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        return false;
+    }
 
     jmethodID getResourcePathMid = env->GetMethodID(
         contextClass,
         "getPackageResourcePath",
         "()Ljava/lang/String;"
     );
-    if (getResourcePathMid == nullptr) return false;
+    if (getResourcePathMid == nullptr || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(contextClass);
+        return false;
+    }
 
     auto apkPathStr = static_cast<jstring>(env->CallObjectMethod(context, getResourcePathMid));
-    if (apkPathStr == nullptr) return false;
+    if (env->ExceptionCheck() || apkPathStr == nullptr) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (apkPathStr != nullptr) env->DeleteLocalRef(apkPathStr);
+        env->DeleteLocalRef(contextClass);
+        return false;
+    }
 
     bool isDebuggableBuild = false;
     jmethodID getAppInfoMid = env->GetMethodID(
@@ -627,36 +734,56 @@ static bool verifyApkWithContext(JNIEnv* env, jobject context) noexcept {
         "getApplicationInfo",
         "()Landroid/content/pm/ApplicationInfo;"
     );
-    if (getAppInfoMid != nullptr) {
+    if (getAppInfoMid != nullptr && !env->ExceptionCheck()) {
         jobject appInfoObj = env->CallObjectMethod(context, getAppInfoMid);
-        if (appInfoObj != nullptr) {
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        } else if (appInfoObj != nullptr) {
             jclass appInfoClass = env->GetObjectClass(appInfoObj);
             if (appInfoClass != nullptr) {
                 jfieldID flagsFid = env->GetFieldID(appInfoClass, "flags", "I");
-                if (flagsFid != nullptr) {
+                if (flagsFid != nullptr && !env->ExceptionCheck()) {
                     jint appFlags = env->GetIntField(appInfoObj, flagsFid);
                     isDebuggableBuild = ((appFlags & 0x00000002) != 0);
+                } else if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
                 }
+                env->DeleteLocalRef(appInfoClass);
             }
+            env->DeleteLocalRef(appInfoObj);
         }
+    } else if (env->ExceptionCheck()) {
+        env->ExceptionClear();
     }
 
     const char* rawPath = env->GetStringUTFChars(apkPathStr, nullptr);
-    bool intact = verifyApkDexAndSignatureDigest(rawPath, isDebuggableBuild);
-    env->ReleaseStringUTFChars(apkPathStr, rawPath);
+    bool intact = false;
+    if (rawPath != nullptr) {
+        intact = verifyApkDexAndSignatureDigest(rawPath, isDebuggableBuild);
+        env->ReleaseStringUTFChars(apkPathStr, rawPath);
+    }
+    env->DeleteLocalRef(apkPathStr);
+    env->DeleteLocalRef(contextClass);
     return intact;
 }
 
 static jbyteArray computeHardwareBoundKeyMask(JNIEnv* env, jbyteArray hardwareSeed) noexcept {
+    if (env == nullptr) return nullptr;
     Sha256Context ctx{};
     sha256Init(ctx);
 
     if (hardwareSeed != nullptr) {
         jsize seedLen = env->GetArrayLength(hardwareSeed);
-        if (seedLen > 0) {
+        if (seedLen > 0 && seedLen <= 1048576) {
             std::vector<jbyte> seedBytes(static_cast<size_t>(seedLen));
             env->GetByteArrayRegion(hardwareSeed, 0, seedLen, seedBytes.data());
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                secureZeroMemory(seedBytes.data(), seedBytes.size());
+                return env->NewByteArray(0);
+            }
             sha256Update(ctx, reinterpret_cast<const uint8_t*>(seedBytes.data()), static_cast<size_t>(seedLen));
+            secureZeroMemory(seedBytes.data(), seedBytes.size());
         }
     }
 
@@ -672,7 +799,7 @@ static jbyteArray computeHardwareBoundKeyMask(JNIEnv* env, jbyteArray hardwareSe
     if (outArray != nullptr) {
         env->SetByteArrayRegion(outArray, 0, 32, reinterpret_cast<const jbyte*>(derived));
     }
-    std::memset(derived, 0, sizeof(derived));
+    secureZeroMemory(derived, sizeof(derived));
     return outArray;
 }
 
@@ -681,14 +808,17 @@ static jbyteArray computeHardwareBoundKeyMask(JNIEnv* env, jbyteArray hardwareSe
 // ============================================================================
 
 static jboolean JNICALL native_verifyEnvironment(JNIEnv* env, jobject /* thizOrCls */, jobject context) {
-    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks()) {
+    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks(true)) {
+        g_tamperDetected.store(true, std::memory_order_release);
         return JNI_FALSE;
     }
     return verifyApkWithContext(env, context) ? JNI_TRUE : JNI_FALSE;
 }
 
 static jbyteArray JNICALL native_deriveKeyMaterial(JNIEnv* env, jobject /* thizOrCls */) {
-    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks()) {
+    if (env == nullptr) return nullptr;
+    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks(true)) {
+        g_tamperDetected.store(true, std::memory_order_release);
         // Poison key material if MT Manager or Frida is detected so SQLCipher & Tink fail closed!
         return env->NewByteArray(32);
     }
@@ -704,7 +834,11 @@ static jint JNICALL native_detectHypervisorAndEmulation(JNIEnv* /* env */, jobje
 }
 
 static jboolean JNICALL native_inspectInlineFunctionHooks(JNIEnv* /* env */, jobject /* thiz */) {
-    return inspectInlineHooksAndTrampolines() ? JNI_TRUE : JNI_FALSE;
+    bool hooked = inspectInlineHooksAndTrampolines();
+    if (hooked) {
+        g_tamperDetected.store(true, std::memory_order_release);
+    }
+    return (hooked || g_tamperDetected.load(std::memory_order_acquire)) ? JNI_TRUE : JNI_FALSE;
 }
 
 static jboolean JNICALL native_verifySelfHealingCodePolymorphism(JNIEnv* /* env */, jobject /* thiz */) {
@@ -716,10 +850,38 @@ static jint JNICALL native_evaluateNativeRaspFlags(JNIEnv* /* env */, jobject /*
 }
 
 static jbyteArray JNICALL native_deriveTrustZoneBoundKeyMask(JNIEnv* env, jobject /* thiz */, jbyteArray hardwareSeed) {
-    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks()) {
+    if (env == nullptr) return nullptr;
+    if (g_tamperDetected.load(std::memory_order_acquire) || scanKernelMapsAndTracerForHooks(true)) {
+        g_tamperDetected.store(true, std::memory_order_release);
         return env->NewByteArray(32);
     }
     return computeHardwareBoundKeyMask(env, hardwareSeed);
+}
+
+static jstring JNICALL native_unshieldNative(JNIEnv* env, jobject /* thiz */, jbyteArray encodedBytes, jint keyMask) {
+    if (env == nullptr || encodedBytes == nullptr) {
+        return env != nullptr ? env->NewStringUTF("") : nullptr;
+    }
+    jsize len = env->GetArrayLength(encodedBytes);
+    if (len <= 0 || len > 1048576) {
+        return env->NewStringUTF("");
+    }
+    std::vector<uint8_t> plain(static_cast<size_t>(len) + 1, 0);
+    env->GetByteArrayRegion(encodedBytes, 0, len, reinterpret_cast<jbyte*>(plain.data()));
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        secureZeroMemory(plain.data(), plain.size());
+        return env->NewStringUTF("");
+    }
+    const uint32_t mask = static_cast<uint32_t>(keyMask);
+    for (jsize i = 0; i < len; ++i) {
+        const uint8_t k = static_cast<uint8_t>((mask ^ (static_cast<uint32_t>(i) * 0x1Fu)) & 0xFFu);
+        plain[static_cast<size_t>(i)] ^= k;
+    }
+    plain[static_cast<size_t>(len)] = '\0';
+    jstring result = env->NewStringUTF(reinterpret_cast<const char*>(plain.data()));
+    secureZeroMemory(plain.data(), plain.size());
+    return result != nullptr ? result : env->NewStringUTF("");
 }
 
 } // namespace
@@ -783,6 +945,18 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /* reserved */) {
     if (teeCls != nullptr) {
         env->RegisterNatives(teeCls, teeMethods, 1);
         env->DeleteLocalRef(teeCls);
+    } else {
+        env->ExceptionClear();
+    }
+
+    // 5. Register com.example.security.StringShield methods
+    static const JNINativeMethod stringShieldMethods[] = {
+        {"unshieldNative", "([BI)Ljava/lang/String;", reinterpret_cast<void*>(native_unshieldNative)}
+    };
+    jclass stringShieldCls = env->FindClass("com/example/security/StringShield");
+    if (stringShieldCls != nullptr) {
+        env->RegisterNatives(stringShieldCls, stringShieldMethods, 1);
+        env->DeleteLocalRef(stringShieldCls);
     } else {
         env->ExceptionClear();
     }

@@ -289,10 +289,10 @@ fun AdminDashboardModule(
                         Box(
                             modifier = Modifier
                                 .background(
-                                    Color(0xFF818CF8).copy(alpha = 0.28f),
+                                    Color(0xFF818CF8).copy(alpha = 0.24f),
                                     RoundedCornerShape(WciRadius.pill)
                                 )
-                                .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(WciRadius.pill))
+                                .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.pill))
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
@@ -304,15 +304,16 @@ fun AdminDashboardModule(
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontFamily = JetBrainsMono,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = if (isExamLiveNow) WciColors.Success else Color.White
+                                    color = if (isExamLiveNow) WciColors.successColor else WciColors.textPrimary
                                 )
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = if (nextExam != null) "${nextExam.durationMinutes} min • ${nextExam.totalMarks} Marks" else "Awaiting Schedule",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = JetBrainsMono,
-                                color = WciColors.Info
+                                color = WciColors.infoColor
                             )
                         )
                     }
@@ -324,7 +325,7 @@ fun AdminDashboardModule(
                             "Upcoming Exam - Scheduled by Admin"
                         },
                         style = MaterialTheme.typography.headlineMedium.copy(
-                            color = Color.White,
+                            color = WciColors.textPrimary,
                             fontWeight = FontWeight.ExtraBold
                         )
                     )
@@ -336,33 +337,35 @@ fun AdminDashboardModule(
                             "No live exam window is active right now. Scheduled batch exams appear and unlock automatically at the Admin-assigned date and time."
                         },
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = WciColors.TextSecondaryDark
+                            color = WciColors.textSecondary
                         )
                     )
                     Spacer(modifier = Modifier.height(14.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    val countdownTriple by produceState(
+                        initialValue = Triple("--", "--", "--"),
+                        key1 = nextStartMs
                     ) {
-                        val countdownTriple by produceState(
-                            initialValue = Triple("--", "--", "--"),
-                            key1 = nextStartMs
-                        ) {
-                            if (nextStartMs == null) {
-                                value = Triple("--", "--", "--")
-                            } else {
-                                while (true) {
-                                    val diffSec = ((nextStartMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
-                                    val d = (diffSec / 86400L).toString().padStart(2, '0')
-                                    val h = ((diffSec % 86400L) / 3600L).toString().padStart(2, '0')
-                                    val m = ((diffSec % 3600L) / 60L).toString().padStart(2, '0')
-                                    value = Triple(d, h, m)
-                                    kotlinx.coroutines.delay(30_000L)
-                                }
+                        if (nextStartMs == null) {
+                            value = Triple("--", "--", "--")
+                        } else {
+                            while (true) {
+                                val diffSec = ((nextStartMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
+                                val d = (diffSec / 86400L).toString().padStart(2, '0')
+                                val h = ((diffSec % 86400L) / 3600L).toString().padStart(2, '0')
+                                val m = ((diffSec % 3600L) / 60L).toString().padStart(2, '0')
+                                value = Triple(d, h, m)
+                                kotlinx.coroutines.delay(30_000L)
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    }
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             listOf(
                                 countdownTriple.first to "days",
                                 countdownTriple.second to "hrs",
@@ -370,9 +373,10 @@ fun AdminDashboardModule(
                             ).forEach { (num, unit) ->
                                 Box(
                                     modifier = Modifier
+                                        .weight(1f)
                                         .clip(RoundedCornerShape(16.dp))
-                                        .background(Color(0xFF1A255C).copy(alpha = 0.90f))
-                                        .border(1.2.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                                        .background(WciColors.containerSurface)
+                                        .border(1.2.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(16.dp))
                                         .padding(horizontal = 12.dp, vertical = 8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -382,32 +386,37 @@ fun AdminDashboardModule(
                                             style = MaterialTheme.typography.titleMedium.copy(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
-                                                color = Color(0xFF00E5FF)
+                                                color = WciColors.infoColor
                                             )
                                         )
                                         Text(
                                             text = unit,
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                fontSize = 10.sp,
-                                                color = WciColors.TextSecondaryDark
+                                                fontSize = 12.sp,
+                                                color = WciColors.textSecondary
                                             )
                                         )
                                     }
                                 }
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             LiquidPill(
                                 text = "Instructions",
                                 selected = false,
                                 icon = Icons.Default.Info,
-                                onClick = { showExamInstructionsModal = true }
+                                onClick = { showExamInstructionsModal = true },
+                                modifier = Modifier.weight(1f)
                             )
                             LiquidPill(
                                 text = if (isExamLiveNow) "Start CBT" else "Exam Hall",
                                 selected = isExamLiveNow,
                                 icon = Icons.Default.Quiz,
-                                onClick = { onNavigateToModule("M10_EXAMS") }
+                                onClick = { onNavigateToModule("M10_EXAMS") },
+                                modifier = Modifier.weight(1f)
                             )
                         }
                     }
@@ -448,7 +457,7 @@ fun AdminDashboardModule(
                                     fontFamily = JetBrainsMono,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = Color(0xFF05060F),
-                                    fontSize = 10.sp
+                                    fontSize = 12.sp
                                 )
                             )
                         }
@@ -460,14 +469,14 @@ fun AdminDashboardModule(
                                 "Welcome, ${state.userProfile?.displayName ?: activeRole.label}"
                             },
                             style = MaterialTheme.typography.headlineMedium.copy(
-                                color = Color.White,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
                         Text(
                             text = "${state.preferences.instituteName} • ${state.preferences.academicSession}",
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = WciColors.TextSecondaryDark
+                                color = WciColors.textSecondary
                             )
                         )
                     }
@@ -508,13 +517,13 @@ fun AdminDashboardModule(
                         Text(
                             text = "Attendance • Last 14 Days",
                             style = MaterialTheme.typography.titleSmall.copy(
-                                color = Color.White,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
                         Text(
                             text = "Present • Absent • Late",
-                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                         )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
@@ -528,13 +537,13 @@ fun AdminDashboardModule(
                                 "PRESENT" -> WciColors.Success
                                 "LATE" -> WciColors.Warning
                                 "ABSENT" -> WciColors.Danger
-                                else -> Color(0xFF334155)
+                                else -> WciColors.containerSurface
                             }
                             Box(
                                 modifier = Modifier
                                     .size(16.dp)
                                     .background(dotColor, CircleShape)
-                                    .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                                    .border(1.dp, WciColors.glassBorderSubtleColor, CircleShape)
                             )
                         }
                     }
@@ -574,13 +583,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF00E5FF),
                             onClick = { onNavigateToModule("M03_STUDENTS") }
                         ) {
-                            Text("ENROLLED STUDENTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("ENROLLED STUDENTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = state.students.size, color = Color(0xFF00E5FF), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.batches.size} Batches • ${state.courses.size} Courses",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
 
@@ -589,7 +598,7 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF14F195),
                             onClick = { onNavigateToModule("M08_FEES") }
                         ) {
-                            Text("FEE COLLECTED (MTD)", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("FEE COLLECTED (MTD)", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             MoneyTicker(amountPaise = totalCollectedPaise, color = WciColors.Success, fontSizeSp = 22)
                             Spacer(modifier = Modifier.height(4.dp))
@@ -604,13 +613,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF00E5FF),
                             onClick = { onNavigateToModule("M06_BATCHES") }
                         ) {
-                            Text("ASSIGNED BATCHES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("ASSIGNED BATCHES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = state.batches.size, color = Color(0xFF00E5FF), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.courses.size} Active Courses",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
 
@@ -619,13 +628,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF14F195),
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
-                            Text("PRESENT TODAY", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("PRESENT TODAY", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = presentTodayCount, color = WciColors.Success, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "QR & Roster Roll-Call",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
                     } else {
@@ -637,14 +646,14 @@ fun AdminDashboardModule(
                         ) {
                             Text(
                                 text = if (isParent) "$childShortName EXAM SCORE" else "LATEST EXAM SCORE",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = bestExamPercent, suffix = "%", color = Color(0xFFE879F9), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.examResults.size} Published Marksheets",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
 
@@ -655,7 +664,7 @@ fun AdminDashboardModule(
                         ) {
                             Text(
                                 text = if (isParent) "$childShortName FEE DUE" else "FEE DUE",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             MoneyTicker(amountPaise = totalPendingPaise, color = Color(0xFFFF6B8B), fontSizeSp = 22)
@@ -678,13 +687,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFFA855F7),
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
-                            Text("TODAY'S ATTENDANCE", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("TODAY'S ATTENDANCE", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = avgAttendance, suffix = "%", color = Color(0xFFE879F9), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "$presentTodayCount Present Today",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
 
@@ -693,7 +702,7 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF38BDF8),
                             onClick = { onNavigateToModule("M04_ADMISSIONS") }
                         ) {
-                            Text("NEW ENQUIRIES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("NEW ENQUIRIES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = state.enquiries.size, color = Color(0xFF38BDF8), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
@@ -708,13 +717,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF10F596),
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
-                            Text("PRESENT DAYS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("PRESENT DAYS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = presentTodayCount, color = WciColors.Success, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = if (isTeacher) "Verified Attendance & QR Logs" else "Verified Attendance Logs",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
 
@@ -723,13 +732,13 @@ fun AdminDashboardModule(
                             glowColor = Color(0xFF38BDF8),
                             onClick = { onNavigateToModule("M16_ANNOUNCEMENTS") }
                         ) {
-                            Text("INSTITUTE ALERTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("INSTITUTE ALERTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
                             CountUpInt(targetValue = state.announcements.size, color = Color(0xFF38BDF8), fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.liveClasses.size} Live Classes",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
                     }
@@ -747,7 +756,7 @@ fun AdminDashboardModule(
                     PortalRole.PARENT -> "Guardian Quick Access"
                 },
                 style = MaterialTheme.typography.titleMedium.copy(
-                    color = Color.White,
+                    color = WciColors.textPrimary,
                     fontWeight = FontWeight.ExtraBold
                 )
             )
@@ -935,11 +944,11 @@ fun AdminDashboardModule(
                         Column {
                             Text(
                                 text = "Fee Collection Trajectory",
-                                style = MaterialTheme.typography.titleSmall.copy(color = Color.White)
+                                style = MaterialTheme.typography.titleSmall.copy(color = WciColors.textPrimary)
                             )
                             Text(
                                 text = "${state.fees.size} verified receipts issued",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
                         LiquidPill(
@@ -951,7 +960,7 @@ fun AdminDashboardModule(
                     Spacer(modifier = Modifier.height(12.dp))
                     SparklineCanvas(
                         points = sparkPoints,
-                        color = WciColors.Success,
+                        color = WciColors.successColor,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(84.dp)
@@ -965,7 +974,7 @@ fun AdminDashboardModule(
             Text(
                 text = if (isAdmin) "Recent Institute Activity" else "Recent Notices & Updates",
                 style = MaterialTheme.typography.titleMedium.copy(
-                    color = Color.White,
+                    color = WciColors.textPrimary,
                     fontWeight = FontWeight.ExtraBold
                 )
             )
@@ -1000,12 +1009,12 @@ fun AdminDashboardModule(
                                 )
                                 Text(
                                     text = log.details,
-                                    style = MaterialTheme.typography.bodySmall.copy(color = Color.White)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textPrimary)
                                 )
                             }
                             Text(
                                 text = log.actorEmail.substringBefore("@"),
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                         }
                     }
@@ -1026,14 +1035,14 @@ fun AdminDashboardModule(
                         Text(
                             text = ann.title,
                             style = MaterialTheme.typography.titleSmall.copy(
-                                color = Color.White,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.Bold
                             )
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = ann.body,
-                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                         )
                     }
                 }
@@ -1045,11 +1054,11 @@ fun AdminDashboardModule(
         val nextExam = state.exams.firstOrNull()
         AlertDialog(
             onDismissRequest = { showExamInstructionsModal = false },
-            containerColor = WciColors.BgElevatedDark,
+            containerColor = WciColors.elevatedSurface,
             title = {
                 Text(
                     text = "Official Online CBT Exam Instructions",
-                    color = WciColors.TextPrimaryDark,
+                    color = WciColors.textPrimary,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                 )
             },
@@ -1065,7 +1074,7 @@ fun AdminDashboardModule(
                         Text(
                             text = nextExam?.title ?: "Upcoming Batch CBT Assessment",
                             style = MaterialTheme.typography.titleMedium.copy(
-                                color = WciColors.TextPrimaryDark,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
@@ -1097,7 +1106,7 @@ fun AdminDashboardModule(
                             "3. Screenshot, screen recording, split-screen, and overlay apps are strictly blocked by FLAG_SECURE & RASP.\n" +
                             "4. The exam auto-submits when the 24-hour scheduled countdown timer reaches 00:00.\n" +
                             "5. Official graded marksheets with Batch Rank & PDF download publish within 5 minutes of submission.",
-                        style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextPrimaryDark)
+                        style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textPrimary)
                     )
                 }
             },
@@ -1164,7 +1173,7 @@ fun StudentsModuleScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = if (canManageStudents) "Student Directory" else "My Student Profile",
-                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark)
+                        style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary)
                     )
                     Text(
                         text = if (canManageStudents) {
@@ -1172,7 +1181,7 @@ fun StudentsModuleScreen(
                         } else {
                             "Personal Enrollment Record & QR Digital ID"
                         },
-                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                     )
                 }
                 if (canManageStudents) {
@@ -1271,7 +1280,7 @@ fun StudentsModuleScreen(
                             Column {
                                 Text(
                                     text = student.fullName,
-                                    style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark),
+                                    style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1279,12 +1288,12 @@ fun StudentsModuleScreen(
                                     text = "${student.enrollmentNo} • ${student.courseName}",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFamily = JetBrainsMono,
-                                        color = WciColors.TextSecondaryDark
+                                        color = WciColors.textSecondary
                                     )
                                 )
                                 Text(
                                     text = "Batch: ${student.batchName.ifBlank { "Unassigned" }} • Phone: ${student.phone}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                 )
                                 if (student.attachmentName.isNotBlank()) {
                                     Row(
@@ -1301,8 +1310,8 @@ fun StudentsModuleScreen(
                                         Text(
                                             text = student.attachmentName,
                                             style = MaterialTheme.typography.bodySmall.copy(
-                                                color = WciColors.Info,
-                                                fontSize = 11.sp
+                                                color = WciColors.infoColor,
+                                                fontSize = 12.sp
                                             ),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -1473,11 +1482,11 @@ private fun EnrollStudentDialog(
     var photoDataUri by remember { mutableStateOf("") }
     var attachedFileName by remember { mutableStateOf("") }
 
-    // Admin-assigned Student & Parent Login Credentials (prefilled with 6-digit password, editable to 3+ digits)
+    // Admin-assigned Student & Parent Login Credentials (explicit min 6 chars; no hardcoded default)
     var studentUsername by remember { mutableStateOf("") }
-    var studentPassword by remember { mutableStateOf("123456") }
+    var studentPassword by remember { mutableStateOf("") }
     var parentUsername by remember { mutableStateOf("") }
-    var parentPassword by remember { mutableStateOf("123456") }
+    var parentPassword by remember { mutableStateOf("") }
 
     // 1. Android Photo Picker for Student Admission Photo
     val studentPhotoLauncher = rememberLauncherForActivityResult(
@@ -1499,8 +1508,8 @@ private fun EnrollStudentDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = WciColors.BgElevatedDark,
-        title = { Text("New Student Admission", color = WciColors.TextPrimaryDark) },
+        containerColor = WciColors.elevatedSurface,
+        title = { Text("New Student Admission", color = WciColors.textPrimary) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -1607,7 +1616,7 @@ private fun EnrollStudentDialog(
                     )
                 }
 
-                HorizontalDivider(color = WciColors.GlassBorderSubtle)
+                HorizontalDivider(color = WciColors.glassBorderSubtleColor)
                 Text(
                     text = "Assign Student & Parent Login Credentials (Saved in Cloud)",
                     style = MaterialTheme.typography.titleSmall.copy(color = palette.start)
@@ -1623,7 +1632,7 @@ private fun EnrollStudentDialog(
                     OutlinedTextField(
                         value = studentPassword,
                         onValueChange = { studentPassword = it },
-                        label = { Text("Student Password") },
+                        label = { Text("Student Password (min 6) *") },
                         modifier = Modifier.weight(1f),
                         singleLine = true
                     )
@@ -1639,7 +1648,7 @@ private fun EnrollStudentDialog(
                     OutlinedTextField(
                         value = parentPassword,
                         onValueChange = { parentPassword = it },
-                        label = { Text("Parent Password") },
+                        label = { Text("Parent Password (opt, min 6)") },
                         modifier = Modifier.weight(1f),
                         singleLine = true
                     )
@@ -1649,7 +1658,10 @@ private fun EnrollStudentDialog(
         confirmButton = {
             ShimmerButton(
                 text = "Save Admission",
-                enabled = fullName.isNotBlank() && phone.isNotBlank(),
+                enabled = fullName.isNotBlank() &&
+                    phone.isNotBlank() &&
+                    studentPassword.trim().length >= 6 &&
+                    (parentPassword.isBlank() || parentPassword.trim().length >= 6),
                 onClick = {
                     onSave(
                         enrollmentNo,
@@ -1673,7 +1685,7 @@ private fun EnrollStudentDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = WciColors.TextMutedDark) }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = WciColors.textMuted) }
         }
     )
 }
@@ -1692,13 +1704,13 @@ private fun Student360DetailDialog(
     var parentUsername by remember(student.id) {
         mutableStateOf("parent_" + student.fullName.lowercase().replace(Regex("[^a-z0-9]"), ""))
     }
-    var parentPassword by remember(student.id) { mutableStateOf("123456") }
+    var parentPassword by remember(student.id) { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = WciColors.BgElevatedDark,
+        containerColor = WciColors.elevatedSurface,
         title = {
-            Text("Student 360° Profile • ${student.enrollmentNo}", color = WciColors.TextPrimaryDark)
+            Text("Student 360° Profile • ${student.enrollmentNo}", color = WciColors.textPrimary)
         },
         text = {
             Column(
@@ -1721,11 +1733,11 @@ private fun Student360DetailDialog(
                         modifier = Modifier.size(84.dp)
                     )
                 }
-                Text(student.fullName, style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
+                Text(student.fullName, style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
                 Text("${student.courseName} • ${student.batchName}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
                 Text(
                     "Phone: ${student.phone} | Guardian: ${student.guardianName.ifBlank { "N/A" }} (${student.guardianPhone})",
-                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                 )
                 if (student.attachmentName.isNotBlank()) {
                     Row(
@@ -1759,7 +1771,7 @@ private fun Student360DetailDialog(
                         }
                     }
 
-                    HorizontalDivider(color = WciColors.GlassBorderSubtle)
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
                     Text(
                         text = "Issue Parent Portal Login for ${student.fullName}:",
                         style = MaterialTheme.typography.titleSmall.copy(
@@ -1778,7 +1790,7 @@ private fun Student360DetailDialog(
                         OutlinedTextField(
                             value = parentPassword,
                             onValueChange = { parentPassword = it },
-                            label = { Text("Parent Password") },
+                            label = { Text("Parent Password (min 6) *") },
                             modifier = Modifier.weight(1f),
                             singleLine = true
                         )
@@ -1786,7 +1798,7 @@ private fun Student360DetailDialog(
                     ShimmerButton(
                         text = "Save Parent Login Linked to ${student.fullName.substringBefore(" ")}",
                         icon = Icons.Default.FamilyRestroom,
-                        enabled = parentUsername.length >= 3 && parentPassword.length >= 3,
+                        enabled = parentUsername.trim().length >= 3 && parentPassword.trim().length >= 6,
                         onClick = { onCreateParentCredential(parentUsername, parentPassword) },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1809,7 +1821,7 @@ private fun Student360DetailDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close", color = WciColors.TextPrimaryDark) }
+            TextButton(onClick = onDismiss) { Text("Close", color = WciColors.textPrimary) }
         }
     )
 }
@@ -1843,8 +1855,8 @@ fun AdmissionsCrmModuleScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Admissions & Enquiry CRM", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
-                    Text("${state.enquiries.size} Leads • Demo Class & 1-Tap Conversion", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                    Text("Admissions & Enquiry CRM", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
+                    Text("${state.enquiries.size} Leads • Demo Class & 1-Tap Conversion", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                 }
                 ShimmerButton(text = "+ New Lead", icon = Icons.Default.AddIcCall, onClick = { showAddLead = true })
             }
@@ -1882,19 +1894,19 @@ fun AdmissionsCrmModuleScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(lead.applicantName, style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                            Text(lead.applicantName, style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                             Text(
                                 "${lead.interestedCourse} • Source: ${lead.source}",
                                 style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info)
                             )
                             Text(
                                 "Phone: ${lead.phone} • Follow-up: ${lead.followUpDate} • By: ${lead.counsellorName}",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                             if (lead.notes.isNotBlank()) {
                                 Text(
                                     "Notes: ${lead.notes}",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                                 )
                             }
                         }
@@ -1932,8 +1944,8 @@ fun AdmissionsCrmModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddLead = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Log Admission Enquiry", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Log Admission Enquiry", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Applicant Name *") }, singleLine = true)
@@ -2083,7 +2095,7 @@ fun StaffAndGuardiansModuleScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = member.fullName,
-                                        style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
+                                        style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
                                     )
                                     Text(
                                         text = "${member.employeeCode} • ${member.designation} (${member.department})",
@@ -2093,7 +2105,7 @@ fun StaffAndGuardiansModuleScreen(
                                         text = "Login: @$resolvedUsername • Phone: ${member.phone}",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = JetBrainsMono,
-                                            color = WciColors.TextSecondaryDark
+                                            color = WciColors.textSecondary
                                         )
                                     )
                                     Text(
@@ -2112,7 +2124,7 @@ fun StaffAndGuardiansModuleScreen(
                             if (isAdmin) {
                                 Column(horizontalAlignment = Alignment.End) {
                                     MoneyTicker(amountPaise = member.monthlySalaryPaise, color = WciColors.Success, fontSizeSp = 16)
-                                    Text("/ month", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                    Text("/ month", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 }
                             }
                         }
@@ -2137,14 +2149,14 @@ fun StaffAndGuardiansModuleScreen(
                             it.fullName.equals(g.studentName, ignoreCase = true)
                     }?.enrollmentNo.orEmpty()
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Text("${g.guardianName} (${g.relation} of ${g.studentName})", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                        Text("${g.guardianName} (${g.relation} of ${g.studentName})", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                         Text(
                             text = "Linked Student ID: ${g.studentId}" + if (linkedEnrollment.isNotBlank()) " • Roll: $linkedEnrollment" else "",
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Info)
                         )
                         Text("Phone: ${g.phone} • Consent Signed: ${if (g.consentSigned) "Yes" else "Pending"}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Success))
                         if (g.ptmNotes.isNotBlank()) {
-                            Text("PTM Notes: ${g.ptmNotes}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                            Text("PTM Notes: ${g.ptmNotes}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                         }
                     }
                 }
@@ -2190,7 +2202,7 @@ fun StaffAndGuardiansModuleScreen(
                 } ?: ""
             )
         }
-        var teacherPassword by remember(currentEditing) { mutableStateOf("123456") }
+        var teacherPassword by remember(currentEditing) { mutableStateOf("") }
         var teacherPhotoDataUri by remember(currentEditing) {
             mutableStateOf(
                 currentEditing?.photoUri?.ifBlank {
@@ -2217,7 +2229,7 @@ fun StaffAndGuardiansModuleScreen(
                 showAddStaff = false
                 editingStaff = null
             },
-            containerColor = WciColors.BgElevatedDark,
+            containerColor = WciColors.elevatedSurface,
             title = {
                 Text(
                     text = if (currentEditing == null) {
@@ -2225,7 +2237,7 @@ fun StaffAndGuardiansModuleScreen(
                     } else {
                         "Update Teacher • Biometric Photo & Login"
                     },
-                    color = WciColors.TextPrimaryDark
+                    color = WciColors.textPrimary
                 )
             },
             text = {
@@ -2277,8 +2289,8 @@ fun StaffAndGuardiansModuleScreen(
                                         "Used for Teacher 24h Biometric Face Authentication & ID"
                                     },
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (teacherPhotoDataUri.isNotBlank()) WciColors.Success else WciColors.TextMutedDark,
-                                        fontSize = 11.sp
+                                        color = if (teacherPhotoDataUri.isNotBlank()) WciColors.successColor else WciColors.textMuted,
+                                        fontSize = 12.sp
                                     )
                                 )
                             }
@@ -2315,7 +2327,7 @@ fun StaffAndGuardiansModuleScreen(
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
-                    HorizontalDivider(color = WciColors.GlassBorderSubtle)
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
                     Text(
                         text = "Create Teacher Username & Password (Saved in Cloud)",
                         style = MaterialTheme.typography.titleSmall.copy(color = WciColors.TeacherPalette.start)
@@ -2331,7 +2343,12 @@ fun StaffAndGuardiansModuleScreen(
                         OutlinedTextField(
                             value = teacherPassword,
                             onValueChange = { teacherPassword = it },
-                            label = { Text("Teacher Password") },
+                            label = {
+                                Text(
+                                    if (currentEditing == null) "Teacher Password (min 6) *"
+                                    else "New Password (blank=keep)"
+                                )
+                            },
                             modifier = Modifier.weight(1f),
                             singleLine = true
                         )
@@ -2341,7 +2358,10 @@ fun StaffAndGuardiansModuleScreen(
             confirmButton = {
                 ShimmerButton(
                     text = "Save Teacher & Login",
-                    enabled = name.isNotBlank() && phone.isNotBlank(),
+                    enabled = name.isNotBlank() &&
+                        phone.isNotBlank() &&
+                        (currentEditing != null || teacherPassword.trim().length >= 6) &&
+                        (teacherPassword.isBlank() || teacherPassword.trim().length >= 6),
                     onClick = {
                         viewModel.saveStaffMember(
                             existingId = currentEditing?.id,
@@ -2381,12 +2401,12 @@ fun StaffAndGuardiansModuleScreen(
         var sName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
         var ptm by remember { mutableStateOf("Attended orientation & signed digital consent.") }
         var parentUsername by remember { mutableStateOf("") }
-        var parentPassword by remember { mutableStateOf("123456") }
+        var parentPassword by remember { mutableStateOf("") }
 
         AlertDialog(
             onDismissRequest = { showAddGuardian = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Create Parent Account & Link Student", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Create Parent Account & Link Student", color = WciColors.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -2441,7 +2461,7 @@ fun StaffAndGuardiansModuleScreen(
                     OutlinedTextField(value = relation, onValueChange = { relation = it }, label = { Text("Relation (Father/Mother/Guardian)") }, singleLine = true)
                     OutlinedTextField(value = sName, onValueChange = { sName = it }, label = { Text("Linked Student Name, Roll No or ID *") }, singleLine = true)
                     OutlinedTextField(value = ptm, onValueChange = { ptm = it }, label = { Text("PTM / Consent Notes") })
-                    HorizontalDivider(color = WciColors.GlassBorderSubtle)
+                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
                     Text(
                         text = "Assign Parent Portal Login Credentials (Saved in Cloud):",
                         style = MaterialTheme.typography.titleSmall.copy(color = WciColors.ParentPalette.start)
@@ -2457,7 +2477,7 @@ fun StaffAndGuardiansModuleScreen(
                         OutlinedTextField(
                             value = parentPassword,
                             onValueChange = { parentPassword = it },
-                            label = { Text("Parent Password") },
+                            label = { Text("Parent Password (min 6) *") },
                             modifier = Modifier.weight(1f),
                             singleLine = true
                         )
@@ -2467,7 +2487,7 @@ fun StaffAndGuardiansModuleScreen(
             confirmButton = {
                 ShimmerButton(
                     text = "Save Parent & Login",
-                    enabled = gName.isNotBlank() && phone.isNotBlank() && sName.isNotBlank(),
+                    enabled = gName.isNotBlank() && phone.isNotBlank() && sName.isNotBlank() && parentPassword.trim().length >= 6,
                     onClick = {
                         viewModel.saveGuardianLink(
                             guardianName = gName,

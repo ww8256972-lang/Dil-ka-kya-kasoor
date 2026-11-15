@@ -60,7 +60,15 @@ sealed class GeofenceVerificationResult {
 
 object AntiProxyAttendanceManager {
     private const val QR_WINDOW_MILLIS = 15_000L
-    private const val HMAC_SECRET = "WCI_ANTI_PROXY_HMAC_KEY_2026_ULTRA_SECURE"
+    private val SHIELDED_KEY_SEED: ByteArray = com.example.security.StringShield.shield(
+        "WCI-ROLLING-QR-CROSS-DEVICE-2026-KDF",
+        keyMask = 0x7B
+    )
+    private val redeemedNonceCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Long>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 128
+        }
+    )
     const val DEFAULT_INSTITUTE_LAT = 28.6139
     const val DEFAULT_INSTITUTE_LNG = 77.2090
     const val DEFAULT_GEOFENCE_RADIUS_METERS = 100.0f
@@ -142,14 +150,25 @@ object AntiProxyAttendanceManager {
         val providedSig = parts[4]
 
         val currentWindow = nowEpochMs / QR_WINDOW_MILLIS
-        if (kotlin.math.abs(currentWindow - scannedWindow) > 1L) {
+        val windowDelta = currentWindow - scannedWindow
+        if (windowDelta !in 0L..1L) {
             throw SecurityException("QR Code Expired (>15 seconds old). Screenshot/Proxy attendance is blocked!")
         }
 
         val expectedSig = computeHmacSha256("$batchId|$scannedWindow|$nonce")
-        if (!expectedSig.equals(providedSig, ignoreCase = true)) {
+        val matches = MessageDigest.isEqual(
+            expectedSig.lowercase().toByteArray(Charsets.UTF_8),
+            providedSig.trim().lowercase().toByteArray(Charsets.UTF_8)
+        )
+        if (!matches) {
             throw SecurityException("QR Cryptographic Signature Mismatch! Tampered QR code rejected.")
         }
+
+        val replayKey = "$batchId|$scannedWindow|$nonce"
+        if (redeemedNonceCache.containsKey(replayKey)) {
+            throw SecurityException("QR Code Already Redeemed! Replay proxy attendance is blocked.")
+        }
+        redeemedNonceCache[replayKey] = nowEpochMs
         batchId
     }
 
@@ -231,9 +250,12 @@ object AntiProxyAttendanceManager {
     }
 
     private fun computeHmacSha256(data: String): String {
+        val rawSeed = com.example.security.StringShield.unshield(SHIELDED_KEY_SEED, keyMask = 0x7B)
+        val derivedKey = MessageDigest.getInstance("SHA-256").digest(rawSeed.toByteArray(Charsets.UTF_8))
         val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(HMAC_SECRET.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+        mac.init(SecretKeySpec(derivedKey, "HmacSHA256"))
         val raw = mac.doFinal(data.toByteArray(Charsets.UTF_8))
+        java.util.Arrays.fill(derivedKey, 0.toByte())
         return raw.joinToString("") { "%02x".format(it) }.take(24)
     }
 

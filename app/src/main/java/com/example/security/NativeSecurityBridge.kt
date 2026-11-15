@@ -36,7 +36,7 @@ object NativeSecurityBridge {
     fun isEnvironmentIntact(context: Context): Boolean {
         return if (nativeLoaded) {
             runCatching { verifyEnvironmentIntegrity(context.applicationContext) }
-                .getOrElse { WaqarNativeSecurityBridge.initializeDefenseGradeSecurity(context).apkSignatureIntact }
+                .getOrDefault(false)
         } else {
             WaqarNativeSecurityBridge.initializeDefenseGradeSecurity(context).apkSignatureIntact
         }
@@ -44,9 +44,10 @@ object NativeSecurityBridge {
 
     fun getHardwareDerivedKeyMask(): ByteArray {
         return if (nativeLoaded) {
-            runCatching { deriveKeyMaterial() }.getOrElse { ByteArray(32) }
+            runCatching { deriveKeyMaterial() }.getOrDefault(ByteArray(0))
         } else {
-            ByteArray(32)
+            java.security.MessageDigest.getInstance("SHA-256")
+                .digest("WCI_JVM_KEY_MASK_ANCHOR_2026".toByteArray(Charsets.UTF_8))
         }
     }
 }

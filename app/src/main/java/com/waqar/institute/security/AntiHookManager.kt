@@ -38,7 +38,7 @@ object AntiHookManager {
 
     fun runComprehensiveHookScan(): HookInspectionReport {
         val nativeFlags = if (nativeLoaded) {
-            runCatching { nativeScanFridaAndHooks() }.getOrDefault(0)
+            runCatching { nativeScanFridaAndHooks() }.getOrDefault(0x04)
         } else {
             0
         }

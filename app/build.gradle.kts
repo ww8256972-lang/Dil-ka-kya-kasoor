@@ -48,13 +48,18 @@ android {
     }
   }
 
-  // Conditionally wire CMake native C++20 security module when explicitly requested via -PenableNativeCxxBuild=true
+  // Wire CMake native C++20 security module when -PenableNativeCxxBuild=true (default true) and NDK is present
   val sdkRoot = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME") ?: ""
-  val enableNativeCxx = project.findProperty("enableNativeCxxBuild") == "true"
-  if (enableNativeCxx && sdkRoot.isNotEmpty() && File(sdkRoot, "ndk").exists()) {
+  val ndkHome = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT") ?: ""
+  val hasNdkInstalled = (sdkRoot.isNotEmpty() && File(sdkRoot, "ndk").exists()) ||
+    (sdkRoot.isNotEmpty() && File(sdkRoot, "ndk-bundle").exists()) ||
+    (ndkHome.isNotEmpty() && File(ndkHome).exists())
+  val enableNativeCxx = (project.findProperty("enableNativeCxxBuild")?.toString() ?: "true") == "true"
+  if (enableNativeCxx && hasNdkInstalled) {
     externalNativeBuild {
       cmake {
         path = file("src/main/cpp/CMakeLists.txt")
+        version = "3.22.1"
       }
     }
   }

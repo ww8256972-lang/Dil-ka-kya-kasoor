@@ -320,10 +320,36 @@ object DocumentExportHelper {
         pdf.close()
     }
 
+    private fun sanitizeCsvField(raw: String, quoteAlways: Boolean = false): String {
+        val trimmed = raw.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+        val neutralized = if (trimmed.isNotEmpty() && trimmed[0] in charArrayOf('=', '+', '-', '@', '\t')) {
+            "'$trimmed"
+        } else {
+            trimmed
+        }
+        val escaped = neutralized.replace("\"", "\"\"")
+        return if (quoteAlways || escaped.contains(',') || escaped.contains('"')) {
+            "\"$escaped\""
+        } else {
+            escaped
+        }
+    }
+
     fun exportAndShareStudentsCsv(context: Context, students: List<StudentRecord>) {
         val header = "EnrollmentNo,FullName,Phone,Email,Course,Batch,Status,TotalFeeINR,PaidFeeINR,AttendancePercent\n"
         val rows = students.joinToString("\n") { s ->
-            "${s.enrollmentNo},\"${s.fullName}\",${s.phone},${s.email},\"${s.courseName}\",\"${s.batchName}\",${s.status},${s.totalFeePaise / 100},${s.paidFeePaise / 100},${s.attendancePercent}"
+            listOf(
+                sanitizeCsvField(s.enrollmentNo),
+                sanitizeCsvField(s.fullName, quoteAlways = true),
+                sanitizeCsvField(s.phone),
+                sanitizeCsvField(s.email),
+                sanitizeCsvField(s.courseName, quoteAlways = true),
+                sanitizeCsvField(s.batchName, quoteAlways = true),
+                sanitizeCsvField(s.status),
+                (s.totalFeePaise / 100).toString(),
+                (s.paidFeePaise / 100).toString(),
+                s.attendancePercent.toString()
+            ).joinToString(",")
         }
         val csvContent = (header + rows).toByteArray(Charsets.UTF_8)
         saveAndShareFile(
@@ -380,6 +406,12 @@ object DocumentExportHelper {
     ) {
         try {
             val exportDir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val nowMs = System.currentTimeMillis()
+            exportDir.listFiles()?.forEach { existing ->
+                if (existing.isFile && (nowMs - existing.lastModified() > 15 * 60 * 1000L || existing.name == fileName)) {
+                    runCatching { existing.delete() }
+                }
+            }
             val file = File(exportDir, fileName)
             FileOutputStream(file).use { writer(it) }
 

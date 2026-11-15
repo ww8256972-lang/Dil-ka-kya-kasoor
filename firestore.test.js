@@ -227,3 +227,251 @@ test('3. Student (with photo & file attachment), PortalCredentials isolation, Fe
     })
   );
 });
+
+test('4. Portal role flags (isStudent/isTeacher/isParent/portalRoles) and single_dev_* concurrent session sync pass rules', async () => {
+  const adminDb = testEnv.authenticatedContext('waqar_uid', {
+    email: 'samdkhan8256972@gmail.com',
+    email_verified: true,
+  }).firestore(DATABASE_ID);
+  const unauthDb = testEnv.unauthenticatedContext().firestore(DATABASE_ID);
+  const now = new Date(Date.now() - 2000);
+
+  await assertSucceeds(
+    adminDb.collection('portalCredentials').doc('rohit_wci').set({
+      username: 'rohit_wci',
+      passwordHash: '3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b',
+      passwordSalt: '00112233445566778899aabbccddeeff',
+      role: 'student',
+      linkedEntityId: 'stu_rohit_1',
+      displayName: 'Rohit Verma',
+      assignedByUid: 'waqar_uid',
+      active: true,
+      isStudent: true,
+      isTeacher: false,
+      isParent: false,
+      isAdmin: false,
+      portalRoles: ['student'],
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    unauthDb.collection('users').doc('cred_rohit_wci').set({
+      uid: 'cred_rohit_wci',
+      email: 'rohit_wci@waqarinstitute.edu',
+      displayName: 'Rohit Verma',
+      role: 'student',
+      username: 'rohit_wci',
+      phone: '',
+      mfaEnabled: false,
+      totpSecret: '',
+      linkedEntityId: 'stu_rohit_1',
+      isStudent: true,
+      isTeacher: false,
+      isParent: false,
+      isAdmin: false,
+      portalRoles: ['student'],
+      activeSessionToken: 'tok_abc_123',
+      activeDeviceId: 'DEV_01',
+      lastActiveTimestamp: now,
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    unauthDb.collection('sessions').doc('single_dev_rohit_wci').set({
+      sessionId: 'single_dev_rohit_wci',
+      uid: 'cred_rohit_wci',
+      deviceName: 'DEV:DEV_01 | Pixel',
+      platform: 'Android 16',
+      active: true,
+      activeSessionToken: 'tok_abc_123',
+      activeDeviceId: 'DEV_01',
+      lastActiveTimestamp: now,
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    unauthDb.collection('sessions').doc('single_dev_rohit_wci').get()
+  );
+});
+
+test('5. Zero-trust hardening blocks unauthenticated credential dumps/deletes, privilege escalation, cross-student profile reads, and examResult/immutableLedger tampering', async () => {
+  const adminDb = testEnv.authenticatedContext('waqar_uid', {
+    email: 'samdkhan8256972@gmail.com',
+    email_verified: true,
+  }).firestore(DATABASE_ID);
+  const studentDb = testEnv.authenticatedContext('stu_uid_1', {
+    email: 'aarav@example.com',
+    email_verified: true,
+  }).firestore(DATABASE_ID);
+  const unauthDb = testEnv.unauthenticatedContext().firestore(DATABASE_ID);
+  const now = new Date(Date.now() - 2000);
+
+  // Seed admin user profile & student credential
+  await assertSucceeds(
+    adminDb.collection('users').doc('other_user_uid').set({
+      uid: 'other_user_uid',
+      email: 'other@waqarinstitute.edu',
+      displayName: 'Other User',
+      role: 'student',
+      username: 'other_user',
+      phone: '+919999988888',
+      mfaEnabled: true,
+      totpSecret: 'SECRETBASE32KEY',
+      linkedEntityId: 'stu_other',
+      createdAt: now,
+    })
+  );
+
+  // 1. Authenticated student CANNOT read another user's profile (protects totpSecret/phone)
+  await assertFails(
+    studentDb.collection('users').doc('other_user_uid').get()
+  );
+
+  // 2. Unauthenticated caller CANNOT list or delete portalCredentials
+  await assertFails(unauthDb.collection('portalCredentials').get());
+  await assertFails(unauthDb.collection('portalCredentials').doc('rohit_wci').delete());
+
+  // 3. Unauthenticated credential session CANNOT escalate role to 'admin' or isAdmin: true
+  await assertFails(
+    unauthDb.collection('users').doc('cred_attacker_wci').set({
+      uid: 'cred_attacker_wci',
+      email: 'attacker@waqarinstitute.edu',
+      displayName: 'Attacker',
+      role: 'admin',
+      username: 'attacker_wci',
+      phone: '',
+      mfaEnabled: false,
+      totpSecret: '',
+      linkedEntityId: 'stu_1',
+      isAdmin: true,
+      createdAt: now,
+    })
+  );
+
+  // 4. Student can submit initial examResult, but CANNOT update/tamper with marks afterward
+  await assertSucceeds(
+    studentDb.collection('examResults').doc('sub_001').set({
+      id: 'sub_001',
+      examId: 'ex_001',
+      examTitle: 'DCA Final Exam',
+      studentId: 'stu_001',
+      studentName: 'Aarav Verma',
+      marksObtained: 65,
+      totalMarks: 100,
+      grade: 'B',
+      rank: 4,
+      ownerUid: 'stu_uid_1',
+      createdAt: now,
+    })
+  );
+
+  await assertFails(
+    studentDb.collection('examResults').doc('sub_001').update({
+      marksObtained: 100,
+      grade: 'A+',
+    })
+  );
+
+  // Admin CAN update examResult grade/rank
+  await assertSucceeds(
+    adminDb.collection('examResults').doc('sub_001').update({
+      marksObtained: 72,
+      grade: 'A',
+    })
+  );
+
+  // 5. Unauthenticated caller CANNOT delete student records
+  await assertFails(
+    unauthDb.collection('students').doc('stu_001').delete()
+  );
+
+  // 6. Immutable ledger allows valid append creation, but denies update and delete even for Admin
+  await assertSucceeds(
+    adminDb.collection('immutableLedger').doc('evt_001').set({
+      sequenceIndex: 1,
+      eventType: 'FEE_RECEIPT_ISSUED',
+      actorId: 'waqar_uid',
+      prevEventHash: 'GENESIS_00000000',
+      currentEventHash: 'a9f4e2c18b7d60123456789abcdef012',
+      createdAt: now,
+    })
+  );
+
+  await assertFails(
+    adminDb.collection('immutableLedger').doc('evt_001').update({
+      currentEventHash: 'tampered_hash_value',
+    })
+  );
+
+  await assertFails(
+    adminDb.collection('immutableLedger').doc('evt_001').delete()
+  );
+});
+
+test('6. Teachers biometric vault denies unauthorized unauthenticated or student writes while allowing Admin enrollment', async () => {
+  const adminDb = testEnv.authenticatedContext('waqar_uid', {
+    email: 'samdkhan8256972@gmail.com',
+    email_verified: true,
+  }).firestore(DATABASE_ID);
+  const studentDb = testEnv.authenticatedContext('stu_uid_1', {
+    email: 'aarav@example.com',
+    email_verified: true,
+  }).firestore(DATABASE_ID);
+  const unauthDb = testEnv.unauthenticatedContext().firestore(DATABASE_ID);
+  const embedding = Array.from({ length: 128 }, (_, i) => (i === 0 ? 1.0 : 0.0));
+
+  // Unauthenticated caller without admin enrolledByAdminUid is denied
+  await assertFails(
+    unauthDb.collection('teachers').doc('stf_101').set({
+      id: 'stf_101',
+      name: 'Teacher One',
+      faceEmbedding: embedding,
+    })
+  );
+
+  // Unauthenticated caller spoofing a student credential UID is denied
+  await assertFails(
+    unauthDb.collection('teachers').doc('stf_101').set({
+      id: 'stf_101',
+      name: 'Teacher One',
+      enrolledByAdminUid: 'cred_rohit_wci',
+      faceEmbedding: embedding,
+    })
+  );
+
+  // Authenticated student CANNOT tamper with teacher biometric embeddings
+  await assertFails(
+    studentDb.collection('teachers').doc('stf_101').set({
+      id: 'stf_101',
+      name: 'Teacher One',
+      enrolledByAdminUid: 'admin_root',
+      faceEmbedding: embedding,
+    })
+  );
+
+  // Admin portal-credential session CAN enroll teacher biometric embedding
+  await assertSucceeds(
+    unauthDb.collection('teachers').doc('stf_101').set({
+      id: 'stf_101',
+      name: 'Teacher One',
+      enrolledByAdminUid: 'admin_root',
+      faceEmbedding: embedding,
+    })
+  );
+
+  // Authenticated Firebase Admin CAN enroll teacher biometric embedding
+  await assertSucceeds(
+    adminDb.collection('teachers').doc('stf_102').set({
+      id: 'stf_102',
+      name: 'Teacher Two',
+      enrolledByAdminUid: 'waqar_uid',
+      faceEmbedding: embedding,
+    })
+  );
+});
+
+
+

@@ -65,6 +65,15 @@ object AiRateLimiterManager {
             return GuardrailCheckResult.Allowed
         }
 
+        // 2B. Live Exam Anti-Cheating Block (prevents AI Tutor from answering active exam questions)
+        if (role == PortalRole.STUDENT &&
+            com.example.exam.ActiveExamAntiCheatGuard.shouldBlockAiCheatingQuery(userId, promptText)
+        ) {
+            return GuardrailCheckResult.BlockedByAcademicGuardrail(
+                "ANTI-CHEAT BLOCK: Proctored exam session is currently active. AI Tutor cannot reveal answers to live test questions."
+            )
+        }
+
         // 3. Student & Parent Sliding-Window Rate Limiter & Token Quota
         val now = System.currentTimeMillis()
         val userKey = "${role.key}_${userId.ifBlank { "student" }}"

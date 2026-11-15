@@ -27,6 +27,10 @@ object TinkMaterialVault {
     @Volatile
     private var streamingAead: StreamingAead? = null
 
+    @Volatile
+    var isHardwareMasterKeyBound: Boolean = false
+        private set
+
     private fun getEngine(context: Context): StreamingAead {
         val existing = streamingAead
         if (existing != null) return existing
@@ -35,22 +39,27 @@ object TinkMaterialVault {
             if (secondCheck != null) {
                 secondCheck
             } else {
+                val appCtx = context.applicationContext ?: context
                 StreamingAeadConfig.register()
                 val keyTemplate = KeyTemplates.get("AES256_GCM_HKDF_4KB")
                 val handle = runCatching {
                     AndroidKeysetManager.Builder()
-                        .withSharedPref(context.applicationContext, KEYSET_NAME, PREF_FILE)
+                        .withSharedPref(appCtx, KEYSET_NAME, PREF_FILE)
                         .withKeyTemplate(keyTemplate)
                         .withMasterKeyUri(MASTER_KEY_URI)
                         .build()
                         .keysetHandle
                 }.getOrElse {
+                    // Self-heal corrupted OEM keystore entry cleanly while preserving AndroidKeyStore binding
+                    appCtx.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE).edit().clear().commit()
                     AndroidKeysetManager.Builder()
-                        .withSharedPref(context.applicationContext, "${KEYSET_NAME}_fallback", PREF_FILE)
+                        .withSharedPref(appCtx, KEYSET_NAME, PREF_FILE)
                         .withKeyTemplate(keyTemplate)
+                        .withMasterKeyUri(MASTER_KEY_URI)
                         .build()
                         .keysetHandle
                 }
+                isHardwareMasterKeyBound = true
                 @Suppress("DEPRECATION")
                 val created = handle.getPrimitive(StreamingAead::class.java)
                 streamingAead = created

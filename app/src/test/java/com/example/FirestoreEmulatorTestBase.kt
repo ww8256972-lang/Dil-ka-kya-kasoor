@@ -38,12 +38,21 @@ abstract class FirestoreEmulatorTestBase {
 
         private fun isEmulatorRunning(): Boolean {
             return try {
-                val s = java.net.Socket()
-                s.connect(java.net.InetSocketAddress(HOST, FIRESTORE_PORT), 300)
+                val s = javax.net.SocketFactory.getDefault().createSocket()
+                s.connect(java.net.InetSocketAddress(HOST, FIRESTORE_PORT), 1500)
                 s.close()
                 true
             } catch (_: Exception) {
-                false
+                try {
+                    val conn = URL("http://$HOST:$FIRESTORE_PORT/").openConnection() as HttpURLConnection
+                    conn.connectTimeout = 1500
+                    conn.readTimeout = 1500
+                    val code = conn.responseCode
+                    conn.disconnect()
+                    code > 0
+                } catch (_: Exception) {
+                    false
+                }
             }
         }
         @android.annotation.SuppressLint("DiscouragedApi")

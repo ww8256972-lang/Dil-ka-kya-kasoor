@@ -3,6 +3,9 @@
     "database": "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1",
     "rules": "firestore.rules"
   },
+  "functions": {
+    "source": "functions"
+  },
   "hosting": {
     "public": "firebase/hosting-prod",
     "ignore": [

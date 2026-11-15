@@ -38,6 +38,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
+enum class ProvisioningStatus {
+    IDLE,
+    PENDING,
+    PROVISIONING,
+    PROVISIONED,
+    FAILED
+}
+
 data class InstituteUiState(
     val currentUser: FirebaseUser? = null,
     val userProfile: UserProfile? = null,
@@ -45,6 +53,8 @@ data class InstituteUiState(
     val isLockedByBiometric: Boolean = false,
     val mfaChallengePending: Boolean = false,
     val isAuthenticating: Boolean = false,
+    val provisioningStatus: ProvisioningStatus = ProvisioningStatus.IDLE,
+    val provisioningMessage: String? = null,
     val preferences: AppPreferences = AppPreferences(),
     val effectiveUiTier: UiTier = UiTier.HIGH,
     val statusMessage: String? = null,
@@ -59,6 +69,7 @@ data class InstituteUiState(
     val courses: List<CourseRecord> = emptyList(),
     val batches: List<BatchRecord> = emptyList(),
     val attendance: List<AttendanceRecord> = emptyList(),
+    val teacherAttendance: List<TeacherAttendanceRecord> = emptyList(),
     val queuedOfflineAttendance: List<QueuedAttendanceEntity> = emptyList(),
     val cachedTimetable: List<CachedTimetableSlotEntity> = emptyList(),
     val fees: List<FeeInvoice> = emptyList(),
@@ -88,6 +99,7 @@ class InstituteViewModel(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
 ) : ViewModel() {
 
+    private val appContext: Context? = authServiceProvider.context?.applicationContext
     private val _uiState = MutableStateFlow(InstituteUiState(currentUser = auth.currentUser))
     val uiState: StateFlow<InstituteUiState> = _uiState.asStateFlow()
 
@@ -95,6 +107,8 @@ class InstituteViewModel(
     private var rawStudents: List<StudentRecord> = emptyList()
     private var rawBatches: List<BatchRecord> = emptyList()
     private var rawAttendance: List<AttendanceRecord> = emptyList()
+    private var rawTeacherAttendance: List<TeacherAttendanceRecord> = emptyList()
+    private var rawStaff: List<StaffMember> = emptyList()
     private var rawFees: List<FeeInvoice> = emptyList()
     private var rawExamResults: List<ExamResult> = emptyList()
     private var rawCertificates: List<CertificateRecord> = emptyList()
@@ -115,6 +129,19 @@ class InstituteViewModel(
         .cachedIn(viewModelScope)
 
     private var collectionJobsStartedForUid: String? = null
+    private val streamJobs = mutableListOf<kotlinx.coroutines.Job>()
+
+    @Volatile
+    private var failedAuthAttempts: Int = 0
+
+    @Volatile
+    private var authLockoutUntilEpochMs: Long = 0L
+
+    private fun computeAuthLockoutDurationMs(failures: Int): Long {
+        if (failures < 5) return 0L
+        val exponent = (failures - 5).coerceAtMost(5)
+        return kotlin.math.min(15_000L * (1L shl exponent), 300_000L)
+    }
 
     init {
         // Pre-seed master admin credentials ('waqar' / 'waqar' and 'admin' / 'admin') in Cloud Firestore
@@ -196,6 +223,25 @@ class InstituteViewModel(
     private fun currentActorUid(): String? =
         auth.currentUser?.uid ?: _uiState.value.userProfile?.uid?.takeIf { it.isNotBlank() }
 
+    private fun ensureActiveSessionOrSignOut(): Boolean {
+        val uid = currentActorUid() ?: return false
+        val forceReason = com.waqar.institute.session.SessionManager.sessionForceLogoutEvent.value
+            ?: com.waqar.institute.session.ConcurrentSessionManager.sessionExpiredMessage.value
+        if (!forceReason.isNullOrBlank()) {
+            signOut(reasonMessage = forceReason)
+            return false
+        }
+        val username = _uiState.value.userProfile?.username.orEmpty()
+        val ctx = appContext
+        if (ctx != null && username.isNotBlank() &&
+            !com.waqar.institute.session.ConcurrentSessionManager.verifySubMillisecondSession(ctx, username)
+        ) {
+            signOut(reasonMessage = "Session expired or active on another device. Please sign in again.")
+            return false
+        }
+        return uid.isNotBlank()
+    }
+
     fun updateStudentPagingSearch(query: String) {
         studentSearchQuery.value = query.trim()
     }
@@ -207,12 +253,17 @@ class InstituteViewModel(
         }
     }
 
+    private fun normKey(raw: String): String = TeacherScopeMatcher.normKey(raw)
+
+    private fun slugKey(raw: String): String = TeacherScopeMatcher.slugKey(raw)
+
     /**
      * Enforces strict multi-tenant per-account data isolation:
      * - Admin sees all institute records + credential vault.
      * - Student & Parent ONLY see their own linked student record (`linkedEntityId` / `username`)
      *   and NEVER see any other student's record or any account's credentials.
-     * - Teacher sees academic records for teaching, only their own payroll slips, and NEVER sees credentials.
+     * - Teacher sees batches assigned to them (by authoritative teacherId or normalized name/username),
+     *   students in those batches, their own payroll & teacher attendance, and NEVER sees credentials or fees.
      */
     private fun recomputeRoleScopedData() {
         val state = _uiState.value
@@ -228,6 +279,33 @@ class InstituteViewModel(
         val effectiveLinkedId = linkedId.ifBlank { credentialLinkedId }
 
         val allKnownStudents = (rawStudents + InstituteRepository.localStudentsCache.values).distinctBy { it.id }
+        val allKnownStaff = (rawStaff + state.staff + InstituteRepository.localStaffCache.values).distinctBy { it.id }
+        val matchedTeacherStaff = allKnownStaff.firstOrNull { st ->
+            (effectiveLinkedId.isNotBlank() && st.id.equals(effectiveLinkedId, ignoreCase = true)) ||
+                (usernameKey.isNotBlank() && (
+                    st.teacherUsername.equals(usernameKey, ignoreCase = true) ||
+                        "cred_${st.teacherUsername.lowercase()}" == usernameKey
+                    )) ||
+                (displayNameKey.isNotBlank() && slugKey(st.fullName) == slugKey(displayNameKey))
+        }
+
+        val teacherIdKeys = listOfNotNull(
+            effectiveLinkedId.takeIf { it.isNotBlank() },
+            profile?.uid?.takeIf { it.isNotBlank() },
+            matchedTeacherStaff?.id?.takeIf { it.isNotBlank() },
+            matchedTeacherStaff?.employeeCode?.takeIf { it.isNotBlank() }
+        ).map(::normKey).toSet()
+
+        val teacherNameKeys = listOfNotNull(
+            displayNameKey.takeIf { it.isNotBlank() },
+            usernameKey.takeIf { it.isNotBlank() },
+            matchedTeacherStaff?.fullName?.takeIf { it.isNotBlank() },
+            matchedTeacherStaff?.teacherUsername?.takeIf { it.isNotBlank() }
+        ).map { normKey(it.replace("(Batch Admin)", "", ignoreCase = true)) }
+            .filter { it.isNotBlank() }
+            .toSet()
+
+        val teacherNameSlugs = teacherNameKeys.map(::slugKey).filter { it.isNotBlank() }.toSet()
 
         fun matchesStudent(student: StudentRecord): Boolean {
             if (role == PortalRole.ADMIN || role == PortalRole.TEACHER) return true
@@ -259,28 +337,26 @@ class InstituteViewModel(
 
         val scopedBatches = when (role) {
             PortalRole.ADMIN -> rawBatches
-            PortalRole.TEACHER -> {
-                val matched = rawBatches.filter { b ->
-                    (effectiveLinkedId.isNotEmpty() && b.teacherName.equals(effectiveLinkedId, ignoreCase = true)) ||
-                        (displayNameKey.isNotEmpty() && b.teacherName.equals(displayNameKey, ignoreCase = true)) ||
-                        (usernameKey.isNotEmpty() && b.teacherName.contains(usernameKey, ignoreCase = true))
-                }
-                if (matched.isNotEmpty()) matched else rawBatches
-            }
+            PortalRole.TEACHER -> TeacherScopeMatcher.filterBatchesForTeacher(
+                batches = rawBatches,
+                teacherIdKeys = teacherIdKeys,
+                teacherNameKeys = teacherNameKeys,
+                teacherNameSlugs = teacherNameSlugs
+            )
             PortalRole.STUDENT, PortalRole.PARENT -> rawBatches
         }
-        val teacherBatchNames = scopedBatches.map { it.name.lowercase() }.toSet()
-        val teacherCourseNames = scopedBatches.map { it.courseName.lowercase() }.toSet()
+        val teacherBatchIds = scopedBatches.map { normKey(it.id) }.filter { it.isNotBlank() }.toSet()
+        val teacherBatchNames = scopedBatches.map { normKey(it.name) }.filter { it.isNotBlank() }.toSet()
+        val teacherCourseNames = scopedBatches.map { normKey(it.courseName) }.filter { it.isNotBlank() }.toSet()
 
         val scopedStudents = when (role) {
             PortalRole.ADMIN -> allKnownStudents
-            PortalRole.TEACHER -> {
-                val matched = allKnownStudents.filter { stu ->
-                    stu.batchName.lowercase() in teacherBatchNames ||
-                        stu.courseName.lowercase() in teacherCourseNames
-                }
-                if (matched.isNotEmpty()) matched else allKnownStudents
-            }
+            PortalRole.TEACHER -> TeacherScopeMatcher.filterStudentsForTeacher(
+                students = allKnownStudents,
+                teacherBatchIds = teacherBatchIds,
+                teacherBatchNames = teacherBatchNames,
+                teacherCourseNames = teacherCourseNames
+            )
             PortalRole.STUDENT, PortalRole.PARENT -> allKnownStudents.filter(::matchesStudent)
         }
         val allowedStudentIds = scopedStudents.map { it.id.lowercase() }.toSet() +
@@ -290,14 +366,28 @@ class InstituteViewModel(
         val scopedAttendance = when (role) {
             PortalRole.ADMIN -> rawAttendance
             PortalRole.TEACHER -> rawAttendance.filter { att ->
-                att.batchName.lowercase() in teacherBatchNames ||
-                    att.targetId.lowercase() in allowedStudentIds ||
-                    att.targetType == "STAFF"
-            }.ifEmpty { rawAttendance }
+                (att.batchId.isNotBlank() && normKey(att.batchId) in teacherBatchIds) ||
+                    normKey(att.batchName) in teacherBatchNames ||
+                    (att.targetType != "STAFF" && att.targetId.lowercase() in allowedStudentIds) ||
+                    (att.targetType == "STAFF" && (
+                        normKey(att.targetId) in teacherIdKeys ||
+                            normKey(att.targetName) in teacherNameKeys
+                        ))
+            }
             PortalRole.STUDENT, PortalRole.PARENT -> rawAttendance.filter { att ->
                 att.targetId.lowercase() in allowedStudentIds ||
                     (displayNameKey.isNotEmpty() && att.targetName.equals(displayNameKey, ignoreCase = true))
             }
+        }
+
+        val scopedTeacherAttendance = when (role) {
+            PortalRole.ADMIN -> rawTeacherAttendance
+            PortalRole.TEACHER -> rawTeacherAttendance.filter { rec ->
+                normKey(rec.teacherId) in teacherIdKeys ||
+                    normKey(rec.teacherName) in teacherNameKeys ||
+                    slugKey(rec.teacherName) in teacherNameSlugs
+            }
+            PortalRole.STUDENT, PortalRole.PARENT -> emptyList()
         }
 
         // Teachers never view student fee invoices (financial privacy)
@@ -340,8 +430,8 @@ class InstituteViewModel(
         val scopedPayroll = when (role) {
             PortalRole.ADMIN -> rawPayroll
             PortalRole.TEACHER -> rawPayroll.filter { pay ->
-                (linkedId.isNotEmpty() && pay.staffId.equals(linkedId, ignoreCase = true)) ||
-                    (displayNameKey.isNotEmpty() && pay.staffName.equals(displayNameKey, ignoreCase = true))
+                normKey(pay.staffId) in teacherIdKeys ||
+                    normKey(pay.staffName) in teacherNameKeys
             }
             PortalRole.STUDENT, PortalRole.PARENT -> emptyList()
         }
@@ -354,6 +444,7 @@ class InstituteViewModel(
                 students = scopedStudents,
                 batches = scopedBatches,
                 attendance = scopedAttendance,
+                teacherAttendance = scopedTeacherAttendance,
                 fees = scopedFees,
                 examResults = scopedExamResults,
                 certificates = scopedCertificates,
@@ -387,13 +478,30 @@ class InstituteViewModel(
         username: String,
         password: String
     ) {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs < authLockoutUntilEpochMs) {
+            val remainingSec = ((authLockoutUntilEpochMs - nowMs).coerceAtLeast(0L) + 999L) / 1000L
+            postMessage("Too many failed login attempts. Please wait ${remainingSec}s before retrying.")
+            return
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             withContext(Dispatchers.Main) {
                 _uiState.update { it.copy(isAuthenticating = true, statusMessage = null) }
             }
+            val pwdChars = password.toCharArray()
+            com.example.security.MemoryScrubberLifecycleObserver.registerSensitiveChars(pwdChars)
             try {
-                val pwdChars = password.toCharArray()
-                val result = withTimeoutOrNull(8000L) {
+                val netAudit = com.waqar.institute.security.NetworkSecurityGuard.auditNetworkSecurity(activityContext)
+                if (!netAudit.isConnectionTrusted) {
+                    withContext(Dispatchers.Main) {
+                        _uiState.update { it.copy(isAuthenticating = false) }
+                        postMessage("Blocked login on untrusted proxy/MITM network: ${netAudit.reason}")
+                    }
+                    return@launch
+                }
+
+                val result = withTimeoutOrNull(15_000L) {
                     authServiceProvider.signInToPortalWithCredentials(
                         activityContext = activityContext,
                         role = role,
@@ -406,6 +514,9 @@ class InstituteViewModel(
                     _uiState.update { it.copy(isAuthenticating = false) }
                     when (result) {
                         is AuthPortalResult.Success -> {
+                            failedAuthAttempts = 0
+                            authLockoutUntilEpochMs = 0L
+                            com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
                             val effectiveRole = result.session.role
                             prefsManager.setSelectedPortalRole(effectiveRole.key)
                             _uiState.update {
@@ -428,8 +539,8 @@ class InstituteViewModel(
                                         username = result.profile.username,
                                         uid = streamUid,
                                         role = effectiveRole,
-                                        onForceSignOut = {
-                                            signOut()
+                                        onForceSignOutWithReason = { reason ->
+                                            signOut(reasonMessage = reason)
                                         }
                                     )
                                 }
@@ -454,16 +565,29 @@ class InstituteViewModel(
                             postMessage("Signed in as ${result.profile.displayName} (${effectiveRole.label})")
                         }
                         is AuthPortalResult.Failure -> {
-                            postMessage(result.message)
+                            failedAuthAttempts += 1
+                            val lockoutMs = computeAuthLockoutDurationMs(failedAuthAttempts)
+                            if (lockoutMs > 0L) {
+                                authLockoutUntilEpochMs = System.currentTimeMillis() + lockoutMs
+                                postMessage("Too many failed attempts. Portal login locked for ${lockoutMs / 1000L}s.")
+                            } else {
+                                postMessage(result.message)
+                            }
                         }
                     }
                 }
             } catch (e: Exception) {
+                failedAuthAttempts += 1
+                val lockoutMs = computeAuthLockoutDurationMs(failedAuthAttempts)
+                if (lockoutMs > 0L) {
+                    authLockoutUntilEpochMs = System.currentTimeMillis() + lockoutMs
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.update { it.copy(isAuthenticating = false) }
                     postMessage(e.localizedMessage ?: "Authentication failed. Please verify credentials.")
                 }
             } finally {
+                java.util.Arrays.fill(pwdChars, '\u0000')
                 withContext(Dispatchers.Main) {
                     if (_uiState.value.isAuthenticating) {
                         _uiState.update { it.copy(isAuthenticating = false) }
@@ -538,14 +662,32 @@ class InstituteViewModel(
         linkedEntityId: String,
         displayName: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         if (_uiState.value.activePortalRole != PortalRole.ADMIN) {
             postMessage("Only Admin can issue or modify portal credentials.")
             return
         }
+        val cleanPass = password.trim()
+        if (cleanPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "Password must be at least 6 characters."
+                )
+            }
+            postMessage("Password must be at least 6 characters.")
+            return
+        }
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.PROVISIONING,
+                    provisioningMessage = "Syncing @${username.trim().lowercase()} to Cloud Firestore..."
+                )
+            }
             val result = authServiceProvider.provisionOrUpdateCredential(
                 username = username,
-                rawPasswordChars = password.toCharArray(),
+                rawPasswordChars = cleanPass.toCharArray(),
                 role = role,
                 linkedEntityId = linkedEntityId,
                 displayName = displayName,
@@ -563,9 +705,22 @@ class InstituteViewModel(
                     severity = "INFO",
                     details = "Issued ${role.label} credential @${cred.username} linked to '${cred.linkedEntityId}'"
                 )
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.PROVISIONED,
+                        provisioningMessage = "Saved ${role.label} login @${cred.username} to Cloud Firestore"
+                    )
+                }
                 postMessage("Saved ${role.label} login @${cred.username} to Cloud Firestore")
             }.onFailure { err ->
-                postMessage("Credential error: ${err.localizedMessage}")
+                val msg = "Cloud credential provisioning failed: ${err.localizedMessage ?: "Network/permission error"}"
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.FAILED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
             }
         }
     }
@@ -605,6 +760,11 @@ class InstituteViewModel(
                     .lowercase()
 
                 val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
+                val roleEnum = PortalRole.fromKey(resolvedRole)
+                val roleFlags = com.example.auth.PortalAuthRepository.buildRoleFlags(
+                    role = roleEnum,
+                    extraRoles = existing?.effectivePortalRoles().orEmpty().map { PortalRole.fromKey(it) }
+                )
                 val profile = UserProfile(
                     uid = user.uid,
                     email = email,
@@ -617,6 +777,11 @@ class InstituteViewModel(
                     mfaEnabled = existing?.mfaEnabled ?: false,
                     totpSecret = existing?.totpSecret ?: "WCI2026TOTP",
                     linkedEntityId = existing?.linkedEntityId ?: "",
+                    isStudent = existing?.isStudent == true || roleFlags.isStudent,
+                    isTeacher = existing?.isTeacher == true || roleFlags.isTeacher,
+                    isParent = existing?.isParent == true || roleFlags.isParent,
+                    isAdmin = existing?.isAdmin == true || roleFlags.isAdmin,
+                    portalRoles = roleFlags.portalRoles,
                     createdAt = existing?.createdAt ?: safeNow
                 )
 
@@ -644,22 +809,35 @@ class InstituteViewModel(
                     )
                 )
 
+                com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
                 prefsManager.setSelectedPortalRole(resolvedRole)
                 _uiState.update {
                     it.copy(
                         userProfile = profile,
-                        activePortalRole = PortalRole.fromKey(resolvedRole),
+                        activePortalRole = roleEnum,
                         mfaChallengePending = profile.mfaEnabled
                     )
                 }
 
                 startRealtimeStreamsIfNeeded(user.uid)
                 recomputeRoleScopedData()
+                appContext?.let { ctx ->
+                    com.waqar.institute.session.ConcurrentSessionManager.bindAndEnforceSingleDeviceSession(
+                        context = ctx,
+                        repository = repository,
+                        username = cleanUsername,
+                        uid = user.uid,
+                        role = roleEnum,
+                        onForceSignOutWithReason = { reason ->
+                            signOut(reasonMessage = reason)
+                        }
+                    )
+                }
                 viewModelScope.launch {
                     withContext(Dispatchers.IO) {
                         runCatching {
                             val attToken = com.waqar.institute.security.ZeroTrustAttestationEngine.generateHardwareBoundToken(
-                                context = null,
+                                context = appContext,
                                 userId = cleanUsername,
                                 portalRole = resolvedRole
                             )
@@ -675,11 +853,18 @@ class InstituteViewModel(
         }
     }
 
+    private fun cancelRealtimeStreams() {
+        streamJobs.forEach { it.cancel() }
+        streamJobs.clear()
+        collectionJobsStartedForUid = null
+    }
+
     private fun startRealtimeStreamsIfNeeded(uid: String) {
-        if (collectionJobsStartedForUid == uid) return
+        if (collectionJobsStartedForUid == uid && streamJobs.any { it.isActive }) return
+        cancelRealtimeStreams()
         collectionJobsStartedForUid = uid
 
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching {
                     val activeState = _uiState.value
@@ -696,18 +881,18 @@ class InstituteViewModel(
             }
         }
 
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeSessions(uid).catch { }.collect { list ->
                 _uiState.update { it.copy(sessions = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observePortalCredentials().catch { }.collect { list ->
                 rawPortalCredentials = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeStudents().catch { }.collect { list ->
                 rawStudents = list
                 recomputeRoleScopedData()
@@ -735,17 +920,17 @@ class InstituteViewModel(
                 runCatching { localDb.offlineDao().upsertCachedStudents(cachedEntities) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeEnquiries().catch { }.collect { list ->
                 _uiState.update { it.copy(enquiries = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeCourses().catch { }.collect { list ->
                 _uiState.update { it.copy(courses = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeBatches().catch { }.collect { list ->
                 rawBatches = list
                 recomputeRoleScopedData()
@@ -767,93 +952,101 @@ class InstituteViewModel(
                 runCatching { localDb.offlineDao().upsertTimetableSlots(cached) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeAttendance().catch { }.collect { list ->
                 rawAttendance = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
+            repository.observeTeacherAttendance().catch { }.collect { list ->
+                rawTeacherAttendance = list
+                recomputeRoleScopedData()
+            }
+        }
+        streamJobs += viewModelScope.launch {
             repository.observeFees().catch { }.collect { list ->
                 rawFees = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeLedger().catch { }.collect { list ->
                 _uiState.update { it.copy(ledger = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeExams().catch { }.collect { list ->
                 _uiState.update { it.copy(exams = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeExamResults().catch { }.collect { list ->
                 rawExamResults = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeMaterials().catch { }.collect { list ->
                 _uiState.update { it.copy(materials = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeCertificates().catch { }.collect { list ->
                 rawCertificates = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeStaff().catch { }.collect { list ->
+                rawStaff = list
                 _uiState.update { it.copy(staff = list) }
+                recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observePayroll().catch { }.collect { list ->
                 rawPayroll = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeGuardians().catch { }.collect { list ->
                 rawGuardians = list
                 recomputeRoleScopedData()
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeAnnouncements().catch { }.collect { list ->
                 _uiState.update { it.copy(announcements = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeLiveClasses().catch { }.collect { list ->
                 _uiState.update { it.copy(liveClasses = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeAiLogs().catch { }.collect { list ->
                 _uiState.update { it.copy(aiLogs = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeAssets().catch { }.collect { list ->
                 _uiState.update { it.copy(assets = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeTickets().catch { }.collect { list ->
                 _uiState.update { it.copy(tickets = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeAuditLogs().catch { }.collect { list ->
                 _uiState.update { it.copy(auditLogs = list) }
             }
         }
-        viewModelScope.launch {
+        streamJobs += viewModelScope.launch {
             repository.observeBackupsAndConfigs().catch { }.collect { list ->
                 _uiState.update { it.copy(backupsAndConfigs = list) }
             }
@@ -928,19 +1121,40 @@ class InstituteViewModel(
         }
     }
 
-    fun signOut() {
+    fun signOut(reasonMessage: String? = null) {
+        com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
         com.waqar.institute.session.ConcurrentSessionManager.stopWatchingSession()
-        authServiceProvider.signOut()
-        collectionJobsStartedForUid = null
+        authServiceProvider.signOut(appContext)
+        cancelRealtimeStreams()
+        rawStudents = emptyList()
+        rawBatches = emptyList()
+        rawAttendance = emptyList()
+        rawTeacherAttendance = emptyList()
+        rawStaff = emptyList()
+        rawFees = emptyList()
+        rawExamResults = emptyList()
+        rawCertificates = emptyList()
+        rawGuardians = emptyList()
+        rawPayroll = emptyList()
+        rawPortalCredentials = emptyList()
         _uiState.update {
             it.copy(
                 currentUser = null,
                 userProfile = null,
                 mfaChallengePending = false,
-                portalCredentials = emptyList()
+                provisioningStatus = ProvisioningStatus.IDLE,
+                provisioningMessage = null,
+                portalCredentials = emptyList(),
+                students = emptyList(),
+                batches = emptyList(),
+                attendance = emptyList(),
+                teacherAttendance = emptyList(),
+                fees = emptyList(),
+                payroll = emptyList(),
+                statusMessage = reasonMessage?.takeIf { msg -> msg.isNotBlank() }
+                    ?: "Signed out of Waqar Computer Institute"
             )
         }
-        postMessage("Signed out of Waqar Computer Institute")
     }
 
     // =========================================================================
@@ -968,11 +1182,41 @@ class InstituteViewModel(
         parentUsername: String = "",
         parentPassword: String = ""
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
+        val cleanStudentPass = studentPassword.trim()
+        val cleanParentPass = parentPassword.trim()
+        if (cleanStudentPass.isNotEmpty() && cleanStudentPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "Student password must be at least 6 characters."
+                )
+            }
+            postMessage("Student password must be at least 6 characters.")
+            return
+        }
+        if (cleanParentPass.isNotEmpty() && cleanParentPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "Parent password must be at least 6 characters."
+                )
+            }
+            postMessage("Parent password must be at least 6 characters.")
+            return
+        }
+
         val id = existingId ?: "stu_${UUID.randomUUID().toString().take(8)}"
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
         val existingRecord = rawStudents.firstOrNull { it.id == id }
         val existingCreatedAt = existingRecord?.createdAt ?: safeNow
+
+        val matchedBatch = rawBatches.firstOrNull {
+            normKey(it.name) == normKey(batchName) || it.id.equals(batchName.trim(), ignoreCase = true)
+        }
+        val resolvedBatchId = matchedBatch?.id
+            ?: "bat_${batchName.lowercase().replace(Regex("[^a-z0-9]"), "").take(8)}"
 
         val record = StudentRecord(
             id = id,
@@ -984,7 +1228,7 @@ class InstituteViewModel(
             guardianPhone = guardianPhone.trim(),
             courseId = "crs_${courseName.lowercase().replace(Regex("[^a-z0-9]"), "").take(8)}",
             courseName = courseName.trim(),
-            batchId = "bat_${batchName.lowercase().replace(Regex("[^a-z0-9]"), "").take(8)}",
+            batchId = resolvedBatchId,
             batchName = batchName.trim(),
             status = status,
             totalFeePaise = totalFeeInr.coerceAtLeast(0L) * 100L,
@@ -997,53 +1241,55 @@ class InstituteViewModel(
         )
 
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.PROVISIONING,
+                    provisioningMessage = "Saving ${record.fullName} to Cloud Firestore..."
+                )
+            }
             runCatching {
-                // 1. Immediately update local student cache & UI state so student is visible & ready for login
-                InstituteRepository.localStudentsCache[record.id] = record
+                // 1. Save Student record to Cloud Firestore FIRST and await server confirmation
+                repository.saveStudentWithConfirmation(record).getOrThrow()
                 rawStudents = listOf(record) + rawStudents.filterNot { it.id == record.id }
 
-                // 2. Provision Student Portal Username & Password FIRST (instantaneous in-memory + cloud sync)
+                // 2. Provision Student Portal Username & explicit Password (NO default '123456')
                 val effectiveStudentUsername = studentUsername.trim().ifBlank {
                     record.fullName.trim().lowercase().replace(Regex("[^a-z0-9]"), "") + "_wci"
                 }
-                val effectiveStudentPassword = studentPassword.trim().ifBlank { "123456" }
-                if (effectiveStudentUsername.length >= 3 && effectiveStudentPassword.length >= 3) {
-                    authServiceProvider.provisionOrUpdateCredential(
+                if (effectiveStudentUsername.length >= 3 && cleanStudentPass.length >= 6) {
+                    val cred = authServiceProvider.provisionOrUpdateCredential(
                         username = effectiveStudentUsername,
-                        rawPasswordChars = effectiveStudentPassword.toCharArray(),
+                        rawPasswordChars = cleanStudentPass.toCharArray(),
                         role = PortalRole.STUDENT,
                         linkedEntityId = record.id,
                         displayName = record.fullName,
                         actorUidOverride = uid
-                    ).onSuccess { cred ->
-                        rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
-                            it.username.equals(cred.username, ignoreCase = true)
-                        }
+                    ).getOrThrow()
+                    rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
+                        it.username.equals(cred.username, ignoreCase = true)
                     }
                 }
 
-                // 3. Provision Parent Portal Username & Password (always generated even if guardianName left blank)
+                // 3. Provision Parent Portal Username & explicit Password only when supplied
                 val effectiveParentUsername = parentUsername.trim().ifBlank {
                     "parent_" + (record.guardianName.ifBlank { record.fullName })
                         .trim().lowercase().replace(Regex("[^a-z0-9]"), "")
                 }
-                val effectiveParentPassword = parentPassword.trim().ifBlank { "123456" }
-                if (effectiveParentUsername.length >= 3 && effectiveParentPassword.length >= 3) {
-                    authServiceProvider.provisionOrUpdateCredential(
+                if (effectiveParentUsername.length >= 3 && cleanParentPass.length >= 6) {
+                    val pCred = authServiceProvider.provisionOrUpdateCredential(
                         username = effectiveParentUsername,
-                        rawPasswordChars = effectiveParentPassword.toCharArray(),
+                        rawPasswordChars = cleanParentPass.toCharArray(),
                         role = PortalRole.PARENT,
                         linkedEntityId = record.id,
                         displayName = record.guardianName.ifBlank { "Parent of ${record.fullName}" },
                         actorUidOverride = uid
-                    ).onSuccess { cred ->
-                        rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
-                            it.username.equals(cred.username, ignoreCase = true)
-                        }
+                    ).getOrThrow()
+                    rawPortalCredentials = listOf(pCred) + rawPortalCredentials.filterNot {
+                        it.username.equals(pCred.username, ignoreCase = true)
                     }
                 }
 
-                // 4. Automatically link guardian record
+                // 4. Automatically link guardian record with explicit Parent portal flags
                 if (existingId == null) {
                     val guardianLink = GuardianLink(
                         id = "grd_${record.id.takeLast(8)}",
@@ -1053,31 +1299,61 @@ class InstituteViewModel(
                         relation = "Parent",
                         studentId = record.id,
                         studentName = record.fullName,
+                        parentUsername = effectiveParentUsername,
                         ptmNotes = "Admitted in ${record.courseName}",
                         consentSigned = true,
+                        isParent = true,
+                        portalRoles = listOf(PortalRole.PARENT.key),
                         ownerUid = uid,
                         createdAt = safeNow
                     )
-                    InstituteRepository.localGuardiansCache[guardianLink.id] = guardianLink
+                    runCatching { repository.saveGuardianWithConfirmation(guardianLink) }
                     rawGuardians = listOf(guardianLink) + rawGuardians.filterNot { it.id == guardianLink.id }
-                    kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-                        runCatching { repository.saveGuardian(guardianLink) }
+                }
+
+                // 5. Pre-enroll student biometric face template if Admin uploaded a portrait photo
+                if (record.photoUri.isNotBlank()) {
+                    appContext?.let { ctx ->
+                        runCatching {
+                            com.example.biometric.StudentFaceEnrollmentManager.enrollFaceFromPhotoDataUri(
+                                context = ctx,
+                                studentId = record.id,
+                                photoDataUri = record.photoUri
+                            )
+                        }
                     }
                 }
 
                 recomputeRoleScopedData()
-                postMessage(
-                    "Enrolled ${record.fullName} • Student Login: @$effectiveStudentUsername | Parent Login: @$effectiveParentUsername"
-                )
-
-                // 5. Persist student & audit to Cloud Firestore
-                runCatching { repository.saveStudent(record) }
                 recordAudit("SAVE_STUDENT", "M03_STUDENTS", id, "INFO", "Saved student ${record.fullName} (${record.enrollmentNo})")
-            }.onFailure { postMessage("Error saving student: ${it.localizedMessage}") }
+                val summary = buildString {
+                    append("Saved ${record.fullName} to Cloud Firestore")
+                    if (cleanStudentPass.length >= 6) append(" • Student Login: @$effectiveStudentUsername")
+                    if (cleanParentPass.length >= 6) append(" • Parent Login: @$effectiveParentUsername")
+                    if (cleanStudentPass.isBlank() && existingId == null) append(" (Assign portal password in Security/Credentials)")
+                }
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.PROVISIONED,
+                        provisioningMessage = summary
+                    )
+                }
+                postMessage(summary)
+            }.onFailure { err ->
+                val msg = "Cloud sync failed for ${record.fullName}: ${err.localizedMessage ?: "Network/permission error"}"
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.FAILED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
+            }
         }
     }
 
     fun deleteStudent(student: StudentRecord) {
+        if (!ensureActiveSessionOrSignOut()) return
         viewModelScope.launch {
             runCatching {
                 repository.deleteStudent(student.id)
@@ -1103,6 +1379,7 @@ class InstituteViewModel(
         followUpDate: String,
         notes: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = existingId ?: "enq_${UUID.randomUUID().toString().take(8)}"
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
@@ -1132,6 +1409,7 @@ class InstituteViewModel(
     }
 
     fun convertEnquiryToStudent(enquiry: AdmissionEnquiry, totalFeeInr: Long, batchName: String) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         viewModelScope.launch {
             runCatching {
@@ -1168,6 +1446,7 @@ class InstituteViewModel(
         syllabusSummary: String,
         totalModules: Int
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "crs_${UUID.randomUUID().toString().take(8)}"
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
@@ -1204,16 +1483,24 @@ class InstituteViewModel(
         endTime: String,
         capacity: Int
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "bat_${UUID.randomUUID().toString().take(8)}"
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
+        val cleanTeacherName = teacherName.trim()
+        val matchedStaff = _uiState.value.staff.firstOrNull { st ->
+            normKey(st.fullName) == normKey(cleanTeacherName) ||
+                st.teacherUsername.equals(cleanTeacherName, ignoreCase = true) ||
+                slugKey(st.fullName) == slugKey(cleanTeacherName)
+        }
         val batch = BatchRecord(
             id = id,
             code = code.trim().uppercase(),
             name = name.trim(),
             courseId = "crs_${courseName.take(6).lowercase()}",
             courseName = courseName.trim(),
-            teacherName = teacherName.trim(),
+            teacherId = matchedStaff?.id.orEmpty(),
+            teacherName = cleanTeacherName,
             roomName = roomName.ifBlank { "Computer Lab 1" },
             daysOfWeek = daysOfWeek.ifBlank { "Mon-Sat" },
             startTime = startTime.ifBlank { "09:00" },
@@ -1237,18 +1524,28 @@ class InstituteViewModel(
      * Designates a Teacher as the Batch Admin / Lead Instructor for the given batch in Cloud Firestore.
      */
     fun assignBatchAdminTeacher(batch: BatchRecord, teacherName: String) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val cleanTeacherName = teacherName.trim()
+        val matchedStaff = _uiState.value.staff.firstOrNull { st ->
+            normKey(st.fullName) == normKey(cleanTeacherName) ||
+                st.teacherUsername.equals(cleanTeacherName, ignoreCase = true) ||
+                slugKey(st.fullName) == slugKey(cleanTeacherName)
+        }
         viewModelScope.launch {
             runCatching {
-                val updated = batch.copy(teacherName = "${teacherName.trim()} (Batch Admin)")
+                val updated = batch.copy(
+                    teacherId = matchedStaff?.id ?: batch.teacherId,
+                    teacherName = "$cleanTeacherName (Batch Admin)"
+                )
                 repository.saveBatch(updated)
                 recordAudit(
                     action = "ASSIGN_BATCH_ADMIN",
                     module = "M06_BATCHES",
                     targetId = batch.id,
                     severity = "INFO",
-                    details = "Assigned $teacherName as Batch Admin for ${batch.name}"
+                    details = "Assigned $cleanTeacherName as Batch Admin for ${batch.name}"
                 )
-                postMessage("Assigned $teacherName as Batch Admin for ${batch.name}")
+                postMessage("Assigned $cleanTeacherName as Batch Admin for ${batch.name}")
             }.onFailure { postMessage("Batch update error: ${it.localizedMessage}") }
         }
     }
@@ -1261,6 +1558,7 @@ class InstituteViewModel(
         studentStatuses: Map<StudentRecord, String>
     ) {
         if (studentStatuses.isEmpty()) return
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val dateStr = todayIso()
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
@@ -1311,6 +1609,7 @@ class InstituteViewModel(
         method: String = "MANUAL",
         remarks: String = ""
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
         val dateStr = todayIso()
@@ -1410,6 +1709,7 @@ class InstituteViewModel(
         paymentMode: String = "UPI",
         dueDateIso: String = todayIso()
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "fee_${UUID.randomUUID().toString().take(8)}"
         val receiptNo = "RCPT-2026-${(1000..9999).random()}"
@@ -1462,6 +1762,7 @@ class InstituteViewModel(
         paymentMode: String,
         referenceNo: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "led_${UUID.randomUUID().toString().take(8)}"
         val entry = LedgerEntry(
@@ -1503,6 +1804,7 @@ class InstituteViewModel(
         scheduledDateIso: String,
         questionsJson: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "exm_${UUID.randomUUID().toString().take(8)}"
         val exam = ExamRecord(
@@ -1541,6 +1843,7 @@ class InstituteViewModel(
         remarks: String = "",
         isOnlineCbtAttempt: Boolean = false
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val pct = (marksObtained * 100) / totalMarks.coerceAtLeast(1)
         val grade = when {
@@ -1595,6 +1898,7 @@ class InstituteViewModel(
         dueDateIso: String,
         maxMarks: Int = 100
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "mat_${UUID.randomUUID().toString().take(8)}"
         val mat = StudyMaterial(
@@ -1625,20 +1929,33 @@ class InstituteViewModel(
         courseName: String,
         grade: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val serialNo = "WCI-CERT-${2026}-${(10000..99999).random()}"
         val id = serialNo
-        val hash = UUID.randomUUID().toString().replace("-", "").uppercase().take(16)
+        val cleanStudentId = studentId.ifBlank { "stu_verified" }
+        val cleanStudentName = studentName.trim()
+        val cleanCourseName = courseName.trim()
+        val cleanGrade = grade.ifBlank { "A+" }
+        val issueDateIso = todayIso()
+        val verificationHash = com.waqar.institute.certificate.CertificateQrGenerator.computeCanonicalVerificationHash(
+            certSerialNo = serialNo,
+            studentIdOrRoll = cleanStudentId,
+            studentName = cleanStudentName,
+            courseName = cleanCourseName,
+            grade = cleanGrade,
+            issueDateIso = issueDateIso
+        )
         val cert = CertificateRecord(
             id = id,
             serialNo = serialNo,
             certType = certType,
-            studentId = studentId.ifBlank { "stu_verified" },
-            studentName = studentName.trim(),
-            courseName = courseName.trim(),
-            grade = grade.ifBlank { "A+" },
-            issueDateIso = todayIso(),
-            verificationHash = "SHA256:$hash",
+            studentId = cleanStudentId,
+            studentName = cleanStudentName,
+            courseName = cleanCourseName,
+            grade = cleanGrade,
+            issueDateIso = issueDateIso,
+            verificationHash = verificationHash,
             revoked = false,
             ownerUid = uid,
             createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
@@ -1669,7 +1986,30 @@ class InstituteViewModel(
         teacherUsername: String = "",
         teacherPassword: String = ""
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
+        val cleanTeacherPass = teacherPassword.trim()
+        if (existingId == null && cleanTeacherPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "New Teacher login requires an explicit password (min 6 characters)."
+                )
+            }
+            postMessage("New Teacher login requires an explicit password (min 6 characters).")
+            return
+        }
+        if (existingId != null && cleanTeacherPass.isNotEmpty() && cleanTeacherPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "New password must be at least 6 characters (or leave blank to keep existing)."
+                )
+            }
+            postMessage("New password must be at least 6 characters.")
+            return
+        }
+
         val id = existingId ?: "stf_${UUID.randomUUID().toString().take(8)}"
         val existingMember = _uiState.value.staff.firstOrNull { it.id == id }
         val effectiveTeacherUsername = teacherUsername.trim().ifBlank {
@@ -1695,29 +2035,33 @@ class InstituteViewModel(
             createdAt = existingMember?.createdAt ?: Timestamp(Date(System.currentTimeMillis() - 1000))
         )
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.PROVISIONING,
+                    provisioningMessage = "Syncing Teacher ${member.fullName} & Cloud credentials..."
+                )
+            }
             runCatching {
-                // 1. Update local cache and UI state immediately
-                InstituteRepository.localStaffCache[member.id] = member
-                _uiState.update { state ->
-                    state.copy(staff = listOf(member) + state.staff.filterNot { it.id == member.id })
-                }
-
-                // 2. Provision Teacher Portal Login Credentials
-                val effectiveTeacherPassword = teacherPassword.trim().ifBlank { "123456" }
-                if (effectiveTeacherUsername.length >= 3 && effectiveTeacherPassword.length >= 3) {
-                    authServiceProvider.provisionOrUpdateCredential(
+                // 1. Provision Teacher Portal Login Credentials & await Cloud Firestore confirmation
+                if (effectiveTeacherUsername.length >= 3 && cleanTeacherPass.length >= 6) {
+                    val cred = authServiceProvider.provisionOrUpdateCredential(
                         username = effectiveTeacherUsername,
-                        rawPasswordChars = effectiveTeacherPassword.toCharArray(),
+                        rawPasswordChars = cleanTeacherPass.toCharArray(),
                         role = PortalRole.TEACHER,
                         linkedEntityId = member.id,
                         displayName = member.fullName,
                         actorUidOverride = uid
-                    ).onSuccess { cred ->
-                        rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
-                            it.username.equals(cred.username, ignoreCase = true)
-                        }
-                        recomputeRoleScopedData()
+                    ).getOrThrow()
+                    rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
+                        it.username.equals(cred.username, ignoreCase = true)
                     }
+                }
+
+                // 2. Sync StaffMember record to Cloud Firestore & await confirmation
+                repository.saveStaffWithConfirmation(member).getOrThrow()
+                rawStaff = listOf(member) + rawStaff.filterNot { it.id == member.id }
+                _uiState.update { state ->
+                    state.copy(staff = listOf(member) + state.staff.filterNot { it.id == member.id })
                 }
 
                 // 3. Enroll Teacher's Gallery Profile Photo into 128-D Biometric Face Authentication Engine
@@ -1731,19 +2075,32 @@ class InstituteViewModel(
                             member.employeeCode
                         ),
                         teacherName = member.fullName,
-                        photoDataUri = effectivePhotoUri
+                        photoDataUri = effectivePhotoUri,
+                        enrolledByAdminUid = uid
                     )
                 }
 
-                postMessage(
-                    "Saved Teacher ${member.fullName} • Login: @$effectiveTeacherUsername" +
-                        if (effectivePhotoUri.isNotBlank()) " • Biometric Face Photo Enrolled ✓" else ""
-                )
-
-                // 4. Sync with Cloud Firestore
-                runCatching { repository.saveStaff(member) }
+                recomputeRoleScopedData()
                 recordAudit("ADD_STAFF", "M13_STAFF", id, "INFO", "Added/updated staff ${member.fullName} (@$effectiveTeacherUsername)")
-            }.onFailure { postMessage("Staff error: ${it.localizedMessage}") }
+                val msg = "Saved Teacher ${member.fullName} to Cloud Firestore • Login: @$effectiveTeacherUsername" +
+                    if (effectivePhotoUri.isNotBlank()) " • Biometric Face Photo Enrolled ✓" else ""
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.PROVISIONED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
+            }.onFailure { err ->
+                val msg = "Teacher cloud provisioning failed: ${err.localizedMessage ?: "Network/permission error"}"
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.FAILED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
+            }
         }
     }
 
@@ -1756,6 +2113,7 @@ class InstituteViewModel(
         deductionsInr: Long,
         leaveDays: Int
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "pay_${UUID.randomUUID().toString().take(8)}"
         val netInr = (basicInr + allowancesInr - deductionsInr).coerceAtLeast(0L)
@@ -1792,12 +2150,28 @@ class InstituteViewModel(
         parentUsername: String = "",
         parentPassword: String = ""
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
+        val cleanParentPass = parentPassword.trim()
+        if (cleanParentPass.length < 6) {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.FAILED,
+                    provisioningMessage = "Parent login password must be at least 6 characters."
+                )
+            }
+            postMessage("Parent login password must be at least 6 characters.")
+            return
+        }
+
         val id = "grd_${UUID.randomUUID().toString().take(8)}"
         val matchedStudent = (rawStudents + InstituteRepository.localStudentsCache.values).firstOrNull {
             it.fullName.equals(studentName.trim(), ignoreCase = true) ||
                 it.id.equals(studentName.trim(), ignoreCase = true) ||
                 it.enrollmentNo.equals(studentName.trim(), ignoreCase = true)
+        }
+        val effectiveParentUsername = parentUsername.trim().ifBlank {
+            "parent_" + guardianName.trim().lowercase().replace(Regex("[^a-z0-9]"), "")
         }
         val link = GuardianLink(
             id = id,
@@ -1807,39 +2181,57 @@ class InstituteViewModel(
             relation = relation.ifBlank { "Parent" },
             studentId = matchedStudent?.id ?: "stu_${studentName.take(6).lowercase()}",
             studentName = matchedStudent?.fullName ?: studentName.trim(),
+            parentUsername = effectiveParentUsername,
             ptmNotes = ptmNotes.trim(),
             consentSigned = true,
+            isParent = true,
+            portalRoles = listOf(PortalRole.PARENT.key),
             ownerUid = uid,
             createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
         )
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    provisioningStatus = ProvisioningStatus.PROVISIONING,
+                    provisioningMessage = "Syncing Parent @$effectiveParentUsername to Cloud Firestore..."
+                )
+            }
             runCatching {
-                InstituteRepository.localGuardiansCache[link.id] = link
-                rawGuardians = listOf(link) + rawGuardians.filterNot { it.id == link.id }
-
-                val effectiveParentUsername = parentUsername.trim().ifBlank {
-                    "parent_" + link.guardianName.lowercase().replace(Regex("[^a-z0-9]"), "")
-                }
-                val effectiveParentPass = parentPassword.trim().ifBlank { "123456" }
-                if (effectiveParentUsername.length >= 3 && effectiveParentPass.length >= 3) {
-                    authServiceProvider.provisionOrUpdateCredential(
+                if (effectiveParentUsername.length >= 3) {
+                    val cred = authServiceProvider.provisionOrUpdateCredential(
                         username = effectiveParentUsername,
-                        rawPasswordChars = effectiveParentPass.toCharArray(),
+                        rawPasswordChars = cleanParentPass.toCharArray(),
                         role = PortalRole.PARENT,
                         linkedEntityId = link.studentId,
                         displayName = "${link.guardianName} (Parent of ${link.studentName})",
                         actorUidOverride = uid
-                    ).onSuccess { cred ->
-                        rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
-                            it.username.equals(cred.username, ignoreCase = true)
-                        }
+                    ).getOrThrow()
+                    rawPortalCredentials = listOf(cred) + rawPortalCredentials.filterNot {
+                        it.username.equals(cred.username, ignoreCase = true)
                     }
                 }
+                repository.saveGuardianWithConfirmation(link).getOrThrow()
+                rawGuardians = listOf(link) + rawGuardians.filterNot { it.id == link.id }
                 recomputeRoleScopedData()
-                postMessage("Linked guardian ${link.guardianName} • Parent Login: @$effectiveParentUsername")
-                runCatching { repository.saveGuardian(link) }
                 recordAudit("SAVE_GUARDIAN", "M15_PARENTS", link.id, "INFO", "Linked Parent ${link.guardianName} to ${link.studentName}")
-            }.onFailure { postMessage("Guardian error: ${it.localizedMessage}") }
+                val msg = "Linked guardian ${link.guardianName} • Parent Login: @$effectiveParentUsername"
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.PROVISIONED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
+            }.onFailure { err ->
+                val msg = "Guardian cloud sync failed: ${err.localizedMessage ?: "Network/permission error"}"
+                _uiState.update {
+                    it.copy(
+                        provisioningStatus = ProvisioningStatus.FAILED,
+                        provisioningMessage = msg
+                    )
+                }
+                postMessage(msg)
+            }
         }
     }
 
@@ -1850,6 +2242,7 @@ class InstituteViewModel(
         channel: String,
         priority: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "ann_${UUID.randomUUID().toString().take(8)}"
         val item = AnnouncementItem(
@@ -1880,6 +2273,7 @@ class InstituteViewModel(
         durationMinutes: Int,
         activePollQuestion: String
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "lvc_${UUID.randomUUID().toString().take(8)}"
         val session = LiveClassSession(
@@ -1999,6 +2393,7 @@ class InstituteViewModel(
         assignedTo: String,
         purchaseCostInr: Long
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "ast_${UUID.randomUUID().toString().take(8)}"
         val asset = InventoryAsset(
@@ -2028,6 +2423,7 @@ class InstituteViewModel(
         priority: String,
         npsScore: Int = 10
     ) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "tkt_${UUID.randomUUID().toString().take(8)}"
         val ticket = SupportTicket(
@@ -2053,6 +2449,7 @@ class InstituteViewModel(
     }
 
     fun resolveTicket(ticket: SupportTicket, resolutionNotes: String) {
+        if (!ensureActiveSessionOrSignOut()) return
         viewModelScope.launch {
             runCatching {
                 repository.saveTicket(
@@ -2071,7 +2468,11 @@ class InstituteViewModel(
         val s = _uiState.value
         val totalRecords = s.students.size + s.courses.size + s.batches.size + s.fees.size + s.staff.size + s.certificates.size
         val summaryJson = """{"institute":"${s.preferences.instituteName}","timestamp":"${todayIso()}","students":${s.students.size},"courses":${s.courses.size},"batches":${s.batches.size},"fees":${s.fees.size},"staff":${s.staff.size},"certificates":${s.certificates.size}}"""
-        val checksum = "SHA256:${UUID.randomUUID().toString().replace("-", "").take(16).uppercase()}"
+        val digestHex = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(summaryJson.toByteArray(Charsets.UTF_8))
+            .take(8)
+            .joinToString("") { "%02X".format(it) }
+        val checksum = "SHA256:$digestHex"
         val id = "bkp_${UUID.randomUUID().toString().take(8)}"
 
         val backup = InstituteBackupOrConfig(
@@ -2182,6 +2583,7 @@ class InstituteViewModel(
     }
 
     fun suspendStudentAccountForSecurityViolation(targetId: String) {
+        if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         viewModelScope.launch {
             runCatching {
@@ -2224,8 +2626,41 @@ class InstituteViewModel(
                 repository = repo,
                 localDb = InstituteLocalDatabase.getDatabase(appCtx),
                 prefsManager = PreferencesManager(appCtx),
-                authServiceProvider = FirebaseAuthServiceProvider(repo)
+                authServiceProvider = FirebaseAuthServiceProvider(repo, context = appCtx)
             ) as T
         }
+    }
+}
+
+internal object TeacherScopeMatcher {
+    fun normKey(raw: String): String =
+        raw.trim().replace(Regex("\\s+"), " ").lowercase()
+
+    fun slugKey(raw: String): String =
+        raw.trim().lowercase().replace(Regex("[^a-z0-9]"), "")
+
+    fun filterBatchesForTeacher(
+        batches: List<BatchRecord>,
+        teacherIdKeys: Set<String>,
+        teacherNameKeys: Set<String>,
+        teacherNameSlugs: Set<String>
+    ): List<BatchRecord> = batches.filter { b ->
+        val cleanTeacher = normKey(b.teacherName.replace("(Batch Admin)", "", ignoreCase = true))
+        val cleanTeacherSlug = slugKey(cleanTeacher)
+        val bTeacherId = normKey(b.teacherId)
+        (bTeacherId.isNotBlank() && bTeacherId in teacherIdKeys) ||
+            (cleanTeacher.isNotBlank() && cleanTeacher in teacherNameKeys) ||
+            (cleanTeacherSlug.isNotBlank() && cleanTeacherSlug in teacherNameSlugs)
+    }
+
+    fun filterStudentsForTeacher(
+        students: List<StudentRecord>,
+        teacherBatchIds: Set<String>,
+        teacherBatchNames: Set<String>,
+        teacherCourseNames: Set<String>
+    ): List<StudentRecord> = students.filter { stu ->
+        (stu.batchId.isNotBlank() && normKey(stu.batchId) in teacherBatchIds) ||
+            (stu.batchName.isNotBlank() && normKey(stu.batchName) in teacherBatchNames) ||
+            (stu.batchId.isBlank() && stu.batchName.isBlank() && normKey(stu.courseName) in teacherCourseNames)
     }
 }

@@ -49,6 +49,7 @@ import com.google.firebase.Firebase
 import com.google.firebase.firestore.firestore
 import com.waqar.institute.security.AntiHookManager
 import com.waqar.institute.security.AppSelfHealingManager
+import com.waqar.institute.security.BindPortalWindowSecurity
 import com.waqar.institute.security.LifecyclePrivacyBlurContainer
 import com.waqar.institute.security.NativeSecurityBridge
 import com.waqar.institute.security.RecentAppsBlurController
@@ -56,6 +57,8 @@ import com.waqar.institute.security.RecaptchaInvisibleManager
 import com.waqar.institute.security.SkiaGpuRenderOptimizer
 import com.waqar.institute.security.TeeSecurityManager
 import com.waqar.institute.security.VirtualSpaceShield
+import com.waqar.institute.security.WindowSecureManager
+import com.waqar.institute.session.SessionManager
 import com.waqar.institute.utils.GlobalExceptionHandler
 import com.waqar.institute.workers.InstituteBackgroundSyncWorker
 import kotlinx.coroutines.launch
@@ -84,6 +87,7 @@ class MainActivity : ComponentActivity() {
         runCatching { configureAppCheck(this, intent) }
         runCatching { lifecycle.addObserver(MemoryScrubberLifecycleObserver(this)) }
         runCatching { SkiaGpuRenderOptimizer.enableHighRefreshRateGpuPipeline(this) }
+        runCatching { window.decorView.filterTouchesWhenObscured = true }
 
         // 2. Render Compose UI immediately on Frame 0 (prevents 3-4 second black screen on startup)
         enableEdgeToEdge()
@@ -158,12 +162,29 @@ fun WaqarInstituteApp(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val rolePalette = WciColors.paletteForRole(state.activePortalRole)
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val isAuthenticated = state.currentUser != null || state.userProfile != null
+    val forceLogoutMsg by SessionManager.sessionForceLogoutEvent.collectAsStateWithLifecycle()
+    var availableGitHubRelease by remember {
+        mutableStateOf<com.waqar.institute.updater.GitHubOtaUpdater.GitHubReleaseInfo?>(null)
+    }
+
+    BindPortalWindowSecurity(
+        portalRole = state.activePortalRole.key,
+        isAuthenticated = isAuthenticated,
+        allowAdminSecureOverride = state.preferences.flagSecureEnabled
+    )
 
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching { viewModel.refreshRaspSecurityAudit(context) }
             (context.applicationContext as? android.app.Application)?.let { app ->
                 runCatching { RecaptchaInvisibleManager.getOrInitClient(app) }
+            }
+            val latestRelease = runCatching {
+                com.waqar.institute.updater.GitHubOtaUpdater.checkForUpdate()
+            }.getOrNull()
+            if (latestRelease != null) {
+                availableGitHubRelease = latestRelease
             }
         }
     }
@@ -174,28 +195,35 @@ fun WaqarInstituteApp(
         uiTier = state.effectiveUiTier,
         languageCode = state.preferences.languageCode
     ) {
-        LifecyclePrivacyBlurContainer(enabled = state.preferences.flagSecureEnabled) {
+        val isWindowProtected = WindowSecureManager.isPortalProtected(
+            portalRole = state.activePortalRole.key,
+            isAuthenticated = isAuthenticated,
+            allowAdminSecureOverride = state.preferences.flagSecureEnabled
+        )
+        LifecyclePrivacyBlurContainer(enabled = isWindowProtected) {
             Surface(
                 modifier = Modifier.fillMaxSize(),
-                color = WciColors.BgPrimaryDark
+                color = MaterialTheme.colorScheme.background
             ) {
-                if (state.currentUser == null && state.userProfile == null) {
+                if (!isAuthenticated) {
                     NeonWaveLoginScreen(
                         selectedRole = state.activePortalRole,
                         languageCode = state.preferences.languageCode,
                         instituteName = state.preferences.instituteName,
                         instituteTagline = state.preferences.instituteTagline,
                         isAuthenticating = state.isAuthenticating,
-                        externalStatusMessage = state.statusMessage,
+                        externalStatusMessage = forceLogoutMsg ?: state.statusMessage,
                         onRoleSelected = { role -> viewModel.switchPortalRole(role) },
                         onLanguageToggle = {
                             val next = if (state.preferences.languageCode == "HI") "EN" else "HI"
                             viewModel.setLanguage(next)
                         },
                         onCredentialLogin = { actCtx, role, username, password ->
+                            SessionManager.clearForceLogoutNotice()
                             viewModel.authenticateWithPortalCredentials(actCtx, role, username, password)
                         },
                         onGoogleLogin = { actCtx, role, customUsername ->
+                            SessionManager.clearForceLogoutNotice()
                             viewModel.authenticateWithGoogleRole(actCtx, role, customUsername)
                         }
                     )
@@ -220,6 +248,12 @@ fun WaqarInstituteApp(
                         verifyUri = uri,
                         localCertificates = state.certificates,
                         onDismiss = onDismissVerifyDeepLink
+                    )
+                }
+
+                availableGitHubRelease?.let { releaseInfo ->
+                    com.waqar.institute.updater.UpdateDialog(
+                        releaseInfo = releaseInfo
                     )
                 }
             }

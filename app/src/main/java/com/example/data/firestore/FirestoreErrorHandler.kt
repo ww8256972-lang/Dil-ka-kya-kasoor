@@ -93,8 +93,15 @@ fun handleFirestoreError(
     throw FirestoreOperationException(jsonPayload, error)
 }
 
-fun Throwable.isPermissionDenied(): Boolean =
-    (this as? FirebaseFirestoreException)?.code ==
-        FirebaseFirestoreException.Code.PERMISSION_DENIED ||
-    (cause as? FirebaseFirestoreException)?.code ==
-        FirebaseFirestoreException.Code.PERMISSION_DENIED
+fun Throwable.isPermissionDenied(): Boolean {
+    var curr: Throwable? = this
+    while (curr != null) {
+        if ((curr as? FirebaseFirestoreException)?.code ==
+            FirebaseFirestoreException.Code.PERMISSION_DENIED
+        ) {
+            return true
+        }
+        curr = curr.cause
+    }
+    return false
+}

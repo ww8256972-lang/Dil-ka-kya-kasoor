@@ -74,10 +74,15 @@ fun NeonWaveLoginScreen(
 
     LaunchedEffect(externalStatusMessage) {
         if (!externalStatusMessage.isNullOrBlank()) {
-            failedAttempts += 1
-            if (failedAttempts >= 5) {
-                val backoffSec = (15L shl (failedAttempts - 5).coerceAtMost(4)).coerceAtMost(300L)
-                lockoutUntilEpochMs = System.currentTimeMillis() + backoffSec * 1000L
+            val isInformationalNotice = externalStatusMessage.startsWith("Signed out", ignoreCase = true) ||
+                externalStatusMessage.startsWith("Session expired", ignoreCase = true) ||
+                externalStatusMessage.startsWith("Signed in", ignoreCase = true)
+            if (!isInformationalNotice) {
+                failedAttempts += 1
+                if (failedAttempts >= 5) {
+                    val backoffSec = (15L shl (failedAttempts - 5).coerceAtMost(4)).coerceAtMost(300L)
+                    lockoutUntilEpochMs = System.currentTimeMillis() + backoffSec * 1000L
+                }
             }
         }
     }
@@ -122,10 +127,10 @@ fun NeonWaveLoginScreen(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .background(palette.brush)
-                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+                            .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(14.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -142,14 +147,14 @@ fun NeonWaveLoginScreen(
                             text = instituteName,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = WciColors.TextPrimaryDark
+                                color = WciColors.textPrimary
                             )
                         )
                         Text(
                             text = instituteTagline,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                color = WciColors.TextMutedDark,
-                                fontSize = 11.sp
+                                color = WciColors.textMuted,
+                                fontSize = 12.sp
                             )
                         )
                     }
@@ -191,7 +196,7 @@ fun NeonWaveLoginScreen(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .heightIn(min = 42.dp)
+                                    .heightIn(min = 48.dp)
                                     .clip(RoundedCornerShape(WciRadius.pill))
                                     .background(
                                         brush = if (isSelected) rolePal.brush else Brush.linearGradient(
@@ -209,7 +214,7 @@ fun NeonWaveLoginScreen(
                                     text = if (languageCode == "HI") role.hindiLabel.substringBefore(" ") else role.label,
                                     style = MaterialTheme.typography.labelLarge.copy(
                                         fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                                        color = if (isSelected) Color(0xFF05060F) else WciColors.TextSecondaryDark
+                                        color = if (isSelected) Color(0xFF05060F) else WciColors.textSecondary
                                     )
                                 )
                             }
@@ -251,7 +256,7 @@ fun NeonWaveLoginScreen(
                                         fontFamily = JetBrainsMono,
                                         fontWeight = FontWeight.Bold,
                                         color = rPal.start,
-                                        fontSize = 11.sp
+                                        fontSize = 12.sp
                                     )
                                 )
                             }
@@ -264,7 +269,7 @@ fun NeonWaveLoginScreen(
                                     PortalRole.PARENT -> if (languageCode == "HI") "अभिभावक प्रोग्रेस एवं फीस पोर्टल" else "Parent Ward Progress & Fee Portal"
                                 },
                                 style = MaterialTheme.typography.headlineMedium.copy(
-                                    color = WciColors.TextPrimaryDark
+                                    color = WciColors.textPrimary
                                 )
                             )
                             Spacer(modifier = Modifier.height(4.dp))
@@ -276,7 +281,7 @@ fun NeonWaveLoginScreen(
                                     PortalRole.PARENT -> if (languageCode == "HI") "अपना अभिभावक यूजरनेम और पासवर्ड या Google लॉगिन चुनें।" else "Enter your Parent username & password or sign in with Google."
                                 },
                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = WciColors.TextMutedDark
+                                    color = WciColors.textMuted
                                 )
                             )
                         }
@@ -319,11 +324,11 @@ fun NeonWaveLoginScreen(
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,
-                            unfocusedBorderColor = WciColors.GlassBorderLight,
-                            focusedTextColor = WciColors.TextPrimaryDark,
-                            unfocusedTextColor = WciColors.TextPrimaryDark,
+                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else Color(0x470F172A),
+                            focusedTextColor = WciColors.textPrimary,
+                            unfocusedTextColor = WciColors.textPrimary,
                             focusedLabelColor = palette.start,
-                            unfocusedLabelColor = WciColors.TextMutedDark
+                            unfocusedLabelColor = WciColors.textMuted
                         ),
                         shape = RoundedCornerShape(WciRadius.md)
                     )
@@ -357,7 +362,7 @@ fun NeonWaveLoginScreen(
                                 Icon(
                                     imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                     contentDescription = if (passwordVisible) "Hide password" else "Show password",
-                                    tint = WciColors.TextSecondaryDark
+                                    tint = WciColors.textSecondary
                                 )
                             }
                         },
@@ -366,11 +371,11 @@ fun NeonWaveLoginScreen(
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,
-                            unfocusedBorderColor = WciColors.GlassBorderLight,
-                            focusedTextColor = WciColors.TextPrimaryDark,
-                            unfocusedTextColor = WciColors.TextPrimaryDark,
+                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else Color(0x470F172A),
+                            focusedTextColor = WciColors.textPrimary,
+                            unfocusedTextColor = WciColors.textPrimary,
                             focusedLabelColor = palette.start,
-                            unfocusedLabelColor = WciColors.TextMutedDark
+                            unfocusedLabelColor = WciColors.textMuted
                         ),
                         shape = RoundedCornerShape(WciRadius.md)
                     )
@@ -385,7 +390,9 @@ fun NeonWaveLoginScreen(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clickable { keepSignedIn = !keepSignedIn }
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clickable { keepSignedIn = !keepSignedIn }
                         ) {
                             Checkbox(
                                 checked = keepSignedIn,
@@ -398,7 +405,7 @@ fun NeonWaveLoginScreen(
                             Text(
                                 text = if (languageCode == "HI") "इस डिवाइस पर लॉगिन रखें" else "Keep session active",
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    color = WciColors.TextSecondaryDark
+                                    color = WciColors.textSecondary
                                 )
                             )
                         }
@@ -427,11 +434,11 @@ fun NeonWaveLoginScreen(
                                 Icon(
                                     imageVector = Icons.Default.ErrorOutline,
                                     contentDescription = "Notice",
-                                    tint = WciColors.Danger
+                                    tint = WciColors.dangerColor
                                 )
                                 Text(
                                     text = activeMessage.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextPrimaryDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textPrimary)
                                 )
                             }
                         }
@@ -482,13 +489,52 @@ fun NeonWaveLoginScreen(
                         testTag = "portal_credential_login_button"
                     )
 
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            localErrorMessage = null
+                            val act = context.findActivity() ?: context
+                            onGoogleLogin(act, selectedRole, usernameInput.trim())
+                        },
+                        enabled = !isAuthenticating,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("google_signin_button"),
+                        shape = RoundedCornerShape(WciRadius.pill),
+                        border = androidx.compose.foundation.BorderStroke(1.2.dp, palette.start.copy(alpha = 0.65f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = WciColors.textPrimary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VerifiedUser,
+                            contentDescription = "Continue with Google",
+                            tint = palette.start,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (languageCode == "HI") {
+                                "Google से साइन इन करें (${selectedRole.label})"
+                            } else {
+                                "Continue with Google (${selectedRole.label})"
+                            },
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = WciColors.textPrimary
+                            )
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(12.dp))
 
                     // Institute Security & Credential Policy Notice Surface
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 44.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("portal_credential_notice_surface"),
                         shape = RoundedCornerShape(WciRadius.md),
                         color = palette.start.copy(alpha = 0.08f),
@@ -497,7 +543,7 @@ fun NeonWaveLoginScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
@@ -516,7 +562,7 @@ fun NeonWaveLoginScreen(
                                 },
                                 style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = FontWeight.Medium,
-                                    color = WciColors.TextSecondaryDark
+                                    color = WciColors.textSecondary
                                 )
                             )
                         }
@@ -529,9 +575,9 @@ fun NeonWaveLoginScreen(
     if (showRecoverySheet) {
         AlertDialog(
             onDismissRequest = { showRecoverySheet = false },
-            containerColor = WciColors.BgElevatedDark,
-            titleContentColor = WciColors.TextPrimaryDark,
-            textContentColor = WciColors.TextSecondaryDark,
+            containerColor = WciColors.elevatedSurface,
+            titleContentColor = WciColors.textPrimary,
+            textContentColor = WciColors.textSecondary,
             title = { Text("Portal Login & Password Guide") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -561,21 +607,21 @@ fun TotpMfaChallengeDialog(
 
     AlertDialog(
         onDismissRequest = {},
-        containerColor = WciColors.BgElevatedDark,
+        containerColor = WciColors.elevatedSurface,
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(Icons.Default.Security, contentDescription = null, tint = palette.start)
-                Text("2FA TOTP Verification", color = WciColors.TextPrimaryDark)
+                Text("2FA TOTP Verification", color = WciColors.textPrimary)
             }
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     "Enter the 6-digit verification code from your authenticator app to unlock this session.",
-                    style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextSecondaryDark)
+                    style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textSecondary)
                 )
                 OutlinedTextField(
                     value = code,
@@ -593,7 +639,7 @@ fun TotpMfaChallengeDialog(
                 if (error) {
                     Text(
                         "Please enter a valid 6-digit numeric code.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Danger)
+                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.dangerColor)
                     )
                 }
             }
@@ -612,7 +658,7 @@ fun TotpMfaChallengeDialog(
                 onClick = onBypassOrDisable,
                 modifier = Modifier.testTag("totp_cancel_signout_button")
             ) {
-                Text("Cancel & Sign Out", color = WciColors.Danger)
+                Text("Cancel & Sign Out", color = WciColors.dangerColor)
             }
         }
     )

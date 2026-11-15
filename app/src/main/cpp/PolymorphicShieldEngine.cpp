@@ -1,13 +1,19 @@
 #include <jni.h>
 #include <cstdint>
 #include <chrono>
-#include <fstream>
-#include <string>
+#include <vector>
 
 namespace {
 
+    inline void scrubBuffer(void* ptr, size_t len) noexcept {
+        volatile uint8_t* p = reinterpret_cast<volatile uint8_t*>(ptr);
+        while (len--) {
+            *p++ = 0;
+        }
+    }
+
     // Polymorphic opaque predicate & control-flow flattening helper
-    inline uint32_t polymorphicMix32(uint32_t v, uint32_t roundKey) {
+    inline uint32_t polymorphicMix32(uint32_t v, uint32_t roundKey) noexcept {
         uint32_t state = v ^ roundKey;
         uint32_t selector = (state & 0x3U);
         switch (selector) {
@@ -29,7 +35,7 @@ namespace {
     }
 
     // Detect single-stepping / hardware breakpoint stalls across polymorphic dispatch blocks
-    bool detectInstructionPointerStepAnomaly() {
+    bool detectInstructionPointerStepAnomaly() noexcept {
         auto start = std::chrono::steady_clock::now();
         volatile uint32_t acc = 0x13579BDFU;
         for (uint32_t i = 0; i < 512; ++i) {
@@ -59,28 +65,35 @@ Java_com_waqar_institute_security_BytecodeMutator_nativePolymorphicTransform(
         jobject /* thiz */,
         jbyteArray inputBytes,
         jint epochSalt) {
-    if (inputBytes == nullptr) {
-        return env->NewByteArray(0);
+    if (env == nullptr || inputBytes == nullptr) {
+        return env != nullptr ? env->NewByteArray(0) : nullptr;
     }
     jsize len = env->GetArrayLength(inputBytes);
-    jbyte *raw = env->GetByteArrayElements(inputBytes, nullptr);
-    jbyteArray outArray = env->NewByteArray(len);
-    if (raw == nullptr || outArray == nullptr) {
-        if (raw != nullptr) {
-            env->ReleaseByteArrayElements(inputBytes, raw, JNI_ABORT);
-        }
+    if (len <= 0 || len > 1048576) {
         return env->NewByteArray(0);
     }
+    jbyte *raw = env->GetByteArrayElements(inputBytes, nullptr);
+    if (raw == nullptr || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        if (raw != nullptr) env->ReleaseByteArrayElements(inputBytes, raw, JNI_ABORT);
+        return env->NewByteArray(0);
+    }
+    jbyteArray outArray = env->NewByteArray(len);
+    if (outArray == nullptr) {
+        env->ReleaseByteArrayElements(inputBytes, raw, JNI_ABORT);
+        return nullptr;
+    }
 
-    std::string mutated(len, '\0');
+    std::vector<uint8_t> mutated(static_cast<size_t>(len), 0);
     uint32_t streamState = polymorphicMix32(static_cast<uint32_t>(epochSalt), 0x6A09E667U);
     for (jsize i = 0; i < len; ++i) {
         streamState = polymorphicMix32(streamState, static_cast<uint32_t>(i));
         uint8_t keystreamByte = static_cast<uint8_t>((streamState >> ((i & 3) * 8)) & 0xFFU);
-        mutated[i] = static_cast<char>(static_cast<uint8_t>(raw[i]) ^ keystreamByte);
+        mutated[static_cast<size_t>(i)] = static_cast<uint8_t>(static_cast<uint8_t>(raw[i]) ^ keystreamByte);
     }
 
     env->ReleaseByteArrayElements(inputBytes, raw, JNI_ABORT);
     env->SetByteArrayRegion(outArray, 0, len, reinterpret_cast<const jbyte *>(mutated.data()));
+    scrubBuffer(mutated.data(), mutated.size());
     return outArray;
 }

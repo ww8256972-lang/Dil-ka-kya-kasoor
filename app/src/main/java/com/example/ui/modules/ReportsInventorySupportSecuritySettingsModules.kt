@@ -1,11 +1,14 @@
 package com.example.ui.modules
 
 import android.app.Activity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -84,8 +87,8 @@ fun ReportsInventorySupportModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Executive MIS & Financial Analytics", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
-                                Text("Real-time KPI aggregation across institute operations", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("Executive MIS & Financial Analytics", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
+                                Text("Real-time KPI aggregation across institute operations", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                             }
                             LiquidPill(
                                 text = "Export JSON Report",
@@ -107,15 +110,15 @@ fun ReportsInventorySupportModuleScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column {
-                                Text("Gross Fee Revenue", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("Gross Fee Revenue", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 MoneyTicker(amountPaise = totalRevenue, color = WciColors.Success, fontSizeSp = 20)
                             }
                             Column {
-                                Text("Receivable Fee Dues", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("Receivable Fee Dues", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 MoneyTicker(amountPaise = totalDues, color = WciColors.Warning, fontSizeSp = 20)
                             }
                             Column {
-                                Text("Net Operating Surplus", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("Net Operating Surplus", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                 MoneyTicker(amountPaise = netSurplus.coerceAtLeast(0L), color = WciColors.Info, fontSizeSp = 20)
                             }
                         }
@@ -124,7 +127,7 @@ fun ReportsInventorySupportModuleScreen(
 
                 item {
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Text("Academic & Operational Summary", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                        Text("Academic & Operational Summary", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                         Spacer(modifier = Modifier.height(8.dp))
                         val metrics = listOf(
                             "Total Enrolled Students" to "${state.students.size}",
@@ -142,8 +145,8 @@ fun ReportsInventorySupportModuleScreen(
                                     .padding(vertical = 4.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(label, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
-                                Text(value, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, fontWeight = FontWeight.Bold, color = WciColors.TextPrimaryDark))
+                                Text(label, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
+                                Text(value, style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, fontWeight = FontWeight.Bold, color = WciColors.textPrimary))
                             }
                         }
                     }
@@ -157,8 +160,8 @@ fun ReportsInventorySupportModuleScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Computer Lab Assets & Library", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
-                            Text("${state.assets.size} Tracked PCs, UPS, Projectors & Books", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                            Text("Computer Lab Assets & Library", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
+                            Text("${state.assets.size} Tracked PCs, UPS, Projectors & Books", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                         }
                         ShimmerButton(text = "+ Asset", onClick = { showAddAsset = true })
                     }
@@ -182,10 +185,10 @@ fun ReportsInventorySupportModuleScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${ast.assetCode} • ${ast.name}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                    Text("${ast.assetCode} • ${ast.name}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                     Text("${ast.category} • Location: ${ast.locationLab}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
                                     if (ast.assignedTo.isNotBlank()) {
-                                        Text("Assigned: ${ast.assignedTo}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                        Text("Assigned: ${ast.assignedTo}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                                     }
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
@@ -195,7 +198,7 @@ fun ReportsInventorySupportModuleScreen(
                                             color = if (ast.conditionStatus == "WORKING") WciColors.Success else WciColors.Warning
                                         )
                                     )
-                                    MoneyTicker(amountPaise = ast.purchaseCostPaise, color = WciColors.TextSecondaryDark, fontSizeSp = 14)
+                                    MoneyTicker(amountPaise = ast.purchaseCostPaise, color = WciColors.textSecondary, fontSizeSp = 14)
                                 }
                             }
                         }
@@ -210,8 +213,8 @@ fun ReportsInventorySupportModuleScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("Support Helpdesk & NPS", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
-                            Text("${state.tickets.size} Tickets • Grievance SLA & Satisfaction Rating", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                            Text("Support Helpdesk & NPS", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
+                            Text("${state.tickets.size} Tickets • Grievance SLA & Satisfaction Rating", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                         }
                         ShimmerButton(text = "+ Ticket", onClick = { showAddTicket = true })
                     }
@@ -235,9 +238,9 @@ fun ReportsInventorySupportModuleScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text("${tkt.ticketNo} • ${tkt.subject}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                                    Text("${tkt.ticketNo} • ${tkt.subject}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                                     Text("${tkt.category} • Priority: ${tkt.priority} • By: ${tkt.requesterName}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
-                                    Text(tkt.description, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark))
+                                    Text(tkt.description, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                                     if (tkt.resolutionNotes.isNotBlank()) {
                                         Text("Resolution: ${tkt.resolutionNotes}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Success))
                                     }
@@ -268,8 +271,8 @@ fun ReportsInventorySupportModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddAsset = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Add Lab Asset / Library Item", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Add Lab Asset / Library Item", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -305,13 +308,26 @@ fun ReportsInventorySupportModuleScreen(
 
         AlertDialog(
             onDismissRequest = { showAddTicket = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Submit Helpdesk Ticket", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Submit Helpdesk Ticket", color = WciColors.textPrimary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Category", style = MaterialTheme.typography.labelMedium.copy(color = WciColors.textSecondary))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf("LAB_ISSUE", "FEE_QUERY", "EXAM_CELL", "CERTIFICATE").forEach { c ->
                             LiquidPill(text = c.substringBefore("_"), selected = cat == c, onClick = { cat = c })
+                        }
+                    }
+                    Text("Priority", style = MaterialTheme.typography.labelMedium.copy(color = WciColors.textSecondary))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("LOW", "MEDIUM", "HIGH", "CRITICAL").forEach { p ->
+                            LiquidPill(text = p, selected = prio == p, onClick = { prio = p })
                         }
                     }
                     OutlinedTextField(value = subject, onValueChange = { subject = it }, label = { Text("Subject *") }, singleLine = true)
@@ -328,7 +344,7 @@ fun ReportsInventorySupportModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddTicket = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddTicket = false }) { Text("Cancel", color = WciColors.textMuted) } }
         )
     }
 }
@@ -400,11 +416,11 @@ fun SecurityBackupSettingsModuleScreen(
                         ) {
                             Text(
                                 text = "Admin Portal Username & Password (Cloud Synced)",
-                                style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
+                                style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
                             )
                             Text(
                                 text = "Update your Admin login username and password in Cloud Firestore. Changes take effect immediately across all devices.",
-                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                             Spacer(modifier = Modifier.height(10.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -454,7 +470,7 @@ fun SecurityBackupSettingsModuleScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
                                         text = "Student, Parent & Teacher Login Credentials",
-                                        style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
+                                        style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
                                     )
                                     Text(
                                         text = "${state.portalCredentials.size} Accounts in Cloud • PBKDF2-HMAC-SHA256 Salted • Per-Student Record Isolation",
@@ -484,12 +500,12 @@ fun SecurityBackupSettingsModuleScreen(
                                                 style = MaterialTheme.typography.bodyMedium.copy(
                                                     fontFamily = JetBrainsMono,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = WciColors.TextPrimaryDark
+                                                    color = WciColors.textPrimary
                                                 )
                                             )
                                             Text(
                                                 text = "Linked Record ID: ${cred.linkedEntityId.ifBlank { "Global" }} • Hash: Argon2id (64 MiB, t=3, p=2)",
-                                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                             )
                                         }
                                         LiquidPill(
@@ -516,26 +532,71 @@ fun SecurityBackupSettingsModuleScreen(
                             .take(16)
                     }
 
+                    val sqlCipherActive = com.example.data.local.InstituteLocalDatabase.isSqlCipherActive
+                    val raspVerdictText = rasp?.verdict ?: posture.integrityVerdict
+                    val isRaspClean = !raspVerdictText.contains("COMPROMISED", ignoreCase = true) &&
+                        !raspVerdictText.contains("TAMPER", ignoreCase = true) &&
+                        !raspVerdictText.contains("ROOT", ignoreCase = true)
+                    val isKeymasterStrong = keymasterPosture.securityLevelLabel.contains("StrongBox", ignoreCase = true) ||
+                        keymasterPosture.securityLevelLabel.contains("TEE", ignoreCase = true)
+
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        glowColor = WciColors.Success
+                        glowColor = if (isRaspClean) WciColors.successColor else WciColors.dangerColor
                     ) {
                         Text(
                             text = "Enterprise Security & Cryptography Posture",
-                            style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
+                            style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                Triple("RASP", if (isRaspClean) "CLEAN" else "ALERT", if (isRaspClean) WciColors.successColor else WciColors.dangerColor),
+                                Triple("SQLCipher", if (sqlCipherActive) "AES-256" else "FALLBACK", if (sqlCipherActive) WciColors.successColor else WciColors.warningColor),
+                                Triple("Keymaster", if (isKeymasterStrong) "HARDWARE" else "SOFTWARE", if (isKeymasterStrong) WciColors.infoColor else WciColors.warningColor),
+                                Triple("FLAG_SECURE", if (state.preferences.flagSecureEnabled) "ACTIVE" else "OFF", if (state.preferences.flagSecureEnabled) WciColors.successColor else WciColors.warningColor)
+                            ).forEach { (k, v, badgeColor) ->
+                                Box(
+                                    modifier = Modifier
+                                        .background(badgeColor.copy(alpha = 0.16f), RoundedCornerShape(WciRadius.pill))
+                                        .border(1.dp, badgeColor.copy(alpha = 0.7f), RoundedCornerShape(WciRadius.pill))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "$k: $v",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = JetBrainsMono,
+                                            fontWeight = FontWeight.Bold,
+                                            color = badgeColor
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "RASP Verdict: ${rasp?.verdict ?: posture.integrityVerdict} • ${tamperVerdict.statusSummary}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Success)
+                            text = "RASP Verdict: $raspVerdictText • ${tamperVerdict.statusSummary}",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = JetBrainsMono,
+                                color = if (isRaspClean) WciColors.successColor else WciColors.dangerColor
+                            )
                         )
                         Text(
-                            text = "Keymaster: ${keymasterPosture.securityLevelLabel} • Room DB: SQLCipher 256-Bit AES",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Info)
+                            text = "Keymaster: ${keymasterPosture.securityLevelLabel} • Room DB: ${com.example.data.local.InstituteLocalDatabase.databaseEncryptionLabel}",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = JetBrainsMono,
+                                color = WciColors.infoColor
+                            )
                         )
                         Text(
                             text = "Polymorphic IP Shield: ${if (ipFlowClean) "HEALTHY (OLLVM:$ollvmDigestHex)" else "ANOMALY"} • SPKI SHA-256 Pinning Active",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.TextSecondaryDark)
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = JetBrainsMono,
+                                color = if (ipFlowClean) WciColors.textSecondary else WciColors.dangerColor
+                            )
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
@@ -544,8 +605,8 @@ fun SecurityBackupSettingsModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("FLAG_SECURE Screenshot Protection", style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextPrimaryDark))
-                                Text("Blocks screen capture & recents thumbnail on sensitive financial/exam screens", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("FLAG_SECURE Screenshot Protection", style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textPrimary))
+                                Text("Blocks screen capture & recents thumbnail on sensitive financial/exam screens", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                             }
                             Switch(
                                 checked = state.preferences.flagSecureEnabled,
@@ -555,15 +616,15 @@ fun SecurityBackupSettingsModuleScreen(
                                 }
                             )
                         }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = WciColors.GlassBorderSubtle)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = WciColors.glassBorderSubtleColor)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("TOTP 2FA Multi-Factor Challenge", style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.TextPrimaryDark))
-                                Text("Require 6-digit TOTP authenticator verification on login", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                                Text("TOTP 2FA Multi-Factor Challenge", style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.textPrimary))
+                                Text("Require 6-digit TOTP authenticator verification on login", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                             }
                             Switch(
                                 checked = state.userProfile?.mfaEnabled == true,
@@ -585,37 +646,34 @@ fun SecurityBackupSettingsModuleScreen(
                             modifier = Modifier.fillMaxWidth(),
                             glowColor = WciColors.Danger
                         ) {
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Real-Time Security Violation Telemetry",
-                                        style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark)
-                                    )
-                                    Text(
-                                        text = "Captures Student ID, Username, Phone, Device & Network on RASP/Frida/MT Manager/Session Violations",
-                                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
-                                    )
-                                }
+                                Text(
+                                    text = "Real-Time Security Violation Telemetry",
+                                    style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
+                                )
+                                Text(
+                                    text = "Captures Account ID, Username, Device & Network on RASP/Frida/MT Manager/Session Violations",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
+                                )
                                 LiquidPill(
                                     text = "Run Telemetry Drill",
                                     selected = true,
                                     icon = Icons.Default.Shield,
                                     onClick = {
-                                        val sampleStu = state.students.firstOrNull()
                                         viewModel.reportSecurityIncidentAndNotifyAdmin(
                                             context = context,
-                                            username = sampleStu?.enrollmentNo?.lowercase() ?: "student_wci",
-                                            fullName = sampleStu?.fullName ?: "Active Student",
-                                            phone = sampleStu?.phone ?: "+91-9876543210",
-                                            studentId = sampleStu?.id ?: "WCI-STU-01",
+                                            username = state.userProfile?.username ?: "admin_telemetry_drill",
+                                            fullName = "Admin Security Drill",
+                                            phone = "",
+                                            studentId = "",
                                             violationType = "RASP_MEMORY_INTEGRITY_SCAN",
                                             details = "Automated RASP & Single-Device Telemetry Verification Drill"
                                         )
-                                    }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
                                 )
                             }
                             if (criticalAlerts.isNotEmpty()) {
@@ -633,12 +691,12 @@ fun SecurityBackupSettingsModuleScreen(
                                                 text = "${alert.severity} • ${alert.action}",
                                                 style = MaterialTheme.typography.labelLarge.copy(
                                                     fontFamily = JetBrainsMono,
-                                                    color = WciColors.Danger
+                                                    color = WciColors.dangerColor
                                                 )
                                             )
                                             Text(
                                                 text = alert.details,
-                                                style = MaterialTheme.typography.bodySmall.copy(color = Color.White)
+                                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textPrimary)
                                             )
                                         }
                                         if (alert.targetId.isNotBlank()) {
@@ -659,7 +717,7 @@ fun SecurityBackupSettingsModuleScreen(
 
                 // Active Device Sessions
                 item {
-                    Text("Active Device Sessions", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                    Text("Active Device Sessions", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                 }
                 items(state.sessions, key = { it.sessionId }) { sess ->
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
@@ -669,7 +727,7 @@ fun SecurityBackupSettingsModuleScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(sess.deviceName, style = MaterialTheme.typography.titleSmall.copy(color = WciColors.TextPrimaryDark))
+                                Text(sess.deviceName, style = MaterialTheme.typography.titleSmall.copy(color = WciColors.textPrimary))
                                 Text("${sess.platform} • Active: ${sess.active}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info))
                             }
                             if (sess.active) {
@@ -687,7 +745,7 @@ fun SecurityBackupSettingsModuleScreen(
 
                 // Immutable Audit Logs
                 item {
-                    Text("Security Audit Log", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                    Text("Security Audit Log", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                 }
                 items(state.auditLogs.take(15), key = { it.id }) { log ->
                     GlassCard(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp)) {
@@ -695,18 +753,18 @@ fun SecurityBackupSettingsModuleScreen(
                             "${log.severity} • ${log.action}",
                             style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMono, color = WciColors.Info)
                         )
-                        Text(log.details, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextPrimaryDark))
-                        Text("Actor: ${log.actorEmail}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                        Text(log.details, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textPrimary))
+                        Text("Actor: ${log.actorEmail}", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                     }
                 }
             }
             1 -> {
                 item {
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Text("Cloud Backup, Export & Data Portability", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.TextPrimaryDark))
+                        Text("Cloud Backup, Export & Data Portability", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
                         Text(
                             "Create SHA-256 verified cloud backup manifests and export full JSON snapshots via Android Share Sheet.",
-                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         ShimmerButton(
@@ -725,9 +783,9 @@ fun SecurityBackupSettingsModuleScreen(
                 }
                 items(state.backupsAndConfigs, key = { it.id }) { bkp ->
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
-                        Text("${bkp.category} • ${bkp.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                        Text("${bkp.category} • ${bkp.title}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                         Text("Records: ${bkp.recordCount} • Checksum: ${bkp.checksum}", style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Success))
-                        Text(bkp.payloadJson, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark))
+                        Text(bkp.payloadJson, style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted))
                     }
                 }
             }
@@ -747,7 +805,7 @@ fun SecurityBackupSettingsModuleScreen(
                                 Text(
                                     text = if (state.preferences.languageCode == "HI") "पोर्टल भाषा (App Language)" else "Portal Language (English / Hindi)",
                                     style = MaterialTheme.typography.titleMedium.copy(
-                                        color = WciColors.TextPrimaryDark,
+                                        color = WciColors.textPrimary,
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 )
@@ -757,7 +815,7 @@ fun SecurityBackupSettingsModuleScreen(
                                     } else {
                                         "Keep the entire portal in English by default, or switch to Hindi anytime"
                                     },
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextMutedDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                 )
                             }
                             Icon(
@@ -797,7 +855,7 @@ fun SecurityBackupSettingsModuleScreen(
                         Text(
                             text = if (state.preferences.languageCode == "HI") "दिखावट और बैटरी सेवर मोड" else "Theme & Battery Saver Mode",
                             style = MaterialTheme.typography.titleMedium.copy(
-                                color = WciColors.TextPrimaryDark,
+                                color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
@@ -811,13 +869,13 @@ fun SecurityBackupSettingsModuleScreen(
                                 Text(
                                     text = if (state.preferences.languageCode == "HI") "डार्क थीम (Dark Cosmos Theme)" else "Dark Cosmos Theme",
                                     style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = WciColors.TextPrimaryDark,
+                                        color = WciColors.textPrimary,
                                         fontWeight = FontWeight.Bold
                                     )
                                 )
                                 Text(
                                     text = "Deep sapphire-indigo Liquid Glass & 3D Claymorphism palette",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                                 )
                             }
                             Switch(
@@ -825,7 +883,7 @@ fun SecurityBackupSettingsModuleScreen(
                                 onCheckedChange = { viewModel.setDarkTheme(it) }
                             )
                         }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = WciColors.GlassBorderSubtle)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = WciColors.glassBorderSubtleColor)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -835,13 +893,13 @@ fun SecurityBackupSettingsModuleScreen(
                                 Text(
                                     text = if (state.preferences.languageCode == "HI") "बैटरी सेवर मोड (Battery Saver Mode)" else "Battery Saver Mode",
                                     style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = WciColors.TextPrimaryDark,
+                                        color = WciColors.textPrimary,
                                         fontWeight = FontWeight.Bold
                                     )
                                 )
                                 Text(
                                     text = "Optimizes background wave animations to save battery power",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.TextSecondaryDark)
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                                 )
                             }
                             Switch(
@@ -855,7 +913,7 @@ fun SecurityBackupSettingsModuleScreen(
                 if (isAdmin) {
                     item {
                         GlassCard(modifier = Modifier.fillMaxWidth()) {
-                            Text("Institute Branding & Tax Profile", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.TextPrimaryDark))
+                            Text("Institute Branding & Tax Profile", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedTextField(value = instName, onValueChange = { instName = it }, label = { Text("Institute Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                             Spacer(modifier = Modifier.height(8.dp))
@@ -885,14 +943,14 @@ fun SecurityBackupSettingsModuleScreen(
     if (showIssueCredentialDialog) {
         var credRole by remember { mutableStateOf(PortalRole.STUDENT) }
         var credUsername by remember { mutableStateOf("") }
-        var credPassword by remember { mutableStateOf("123456") }
+        var credPassword by remember { mutableStateOf("") }
         var credDisplayName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
         var credLinkedId by remember { mutableStateOf(state.students.firstOrNull()?.id ?: "") }
 
         AlertDialog(
             onDismissRequest = { showIssueCredentialDialog = false },
-            containerColor = WciColors.BgElevatedDark,
-            title = { Text("Issue Portal Login (Student / Parent / Teacher)", color = WciColors.TextPrimaryDark) },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Issue Portal Login (Student / Parent / Teacher)", color = WciColors.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -975,7 +1033,7 @@ fun SecurityBackupSettingsModuleScreen(
                     OutlinedTextField(
                         value = credPassword,
                         onValueChange = { credPassword = it },
-                        label = { Text("Login Password (3–6+ digits/chars) *") },
+                        label = { Text("Login Password (min 6 chars) *") },
                         singleLine = true
                     )
                     OutlinedTextField(
@@ -995,7 +1053,7 @@ fun SecurityBackupSettingsModuleScreen(
             confirmButton = {
                 ShimmerButton(
                     text = "Save to Cloud Vault",
-                    enabled = credUsername.length >= 3 && credPassword.length >= 3 && credDisplayName.isNotBlank(),
+                    enabled = credUsername.trim().length >= 3 && credPassword.trim().length >= 6 && credDisplayName.isNotBlank(),
                     onClick = {
                         viewModel.provisionRoleCredential(
                             username = credUsername,

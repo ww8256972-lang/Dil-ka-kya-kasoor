@@ -5,18 +5,28 @@ import androidx.paging.PagingSource
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.security.HardwareKeystoreVault
+import java.util.Arrays
 import kotlinx.coroutines.flow.Flow
 import net.sqlcipher.database.SQLiteDatabase
 import net.sqlcipher.database.SupportFactory
 
-@Entity(tableName = "offline_attendance_queue")
+@Entity(
+    tableName = "offline_attendance_queue",
+    indices = [
+        Index(value = ["synced", "queuedAtMillis"], name = "idx_attendance_synced_queued"),
+        Index(value = ["batchId", "dateIso"], name = "idx_attendance_batch_date")
+    ]
+)
 data class QueuedAttendanceEntity(
     @PrimaryKey val id: String,
     val targetType: String,
@@ -33,7 +43,13 @@ data class QueuedAttendanceEntity(
     val synced: Boolean = false
 )
 
-@Entity(tableName = "cached_timetable_slots")
+@Entity(
+    tableName = "cached_timetable_slots",
+    indices = [
+        Index(value = ["startTime"], name = "idx_timetable_start_time"),
+        Index(value = ["courseName"], name = "idx_timetable_course_name")
+    ]
+)
 data class CachedTimetableSlotEntity(
     @PrimaryKey val batchId: String,
     val code: String,
@@ -47,7 +63,17 @@ data class CachedTimetableSlotEntity(
     val updatedAtMillis: Long
 )
 
-@Entity(tableName = "cached_students")
+@Entity(
+    tableName = "cached_students",
+    indices = [
+        Index(value = ["fullName"], name = "idx_students_full_name"),
+        Index(value = ["enrollmentNo"], name = "idx_students_enrollment_no"),
+        Index(value = ["courseName"], name = "idx_students_course_name"),
+        Index(value = ["batchName"], name = "idx_students_batch_name"),
+        Index(value = ["status"], name = "idx_students_status"),
+        Index(value = ["updatedAtMillis"], name = "idx_students_updated_at")
+    ]
+)
 data class CachedStudentEntity(
     @PrimaryKey val id: String,
     val enrollmentNo: String,
@@ -93,6 +119,19 @@ interface OfflineInstituteDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertCachedStudents(students: List<CachedStudentEntity>)
 
+    @Query("SELECT COUNT(*) FROM cached_students")
+    suspend fun countCachedStudents(): Int
+
+    @Query(
+        """
+        SELECT * FROM cached_students
+        WHERE (:search = '' OR fullName LIKE :search || '%' OR enrollmentNo LIKE :search || '%' OR courseName LIKE :search || '%')
+        ORDER BY fullName ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun queryCachedStudentsPage(search: String, limit: Int, offset: Int): List<CachedStudentEntity>
+
     @Query(
         """
         SELECT * FROM cached_students
@@ -109,7 +148,7 @@ interface OfflineInstituteDao {
         CachedTimetableSlotEntity::class,
         CachedStudentEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class InstituteLocalDatabase : RoomDatabase() {
@@ -119,38 +158,97 @@ abstract class InstituteLocalDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: InstituteLocalDatabase? = null
 
+        @Volatile
+        var isSqlCipherActive: Boolean = false
+            private set
+
+        @Volatile
+        var databaseEncryptionLabel: String = "Initializing"
+            private set
+
+        /**
+         * Non-destructive migration 1 -> 2: ensures `cached_students` table exists without dropping existing data.
+         */
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `cached_students` (
+                        `id` TEXT NOT NULL,
+                        `enrollmentNo` TEXT NOT NULL,
+                        `fullName` TEXT NOT NULL,
+                        `email` TEXT NOT NULL,
+                        `phone` TEXT NOT NULL,
+                        `guardianName` TEXT NOT NULL,
+                        `guardianPhone` TEXT NOT NULL,
+                        `courseName` TEXT NOT NULL,
+                        `batchName` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `totalFeePaise` INTEGER NOT NULL,
+                        `paidFeePaise` INTEGER NOT NULL,
+                        `attendancePercent` INTEGER NOT NULL,
+                        `photoUri` TEXT NOT NULL,
+                        `attachmentName` TEXT NOT NULL,
+                        `updatedAtMillis` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        /**
+         * Non-destructive migration 2 -> 3: creates B-tree indices for 100,000+ record query scalability
+         * while preserving 100% of existing student, timetable, and attendance rows.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_attendance_synced_queued` ON `offline_attendance_queue` (`synced`, `queuedAtMillis`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_attendance_batch_date` ON `offline_attendance_queue` (`batchId`, `dateIso`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_timetable_start_time` ON `cached_timetable_slots` (`startTime`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_timetable_course_name` ON `cached_timetable_slots` (`courseName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_full_name` ON `cached_students` (`fullName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_enrollment_no` ON `cached_students` (`enrollmentNo`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_course_name` ON `cached_students` (`courseName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_batch_name` ON `cached_students` (`batchName`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_status` ON `cached_students` (`status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `idx_students_updated_at` ON `cached_students` (`updatedAtMillis`)")
+            }
+        }
+
         fun getDatabase(context: Context): InstituteLocalDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE?.let { return@synchronized it }
                 val appCtx = context.applicationContext ?: context
 
-                // Attempt 256-Bit AES SQLCipher Encryption backed by AndroidKeyStore / StrongBox,
-                // with automatic fallback to standard Room SQLite if the device kernel (e.g. 16KB page size
-                // on Android 15/16) or OEM Keystore rejects libsqlcipher.so.
                 val instance = runCatching {
                     SQLiteDatabase.loadLibs(appCtx)
                     val passphraseBytes = HardwareKeystoreVault.getOrCreateSqlCipherPassphrase(appCtx)
-                    val supportFactory = SupportFactory(passphraseBytes.copyOf(), null, false)
+                    val passphraseCopy = passphraseBytes.copyOf()
+                    val supportFactory = SupportFactory(passphraseCopy, null, false)
                     val encryptedDb = Room.databaseBuilder(
                         appCtx,
                         InstituteLocalDatabase::class.java,
                         "waqar_institute_encrypted.db"
                     )
                         .openHelperFactory(supportFactory)
-                        .fallbackToDestructiveMigration(dropAllTables = true)
-                        .allowMainThreadQueries()
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                         .build()
-                    // Verify that SQLCipher can actually open the writable database without throwing
+                    // Verify SQLCipher native open succeeds before adopting encrypted instance
                     encryptedDb.openHelper.writableDatabase
+                    Arrays.fill(passphraseBytes, 0.toByte())
+                    isSqlCipherActive = true
+                    databaseEncryptionLabel = "SQLCipher 256-Bit AES (KeyStore Bound)"
                     encryptedDb
                 }.getOrElse {
+                    isSqlCipherActive = false
+                    databaseEncryptionLabel = "Room SQLite (SQLCipher Native Fallback)"
                     Room.databaseBuilder(
                         appCtx,
                         InstituteLocalDatabase::class.java,
                         "waqar_institute_local_v2.db"
                     )
-                        .fallbackToDestructiveMigration(dropAllTables = true)
-                        .allowMainThreadQueries()
+                        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                         .build()
                 }
 

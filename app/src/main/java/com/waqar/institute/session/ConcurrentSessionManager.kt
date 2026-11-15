@@ -61,16 +61,23 @@ object ConcurrentSessionManager {
      * Sub-millisecond (<1ms) in-memory check verifying whether the local session is valid.
      */
     fun verifySubMillisecondSession(context: Context, username: String): Boolean {
-        val normalized = username.trim().lowercase()
-        val cached = subMsSessionCache[normalized] ?: return true
+        if (_sessionExpiredMessage.value != null || SessionManager.sessionForceLogoutEvent.value != null) {
+            return false
+        }
+        val normalized = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
+        val cached = subMsSessionCache[normalized]
+            ?: return SessionManager.hasValidLocalSession(context)
         val localDeviceId = resolveHardwareDeviceId(context)
         return cached.activeDeviceId == localDeviceId
     }
 
     /**
      * Binds the active login session to this device in Cloud Firestore and starts real-time
-     * single-device enforcement for Student accounts.
+     * single-device enforcement across Admin, Teacher, Student, and Parent accounts.
      */
+    @Volatile
+    private var lastBoundContext: Context? = null
+
     fun bindAndEnforceSingleDeviceSession(
         context: Context,
         repository: InstituteRepository,
@@ -79,13 +86,29 @@ object ConcurrentSessionManager {
         role: PortalRole,
         onForceSignOut: () -> Unit
     ) {
+        bindAndEnforceSingleDeviceSession(
+            context = context,
+            repository = repository,
+            username = username,
+            uid = uid,
+            role = role,
+            onForceSignOutWithReason = { _ -> onForceSignOut() }
+        )
+    }
+
+    fun bindAndEnforceSingleDeviceSession(
+        context: Context,
+        repository: InstituteRepository,
+        username: String,
+        uid: String,
+        role: PortalRole,
+        onForceSignOutWithReason: (String) -> Unit
+    ) {
         val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
         if (cleanUser.isBlank()) return
 
+        lastBoundContext = context.applicationContext
         val localDeviceId = resolveHardwareDeviceId(context)
-        val singleSessionDocId = "single_dev_$cleanUser"
-        val encodedDeviceTag = "DEV:$localDeviceId | ${Build.MANUFACTURER} ${Build.MODEL}".take(115)
-        val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
 
         subMsSessionCache[cleanUser] = CachedDeviceSessionToken(
             username = cleanUser,
@@ -94,65 +117,32 @@ object ConcurrentSessionManager {
             boundAtEpochMs = System.currentTimeMillis()
         )
         _sessionExpiredMessage.value = null
-
-        val effectiveUid = if (uid.isNotBlank()) uid else "cred_$cleanUser"
-
-        scope.launch {
-            runCatching {
-                repository.saveDeviceSession(
-                    DeviceSession(
-                        sessionId = singleSessionDocId,
-                        uid = effectiveUid,
-                        deviceName = encodedDeviceTag,
-                        platform = "Android ${Build.VERSION.RELEASE}",
-                        active = true,
-                        createdAt = safeNow
-                    )
-                )
-            }
-        }
-
-        // Real-time Single-Device Enforcement Listener for Student Portal (and Admin-revoked sessions)
         activeWatchJob?.cancel()
-        activeWatchJob = scope.launch {
-            repository.observeSessions(effectiveUid)
-                .catch { /* keep resilient offline */ }
-                .collect { sessions ->
-                    val singleDevRecord = sessions.firstOrNull { it.sessionId == singleSessionDocId }
-                        ?: return@collect
+        activeWatchJob = null
 
-                    val remoteDeviceId = singleDevRecord.deviceName
-                        .substringAfter("DEV:", "")
-                        .substringBefore(" |")
-                        .trim()
-
-                    val isRevokedByAdmin = !singleDevRecord.active
-                    val isLoggedInOnAnotherDevice =
-                        (role == PortalRole.STUDENT) &&
-                            remoteDeviceId.isNotEmpty() &&
-                            remoteDeviceId != localDeviceId
-
-                    if (isRevokedByAdmin || isLoggedInOnAnotherDevice) {
-                        subMsSessionCache.remove(cleanUser)
-                        _sessionExpiredMessage.value = if (isLoggedInOnAnotherDevice) {
-                            "Session expired: Logged in on another device ($remoteDeviceId). Single-device security policy enforced."
-                        } else {
-                            "Session expired: Your session was revoked by the Institute Administrator."
-                        }
-                        kotlinx.coroutines.withContext(Dispatchers.Main) {
-                            onForceSignOut()
-                        }
-                    }
-                }
-        }
+        SessionManager.startEnforcingSession(
+            context = context,
+            firestore = repository.firestoreDb(),
+            username = cleanUser,
+            uid = uid,
+            role = role,
+            onForceLogout = { reason ->
+                subMsSessionCache.remove(cleanUser)
+                _sessionExpiredMessage.value = reason
+                onForceSignOutWithReason(reason)
+            }
+        )
     }
 
     fun clearSessionExpiredAlert() {
         _sessionExpiredMessage.value = null
+        SessionManager.clearForceLogoutNotice()
     }
 
     fun stopWatchingSession() {
         activeWatchJob?.cancel()
         activeWatchJob = null
+        subMsSessionCache.clear()
+        SessionManager.clearLocalSession(lastBoundContext)
     }
 }

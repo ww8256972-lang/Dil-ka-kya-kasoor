@@ -28,7 +28,7 @@ object BinaryVirtualizationBridge {
         if (payload.isEmpty()) return false
         if (isNativeLoaded) {
             return runCatching { executeVirtualizedCheck(payload, rollingSeed) }
-                .getOrElse { verifyJvmFallback(payload, rollingSeed) }
+                .getOrDefault(false)
         }
         return verifyJvmFallback(payload, rollingSeed)
     }

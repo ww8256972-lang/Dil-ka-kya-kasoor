@@ -73,6 +73,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.media.BindScreenCapturePolicy
 import com.example.media.ScreenCapturePolicy
+import com.example.security.HardwareKeystoreVault
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
@@ -99,28 +100,79 @@ object TeacherBiometricGateManager {
     private const val KEY_LAST_COSINE_PREFIX = "lastBiometricCosine_"
     const val ROLLING_24_HOURS_MS = 24 * 60 * 60 * 1000L // 86,400,000 ms
 
+    // Per-login session verification map: cleared on every login/sign-out so live blink is mandatory on every login
+    private val activeLoginSessionVerified = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    private fun readVerifiedTimestampMs(context: Context, cleanId: String): Long {
+        val key = "$KEY_LAST_VERIFIED_PREFIX$cleanId"
+        val secPrefs = runCatching {
+            HardwareKeystoreVault.openEncryptedPreferences(context.applicationContext ?: context)
+        }.getOrNull()
+        val secTs = secPrefs?.getLong(key, 0L) ?: 0L
+        if (secTs > 0L) return secTs
+
+        // Legacy read-once migration so active 24h verifications are preserved non-destructively
+        val legacyPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val legacyTs = legacyPrefs.getLong(key, 0L)
+        if (legacyTs > 0L && secPrefs != null) {
+            secPrefs.edit().putLong(key, legacyTs).apply()
+            legacyPrefs.edit().remove(key).remove("$KEY_LAST_COSINE_PREFIX$cleanId").apply()
+        }
+        return legacyTs
+    }
+
+    private fun normalizeTeacherGateId(teacherUid: String): String? {
+        val cleanId = teacherUid.trim().lowercase()
+        return if (cleanId.isBlank() || cleanId in setOf("teacher", "default_teacher", "cred_teacher")) {
+            null
+        } else {
+            cleanId
+        }
+    }
+
+    fun isTeacherVerifiedForCurrentLogin(teacherUid: String): Boolean {
+        val cleanId = normalizeTeacherGateId(teacherUid) ?: return false
+        return activeLoginSessionVerified[cleanId] == true
+    }
+
+    fun recordSuccessfulLoginVerification(context: Context, teacherUid: String, cosineScore: Float) {
+        val cleanId = normalizeTeacherGateId(teacherUid) ?: return
+        activeLoginSessionVerified[cleanId] = true
+        recordSuccessful24HourVerification(context, teacherUid, cosineScore)
+    }
+
+    fun clearLoginVerificationOnAuthChange(teacherUid: String? = null) {
+        if (teacherUid.isNullOrBlank()) {
+            activeLoginSessionVerified.clear()
+        } else {
+            normalizeTeacherGateId(teacherUid)?.let { activeLoginSessionVerified.remove(it) }
+        }
+    }
+
     fun isTeacherVerifiedWithin24Hours(context: Context, teacherUid: String): Boolean {
-        val cleanId = teacherUid.trim().lowercase().ifBlank { "default_teacher" }
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val lastVerifiedMs = prefs.getLong("$KEY_LAST_VERIFIED_PREFIX$cleanId", 0L)
+        val cleanId = normalizeTeacherGateId(teacherUid) ?: return false
+        val lastVerifiedMs = readVerifiedTimestampMs(context, cleanId)
         if (lastVerifiedMs <= 0L) return false
         val elapsed = System.currentTimeMillis() - lastVerifiedMs
         return elapsed in 0 until ROLLING_24_HOURS_MS
     }
 
     fun getRemainingGateValidityMinutes(context: Context, teacherUid: String): Long {
-        val cleanId = teacherUid.trim().lowercase().ifBlank { "default_teacher" }
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val lastVerifiedMs = prefs.getLong("$KEY_LAST_VERIFIED_PREFIX$cleanId", 0L)
+        val cleanId = normalizeTeacherGateId(teacherUid) ?: return 0L
+        val lastVerifiedMs = readVerifiedTimestampMs(context, cleanId)
         if (lastVerifiedMs <= 0L) return 0L
         val remainingMs = (ROLLING_24_HOURS_MS - (System.currentTimeMillis() - lastVerifiedMs)).coerceAtLeast(0L)
         return remainingMs / (60 * 1000L)
     }
 
     fun recordSuccessful24HourVerification(context: Context, teacherUid: String, cosineScore: Float) {
-        val cleanId = teacherUid.trim().lowercase().ifBlank { "default_teacher" }
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
+        val cleanId = normalizeTeacherGateId(teacherUid) ?: return
+        val targetPrefs = runCatching {
+            HardwareKeystoreVault.openEncryptedPreferences(context.applicationContext ?: context)
+        }.getOrElse {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
+        targetPrefs.edit()
             .putLong("$KEY_LAST_VERIFIED_PREFIX$cleanId", System.currentTimeMillis())
             .putFloat("$KEY_LAST_COSINE_PREFIX$cleanId", cosineScore)
             .apply()
@@ -166,10 +218,51 @@ fun TeacherBiometricGateOverlay(
     portalContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    if (FaceBiometricVerificationEngine.isInvalidTeacherUid(teacherUid)) {
+        GradientBackground {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.Lock, contentDescription = "Blocked", tint = Color(0xFFFCA5A5), modifier = Modifier.size(56.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "Biometric Gate Blocked: Missing linked Teacher ID",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Ask Admin to link this faculty credential to a valid Teacher record and upload your profile photo.",
+                    color = Color(0xFFE0E7FF),
+                    fontSize = 13.5.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                OutlinedButton(
+                    onClick = onSignOutRequested,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5)),
+                    border = BorderStroke(1.dp, Color(0xFFFCA5A5).copy(alpha = 0.5f))
+                ) {
+                    Text("Sign Out", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        return
+    }
+
     val scope = rememberCoroutineScope()
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     var isVerified by remember(teacherUid) {
-        mutableStateOf(TeacherBiometricGateManager.isTeacherVerifiedWithin24Hours(context, teacherUid))
+        mutableStateOf(TeacherBiometricGateManager.isTeacherVerifiedForCurrentLogin(teacherUid))
     }
 
     if (isVerified) {
@@ -187,37 +280,55 @@ fun TeacherBiometricGateOverlay(
         )
     }
 
+    var isGpsGeofenceVerified by remember { mutableStateOf(false) }
+    var isCheckingGpsLocation by remember { mutableStateOf(false) }
+    var gpsDistanceMeters by remember { mutableStateOf<Float?>(null) }
+    var geofenceAlertDialogMessage by remember { mutableStateOf<String?>(null) }
+    var pendingFallbackCameraAfterGps by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasCameraPermission = granted
     }
 
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
+    var isFirstTimeEnrollment by remember(teacherUid, teacherName) { mutableStateOf(false) }
     var scanState by remember { mutableStateOf(BiometricScanState.Scanning) }
     var landmarks by remember { mutableStateOf<List<Offset?>>(emptyList()) }
-    var statusDetail by remember { mutableStateOf("Look at the camera and blink once to authenticate.") }
+    var statusDetail by remember {
+        mutableStateOf(
+            "Click 'Verify GPS & Start Biometric Attendance' to check 50m Institute Geofence (${TeacherGpsGeofenceVerifier.INSTITUTE_PLUS_CODE_LABEL}) before Face Scan."
+        )
+    }
     var isVerifying by remember { mutableStateOf(false) }
 
-    // Fallback static photo launcher for emulator / device without CameraX front camera
+    LaunchedEffect(teacherUid, teacherName) {
+        val lookup = withContext(Dispatchers.IO) {
+            FaceBiometricVerificationEngine.resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
+        }
+        val missing = lookup is FaceBiometricVerificationEngine.EnrollmentLookupResult.Missing
+        isFirstTimeEnrollment = missing
+    }
+
+    // Live photo capture fallback using real camera frame + 128-D Cosine verification
     val fallbackCameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap ->
         if (bitmap != null) {
             isVerifying = true
-            statusDetail = "Analyzing static photo with 128-D Cosine Matcher..."
+            statusDetail = "Analyzing live camera photo with 128-D Cosine Matcher..."
             scope.launch {
-                val res = FaceBiometricVerificationEngine.verifyTeacherLiveFace(teacherUid, teacherName, bitmap)
+                val res = FaceBiometricVerificationEngine.verifyTeacherLiveFace(
+                    teacherUid = teacherUid,
+                    teacherName = teacherName,
+                    liveFrameBitmap = bitmap,
+                    context = context
+                )
                 withContext(Dispatchers.Main) {
                     when (res) {
                         is FaceBiometricVerificationEngine.BiometricMatchResult.Verified -> {
-                            withContext(Dispatchers.IO) {
-                                TeacherBiometricGateManager.recordSuccessful24HourVerification(
+                            val syncRes = withContext(Dispatchers.IO) {
+                                TeacherBiometricGateManager.recordSuccessfulLoginVerification(
                                     context = context,
                                     teacherUid = teacherUid,
                                     cosineScore = res.cosineSimilarity
@@ -231,13 +342,32 @@ fun TeacherBiometricGateOverlay(
                                 )
                             }
                             scanState = BiometricScanState.Matched
-                            statusDetail = "Aadhaar Biometric Verified (Cosine=${"%.4f".format(res.cosineSimilarity)})"
+                            statusDetail = when (syncRes) {
+                                is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.Synced ->
+                                    "${res.message} · Attendance Synced ✓"
+                                is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.QueuedOffline ->
+                                    "${res.message} · Attendance Queued Offline (${syncRes.reason})"
+                                is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.Failed ->
+                                    "${res.message} · Attendance Sync Warning: ${syncRes.reason}"
+                            }
                             delay(800)
                             isVerified = true
                         }
-                        else -> {
+                        is FaceBiometricVerificationEngine.BiometricMatchResult.Mismatch -> {
                             scanState = BiometricScanState.NotRecognized
-                            statusDetail = "Photo verification failed. Please try the live circular scanner."
+                            statusDetail = res.message
+                            delay(1500)
+                            scanState = BiometricScanState.Scanning
+                        }
+                        is FaceBiometricVerificationEngine.BiometricMatchResult.SpoofOrLivenessFailed -> {
+                            scanState = BiometricScanState.NotRecognized
+                            statusDetail = res.reason
+                            delay(1500)
+                            scanState = BiometricScanState.Scanning
+                        }
+                        is FaceBiometricVerificationEngine.BiometricMatchResult.Error -> {
+                            scanState = BiometricScanState.NotRecognized
+                            statusDetail = res.errorMessage
                             delay(1500)
                             scanState = BiometricScanState.Scanning
                         }
@@ -267,6 +397,7 @@ fun TeacherBiometricGateOverlay(
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_ALL)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_ALL)
+                .setContourMode(FaceDetectorOptions.CONTOUR_MODE_ALL)
                 .setMinFaceSize(0.25f)
                 .build()
         )
@@ -296,10 +427,22 @@ fun TeacherBiometricGateOverlay(
                     sawEyeOpen = false
                     sawEyeClosed = false
                 },
+                onMultipleFaces = { count ->
+                    landmarks = emptyList()
+                    sawEyeOpen = false
+                    sawEyeClosed = false
+                    livenessPassed = false
+                    statusDetail = "Multiple faces ($count) detected. Ensure only you appear in the scanner."
+                },
                 onFaceDetected = { face, pts, _, _ ->
                     landmarks = pts
-                    val left = face.leftEyeOpenProbability ?: 0.85f
-                    val right = face.rightEyeOpenProbability ?: 0.85f
+                    val left = face.leftEyeOpenProbability
+                    val right = face.rightEyeOpenProbability
+                    if (left == null || right == null) {
+                        sawEyeOpen = false
+                        sawEyeClosed = false
+                        return@processLiveFrame
+                    }
                     val open = left > 0.65f && right > 0.65f
                     val closed = left < 0.35f && right < 0.35f
 
@@ -321,18 +464,23 @@ fun TeacherBiometricGateOverlay(
 
                         val livenessScore = ((left + right) * 0.5f).coerceIn(0f, 1f)
                         scope.launch {
-                            val matchResult = FaceBiometricVerificationEngine.verifyTeacherLiveFaceWithFaceObject(
+                            val matchResult = FaceBiometricVerificationEngine.enrollOrVerifyTeacherLiveBlinkWithFaceObject(
                                 teacherUid = teacherUid,
                                 teacherName = teacherName,
                                 face = face,
-                                livenessScore = livenessScore
+                                livenessScore = livenessScore,
+                                blinkConfirmed = true,
+                                context = context
                             )
 
                             withContext(Dispatchers.Main) {
                                 when (matchResult) {
                                     is FaceBiometricVerificationEngine.BiometricMatchResult.Verified -> {
-                                        withContext(Dispatchers.IO) {
-                                            TeacherBiometricGateManager.recordSuccessful24HourVerification(
+                                        if (matchResult.newlyEnrolled) {
+                                            isFirstTimeEnrollment = false
+                                        }
+                                        val syncRes = withContext(Dispatchers.IO) {
+                                            TeacherBiometricGateManager.recordSuccessfulLoginVerification(
                                                 context = context,
                                                 teacherUid = teacherUid,
                                                 cosineScore = matchResult.cosineSimilarity
@@ -346,7 +494,14 @@ fun TeacherBiometricGateOverlay(
                                             )
                                         }
                                         scanState = BiometricScanState.Matched
-                                        statusDetail = matchResult.message
+                                        statusDetail = when (syncRes) {
+                                            is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.Synced ->
+                                                "${matchResult.message} · Attendance Synced ✓"
+                                            is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.QueuedOffline ->
+                                                "${matchResult.message} · Attendance Queued Offline (${syncRes.reason})"
+                                            is TeacherAttendanceSyncManager.TeacherAttendanceSyncResult.Failed ->
+                                                "${matchResult.message} · Attendance Sync Warning: ${syncRes.reason}"
+                                        }
                                         delay(800)
                                         isVerified = true
                                     }
@@ -400,7 +555,11 @@ fun TeacherBiometricGateOverlay(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "Teacher Biometric Face Authentication",
+                text = if (isFirstTimeEnrollment) {
+                    "First-Time 128-D Live Blink Face Enrollment"
+                } else {
+                    "Teacher Biometric Live Blink Verification"
+                },
                 color = Color.White,
                 fontSize = 21.sp,
                 fontWeight = FontWeight.Bold,
@@ -445,18 +604,156 @@ fun TeacherBiometricGateOverlay(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "128-D Facial Biometric Signature linked by Admin",
+                                text = "128-D Facial Biometric Signature linked · Live Blink Required",
                                 color = Color(0xFFBBF7D0),
                                 fontSize = 11.5.sp
                             )
                         }
                     }
                 }
+            } else if (isFirstTimeEnrollment) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.White.copy(alpha = 0.14f),
+                    border = BorderStroke(1.dp, Yellow.copy(alpha = 0.8f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(
+                            text = "First-Time 128-D Live Blink Enrollment Mode",
+                            color = Yellow,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Blink once at the front camera to register your 128-D facial signature for future logins.",
+                            color = Color.White,
+                            fontSize = 11.5.sp
+                        )
+                    }
+                }
+            }
+
+            val verifiedDist = gpsDistanceMeters
+            if (verifiedDist != null && isGpsGeofenceVerified) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Green.copy(alpha = 0.22f),
+                    border = BorderStroke(1.dp, Green.copy(alpha = 0.85f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "GPS Geofence Verified (${"%.1f".format(verifiedDist)}m ≤ 50m · ${TeacherGpsGeofenceVerifier.INSTITUTE_PLUS_CODE_LABEL}) ✓",
+                        color = Color(0xFFBBF7D0),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(22.dp))
 
-            if (hasCameraPermission) {
+            val runPreBiometricGpsCheck: (Boolean) -> Unit = { launchFallbackPhotoOnPass ->
+                isCheckingGpsLocation = true
+                statusDetail = "Checking real-time High-Accuracy GPS distance from Institute (${TeacherGpsGeofenceVerifier.INSTITUTE_LATITUDE}, ${TeacherGpsGeofenceVerifier.INSTITUTE_LONGITUDE})…"
+                scope.launch {
+                    val gpsResult = TeacherGpsGeofenceVerifier.verifyTeacherLocationBeforeBiometric(context)
+                    isCheckingGpsLocation = false
+                    when (gpsResult) {
+                        is TeacherGpsGeofenceVerifier.GeofenceVerificationResult.InsidePremises -> {
+                            isGpsGeofenceVerified = true
+                            gpsDistanceMeters = gpsResult.distanceMeters
+                            statusDetail = if (isFirstTimeEnrollment) {
+                                "GPS Inside Premises (${"%.1f".format(gpsResult.distanceMeters)}m ≤ 50m) ✓ Blink once at the camera to enroll & mark attendance."
+                            } else {
+                                "GPS Inside Premises (${"%.1f".format(gpsResult.distanceMeters)}m ≤ 50m) ✓ Blink once at the camera to verify & mark attendance."
+                            }
+                            if (!hasCameraPermission) {
+                                permissionLauncher.launch(Manifest.permission.CAMERA)
+                            } else if (launchFallbackPhotoOnPass) {
+                                fallbackCameraLauncher.launch(null)
+                            }
+                        }
+                        is TeacherGpsGeofenceVerifier.GeofenceVerificationResult.OutsidePremises -> {
+                            isGpsGeofenceVerified = false
+                            gpsDistanceMeters = gpsResult.distanceMeters
+                            geofenceAlertDialogMessage = TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                            statusDetail = "${TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE} (Distance: ${"%.1f".format(gpsResult.distanceMeters)}m > 50m)"
+                        }
+                        is TeacherGpsGeofenceVerifier.GeofenceVerificationResult.MockLocationRejected -> {
+                            isGpsGeofenceVerified = false
+                            gpsDistanceMeters = null
+                            geofenceAlertDialogMessage = TeacherGpsGeofenceVerifier.MOCK_LOCATION_ALERT_MESSAGE
+                            statusDetail = TeacherGpsGeofenceVerifier.MOCK_LOCATION_ALERT_MESSAGE
+                        }
+                        is TeacherGpsGeofenceVerifier.GeofenceVerificationResult.LocationUnavailable -> {
+                            isGpsGeofenceVerified = false
+                            gpsDistanceMeters = null
+                            geofenceAlertDialogMessage = TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                            statusDetail = "${TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE} (${gpsResult.reason})"
+                        }
+                    }
+                }
+            }
+
+            val locationPermissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestMultiplePermissions()
+            ) { permissions ->
+                val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+                if (granted) {
+                    val shouldLaunchFallback = pendingFallbackCameraAfterGps
+                    pendingFallbackCameraAfterGps = false
+                    runPreBiometricGpsCheck(shouldLaunchFallback)
+                } else {
+                    pendingFallbackCameraAfterGps = false
+                    isGpsGeofenceVerified = false
+                    geofenceAlertDialogMessage = TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE
+                    statusDetail = "Location permission denied. ${TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE}"
+                }
+            }
+
+            val triggerAttendanceWithGpsGate: (Boolean) -> Unit = { launchFallbackPhoto ->
+                if (TeacherGpsGeofenceVerifier.hasFineOrCoarseLocationPermission(context)) {
+                    runPreBiometricGpsCheck(launchFallbackPhoto)
+                } else {
+                    pendingFallbackCameraAfterGps = launchFallbackPhoto
+                    locationPermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
+                }
+            }
+
+            if (geofenceAlertDialogMessage != null) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { geofenceAlertDialogMessage = null },
+                    title = {
+                        Text(
+                            text = "GPS Geofence Attendance Lock",
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Text(text = geofenceAlertDialogMessage ?: TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE)
+                    },
+                    confirmButton = {
+                        androidx.compose.material3.TextButton(
+                            onClick = { geofenceAlertDialogMessage = null }
+                        ) {
+                            Text("OK", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                )
+            }
+
+            if (hasCameraPermission && isGpsGeofenceVerified) {
                 Box(
                     modifier = Modifier
                         .size(280.dp)
@@ -494,7 +791,11 @@ fun TeacherBiometricGateOverlay(
                             )
                         } else {
                             Text(
-                                text = "Camera Permission Required",
+                                text = when {
+                                    isCheckingGpsLocation -> "Checking 50m GPS Geofence…"
+                                    !isGpsGeofenceVerified -> "50m GPS Geofence Check Required"
+                                    else -> "Camera Permission Required"
+                                },
                                 color = Color.White,
                                 fontSize = 14.sp,
                                 textAlign = TextAlign.Center,
@@ -510,7 +811,12 @@ fun TeacherBiometricGateOverlay(
             Crossfade(targetState = scanState, label = "scan_status") { st ->
                 Text(
                     text = when (st) {
-                        BiometricScanState.Scanning -> if (isVerifying) "Verifying 128-D Cosine Embedding…" else "Scanning face…"
+                        BiometricScanState.Scanning -> when {
+                            isCheckingGpsLocation -> "Verifying 50m Institute GPS Geofence…"
+                            !isGpsGeofenceVerified -> "Step 1: Verify Institute GPS Location (≤ 50m)"
+                            isVerifying -> "Verifying 128-D Cosine Embedding…"
+                            else -> "Scanning face…"
+                        }
                         BiometricScanState.Matched -> "Face matched · Attendance marked"
                         BiometricScanState.NotRecognized -> "Face not recognized. Try again."
                     },
@@ -533,71 +839,27 @@ fun TeacherBiometricGateOverlay(
 
             Spacer(modifier = Modifier.height(22.dp))
 
-            // Primary action: Verify with Admin-Enrolled Gallery Profile Photo (or Biometric Signature)
-            Button(
-                onClick = {
-                    if (!isVerifying) {
-                        isVerifying = true
-                        statusDetail = "Matching against enrolled Gallery Profile Photo (128-D Cosine)..."
-                        scope.launch {
-                            val res = FaceBiometricVerificationEngine.verifyTeacherWithEnrolledProfilePhoto(
-                                context = context,
-                                teacherUid = teacherUid,
-                                teacherName = teacherName
-                            )
-                            withContext(Dispatchers.Main) {
-                                when (res) {
-                                    is FaceBiometricVerificationEngine.BiometricMatchResult.Verified -> {
-                                        withContext(Dispatchers.IO) {
-                                            TeacherBiometricGateManager.recordSuccessful24HourVerification(
-                                                context = context,
-                                                teacherUid = teacherUid,
-                                                cosineScore = res.cosineSimilarity
-                                            )
-                                            TeacherAttendanceSyncManager.markTeacherPresentOnBiometricPass(
-                                                context = context,
-                                                teacherUid = teacherUid,
-                                                teacherName = teacherName,
-                                                cosineSimilarity = res.cosineSimilarity,
-                                                livenessConfidence = res.livenessConfidence
-                                            )
-                                        }
-                                        scanState = BiometricScanState.Matched
-                                        statusDetail = res.message
-                                        delay(700)
-                                        isVerified = true
-                                    }
-                                    else -> {
-                                        scanState = BiometricScanState.NotRecognized
-                                        statusDetail = "Could not verify profile photo. Please try again."
-                                        delay(1200)
-                                        scanState = BiometricScanState.Scanning
-                                    }
-                                }
-                                isVerifying = false
-                            }
-                        }
-                    }
-                },
-                enabled = !isVerifying,
-                modifier = Modifier.fillMaxWidth().height(50.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Green)
-            ) {
-                Text(
-                    text = if (enrolledBitmap != null) {
-                        "Verify with Enrolled Gallery Photo ✓"
-                    } else {
-                        "Complete Biometric Face Verification ✓"
-                    },
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            if (!hasCameraPermission) {
+            if (!isGpsGeofenceVerified) {
+                OutlinedButton(
+                    onClick = { triggerAttendanceWithGpsGate(false) },
+                    enabled = !isCheckingGpsLocation && !isVerifying,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = BorderStroke(1.5.dp, Green.copy(alpha = 0.85f))
+                ) {
+                    Text(
+                        text = if (isCheckingGpsLocation) {
+                            "Checking GPS Location (50m Radius)…"
+                        } else {
+                            "Verify GPS & Start Biometric Attendance"
+                        },
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+            } else if (!hasCameraPermission) {
                 OutlinedButton(
                     onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -610,10 +872,16 @@ fun TeacherBiometricGateOverlay(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // Fallback manual selfie button for emulator or low-end cameras
+            // Fallback manual selfie button — also gated behind the 50m GPS Geofence check
             OutlinedButton(
-                onClick = { fallbackCameraLauncher.launch(null) },
-                enabled = !isVerifying,
+                onClick = {
+                    if (isGpsGeofenceVerified) {
+                        fallbackCameraLauncher.launch(null)
+                    } else {
+                        triggerAttendanceWithGpsGate(true)
+                    }
+                },
+                enabled = !isVerifying && !isCheckingGpsLocation,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
@@ -645,7 +913,7 @@ fun TeacherBiometricGateOverlay(
  * Animated Canvas Overlay on top of the live camera circle.
  */
 @Composable
-private fun ScannerOverlay(
+internal fun ScannerOverlay(
     state: BiometricScanState,
     landmarks: List<Offset?>,
     modifier: Modifier = Modifier
@@ -842,7 +1110,7 @@ private fun ScannerOverlay(
  * CameraX Live Front Camera embedded in COMPATIBLE mode clipped to a CircleShape.
  */
 @Composable
-private fun CameraCircle(
+internal fun CameraCircle(
     analyzer: ImageAnalysis.Analyzer,
     executor: Executor,
     modifier: Modifier = Modifier
@@ -896,7 +1164,7 @@ private fun CameraCircle(
  * Fullscreen colorful diagonal gradient with slowly drifting soft glows.
  */
 @Composable
-private fun GradientBackground(content: @Composable BoxScope.() -> Unit) {
+internal fun GradientBackground(content: @Composable BoxScope.() -> Unit) {
     val t = rememberInfiniteTransition(label = "bg_glows")
     val d1 by t.animateFloat(
         initialValue = 0f, targetValue = 1f,
@@ -936,12 +1204,13 @@ private fun DrawScope.glow(color: Color, center: Offset, radius: Float) {
 }
 
 @OptIn(ExperimentalGetImage::class)
-private fun processLiveFrame(
+internal fun processLiveFrame(
     imageProxy: ImageProxy,
     detector: com.google.mlkit.vision.face.FaceDetector,
     executor: Executor,
     callbackExecutor: Executor,
     onNoFace: () -> Unit,
+    onMultipleFaces: (Int) -> Unit,
     onFaceDetected: (Face, List<Offset?>, Int, Int) -> Unit
 ) {
     val mediaImage = imageProxy.image
@@ -957,7 +1226,11 @@ private fun processLiveFrame(
 
     detector.process(inputImage)
         .addOnSuccessListener(executor) { faces ->
-            val face = faces.maxByOrNull { it.boundingBox.width() }
+            if (faces.size > 1) {
+                callbackExecutor.execute { onMultipleFaces(faces.size) }
+                return@addOnSuccessListener
+            }
+            val face = faces.firstOrNull()
             if (face == null) {
                 callbackExecutor.execute { onNoFace() }
             } else {
