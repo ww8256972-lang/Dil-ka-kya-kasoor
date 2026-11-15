@@ -9,8 +9,8 @@ import androidx.security.crypto.MasterKey
 import com.example.security.HardwareKeystoreVault
 import net.sqlcipher.database.SQLiteDatabase
 import net.sqlcipher.database.SupportFactory
+import android.util.Base64
 import java.security.SecureRandom
-import java.util.Base64
 
 /**
  * Standalone Hardware-Backed Encrypted Vault (`SecurityVault.kt`).
@@ -106,14 +106,14 @@ object SecurityVault {
         val prefs = openEncryptedPrefs(context)
         val existingB64 = prefs.getString(KEY_SQLCIPHER_PASSPHRASE_B64, null)
         if (!existingB64.isNullOrBlank()) {
-            val decoded = runCatching { Base64.getDecoder().decode(existingB64) }.getOrNull()
+            val decoded = runCatching { Base64.decode(existingB64, Base64.NO_WRAP) }.getOrNull()
             if (decoded != null && decoded.size >= 32) {
                 return decoded
             }
         }
         val randomBytes = ByteArray(32)
         SecureRandom().nextBytes(randomBytes)
-        val encoded = Base64.getEncoder().encodeToString(randomBytes)
+        val encoded = Base64.encodeToString(randomBytes, Base64.NO_WRAP)
         prefs.edit().putString(KEY_SQLCIPHER_PASSPHRASE_B64, encoded).apply()
         return randomBytes
     }
