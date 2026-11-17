@@ -52,8 +52,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 6. Strict Memory Capping: Monitors JVM heap usage before and during execution to prevent OOM crashes.
  */
 enum class SandboxLanguage(val label: String, val extension: String) {
-    PYTHON("Python 3 (Offline)", "py"),
-    JAVASCRIPT("JavaScript ES6 (Offline)", "js"),
+    PYTHON("Python Evaluator (Offline)", "py"),
+    JAVASCRIPT("JS Evaluator (Offline)", "js"),
     HTML_CSS_JS("HTML5 / CSS3 / JS Live Web", "html")
 }
 

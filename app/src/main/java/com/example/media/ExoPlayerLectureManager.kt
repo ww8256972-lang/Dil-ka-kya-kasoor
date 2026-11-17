@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.work.*
 import com.example.security.TinkMaterialVault
+import com.example.ui.designsystem.WciColors
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -191,7 +192,7 @@ fun ExoPlayerHdLecturePlayer(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFF060B19))
+            .background(WciColors.VideoStageDark)
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {

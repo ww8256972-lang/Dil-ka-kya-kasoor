@@ -29,34 +29,60 @@ data class PreExamSanitizationReport(
     val connectedBluetoothAudioDevices: List<String>,
     val isScreenMirroringActive: Boolean,
     val isClipboardScrubbed: Boolean,
-    val blockingReasons: List<String>
+    val blockingReasons: List<String>,
+    val isDeveloperOptionsEnabled: Boolean = false,
+    val isEmulatorDetected: Boolean = false,
+    val hasSuspiciousAccessibilityServices: Boolean = false,
+    val activeAccessibilityServices: List<String> = emptyList()
 ) {
     val isClearedToStartExam: Boolean
-        get() = !isRootedOrHooked && !isVpnActive && !isScreenMirroringActive
+        get() = !isRootedOrHooked &&
+            !isUsbDebuggingEnabled &&
+            !isDeveloperOptionsEnabled &&
+            !isEmulatorDetected &&
+            !isVpnActive &&
+            !isScreenMirroringActive &&
+            !hasSuspiciousAccessibilityServices
 }
 
 object PreExamSecurityGate {
 
     /**
-     * Scrubs the system clipboard and runs the 6-point environment audit.
+     * Scrubs the system clipboard and runs the full pre-exam environment audit.
      */
     fun sanitizeAndAuditExamEnvironment(context: Context): PreExamSanitizationReport {
         val clipboardScrubbed = scrubSystemClipboard(context)
         val posture = EnterpriseRaspGuard.auditDeviceSecurity(context)
         val adbEnabled = isUsbDebuggingActive(context)
+        val devOptionsEnabled = isDeveloperOptionsActive(context)
+        val emulatorDetected = posture.isEmulatorEnvironment
         val vpnActive = isVpnTunnelActive(context)
         val btDevices = detectConnectedBluetoothAudioOutputs(context)
         val overlayPosture = AntiOverlayShield.inspectDisplayAndOverlayPosture(context)
 
         val reasons = mutableListOf<String>()
         if (posture.isCompromised) {
-            reasons.add("Root / Magisk / Su binary detected on device.")
+            reasons.add("Root / Magisk / Frida / Xposed hook detected on device.")
+        }
+        if (emulatorDetected) {
+            reasons.add("PC Emulator / Hypervisor environment detected. Physical Android phone required for exams.")
+        }
+        if (adbEnabled) {
+            reasons.add("USB Debugging (ADB) is enabled. Turn off USB Debugging in Developer Options to start the exam.")
+        }
+        if (devOptionsEnabled) {
+            reasons.add("Developer Options are enabled. Disable Developer Options in Settings to start the exam.")
         }
         if (vpnActive) {
             reasons.add("Active VPN / Proxy tunnel detected. Disable VPN before starting the exam.")
         }
         if (overlayPosture.isExternalOrVirtualDisplayConnected) {
             reasons.add("Screen Mirroring / External Display detected (${overlayPosture.externalDisplayNames.joinToString()}).")
+        }
+        if (overlayPosture.suspiciousAccessibilityServiceIds.isNotEmpty()) {
+            reasons.add(
+                "Unauthorized Accessibility / Screen-Scraper service active (${overlayPosture.suspiciousAccessibilityServiceIds.joinToString()}). Disable before exam."
+            )
         }
         if (btDevices.isNotEmpty()) {
             reasons.add("Bluetooth audio earpiece detected (${btDevices.joinToString()}). Disconnect Bluetooth audio during exam.")
@@ -70,7 +96,11 @@ object PreExamSecurityGate {
             connectedBluetoothAudioDevices = btDevices,
             isScreenMirroringActive = overlayPosture.isExternalOrVirtualDisplayConnected,
             isClipboardScrubbed = clipboardScrubbed,
-            blockingReasons = reasons
+            blockingReasons = reasons,
+            isDeveloperOptionsEnabled = devOptionsEnabled,
+            isEmulatorDetected = emulatorDetected,
+            hasSuspiciousAccessibilityServices = overlayPosture.suspiciousAccessibilityServiceIds.isNotEmpty(),
+            activeAccessibilityServices = overlayPosture.suspiciousAccessibilityServiceIds
         )
     }
 
@@ -91,6 +121,10 @@ object PreExamSecurityGate {
 
     private fun isUsbDebuggingActive(context: Context): Boolean = runCatching {
         Settings.Global.getInt(context.contentResolver, Settings.Global.ADB_ENABLED, 0) != 0
+    }.getOrDefault(false)
+
+    private fun isDeveloperOptionsActive(context: Context): Boolean = runCatching {
+        Settings.Global.getInt(context.contentResolver, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) != 0
     }.getOrDefault(false)
 
     private fun isVpnTunnelActive(context: Context): Boolean = runCatching {

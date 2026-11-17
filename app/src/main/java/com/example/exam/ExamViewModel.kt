@@ -36,6 +36,7 @@ data class ActiveProctoredExamState(
     val studentId: String = "",
     val studentName: String = "",
     val questions: List<ExamQuestionItem> = emptyList(),
+    val sanitizedQuestions: List<SanitizedExamQuestion> = emptyList(),
     val currentQuestionIndex: Int = 0,
     val selectedAnswers: Map<String, Int> = emptyMap(),
     val backgroundStrikes: Int = 0,
@@ -46,6 +47,7 @@ data class ActiveProctoredExamState(
     val isKioskLockTaskActive: Boolean = false,
     val isSubmitted: Boolean = false,
     val submittedResult: ExamResult? = null,
+    val lastGradingOutcome: ExamGradingOutcome? = null,
     val securityAlertBanner: String? = null
 )
 
@@ -72,6 +74,9 @@ class ExamViewModel(
         // Rule 2: Enforce FLAG_SECURE screenshot & screen-recording shield
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
 
+        // Maha Brahmastra #4: Arm 2-second continuous C++ anti-Frida/ptrace watchdog
+        runCatching { com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(true) }
+
         // Kiosk Lock Task Mode: Pin / lock the exam screen during active assessment
         val kioskActive = engageAndroidKioskLockTaskMode(activity)
 
@@ -88,26 +93,22 @@ class ExamViewModel(
             else -> null
         }
 
-        val shuffledQuestions = examRepository.generateShuffledPaperForExam(
+        val sanitizedPaper = examRepository.prepareSanitizedPaperForExam(
             studentId = studentId,
-            exam = exam,
-            fallbackQuestionCount = questionCount
-        )
-        ActiveExamAntiCheatGuard.registerActiveExamSession(
-            studentId = studentId,
-            questions = shuffledQuestions
+            exam = exam
         )
         val cached = examRepository.getCachedAnswers(
             examId = exam.id,
             studentId = studentId,
-            questionIds = shuffledQuestions.map { it.id }
+            questionIds = sanitizedPaper.map { it.id }
         )
 
         _examState.value = ActiveProctoredExamState(
             exam = exam,
             studentId = studentId,
             studentName = studentName,
-            questions = shuffledQuestions,
+            questions = emptyList(),
+            sanitizedQuestions = sanitizedPaper,
             currentQuestionIndex = 0,
             selectedAnswers = cached,
             backgroundStrikes = 0,
@@ -117,6 +118,7 @@ class ExamViewModel(
             isKioskLockTaskActive = kioskActive,
             isSubmitted = false,
             submittedResult = null,
+            lastGradingOutcome = null,
             securityAlertBanner = securityWarning
         )
     }
@@ -137,9 +139,10 @@ class ExamViewModel(
 
     fun navigateToQuestion(index: Int) {
         val current = _examState.value
-        if (current.questions.isEmpty()) return
+        val count = maxOf(current.sanitizedQuestions.size, current.questions.size)
+        if (count <= 0) return
         _examState.value = current.copy(
-            currentQuestionIndex = index.coerceIn(0, current.questions.lastIndex)
+            currentQuestionIndex = index.coerceIn(0, count - 1)
         )
     }
 
@@ -196,30 +199,54 @@ class ExamViewModel(
 
     /**
      * Submits the exam paper (either manually by the student, automatically on timer expiry,
-     * or automatically upon an Anti-Cheat rule violation) and computes the instant score card.
+     * or automatically upon an Anti-Cheat rule violation) and grades via `ExamGradingGateway`.
      */
-    fun submitExamNow(ownerUid: String, violationReason: String? = null) {
+    fun submitExamNow(
+        ownerUid: String,
+        violationReason: String? = null,
+        isPreviewOnly: Boolean = false
+    ) {
         val current = _examState.value
         val exam = current.exam ?: return
         if (current.isSubmitted) return
 
         ActiveExamAntiCheatGuard.clearActiveExamSession(current.studentId)
+        runCatching { com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(false) }
         disengageAndroidKioskLockTaskMode(activeExamActivityRef?.get())
         viewModelScope.launch {
-            val result = examRepository.submitStudentExamResult(
-                exam = exam,
-                studentId = current.studentId,
-                studentName = current.studentName,
-                questions = current.questions,
-                selectedAnswers = current.selectedAnswers,
-                violationReason = violationReason,
-                ownerUid = ownerUid
-            )
-            _examState.value = _examState.value.copy(
-                isKioskLockTaskActive = false,
-                isSubmitted = true,
-                submittedResult = result
-            )
+            if (current.sanitizedQuestions.isNotEmpty() || current.questions.isEmpty()) {
+                val outcome = examRepository.submitSanitizedExamResult(
+                    exam = exam,
+                    studentId = current.studentId,
+                    studentName = current.studentName,
+                    sanitizedQuestions = current.sanitizedQuestions,
+                    selectedAnswers = current.selectedAnswers,
+                    isPreviewOnly = isPreviewOnly,
+                    violationReason = violationReason,
+                    ownerUid = ownerUid
+                )
+                _examState.value = _examState.value.copy(
+                    isKioskLockTaskActive = false,
+                    isSubmitted = true,
+                    submittedResult = outcome.savedResult,
+                    lastGradingOutcome = outcome
+                )
+            } else {
+                val result = examRepository.submitStudentExamResult(
+                    exam = exam,
+                    studentId = current.studentId,
+                    studentName = current.studentName,
+                    questions = current.questions,
+                    selectedAnswers = current.selectedAnswers,
+                    violationReason = violationReason,
+                    ownerUid = ownerUid
+                )
+                _examState.value = _examState.value.copy(
+                    isKioskLockTaskActive = false,
+                    isSubmitted = true,
+                    submittedResult = result
+                )
+            }
         }
     }
 
@@ -227,8 +254,11 @@ class ExamViewModel(
         val targetActivity = activity ?: activeExamActivityRef?.get()
         targetActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         disengageAndroidKioskLockTaskMode(targetActivity)
+        runCatching { com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(false) }
         activeExamActivityRef = null
-        ActiveExamAntiCheatGuard.clearActiveExamSession(_examState.value.studentId)
+        val st = _examState.value
+        ActiveExamAntiCheatGuard.clearActiveExamSession(st.studentId)
+        st.exam?.id?.let { examRepository.purgeAnswerKeys(it, st.studentId) }
     }
 
     companion object {

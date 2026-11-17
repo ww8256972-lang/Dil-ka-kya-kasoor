@@ -144,14 +144,10 @@ class EnterpriseAuditRemediationTest {
     }
 
     @Test
-    fun appCheckHelper_selectsDebugSideloadProviderOrRecaptchaForSideloadedApk() {
+    fun appCheckHelper_selectsDebugSideloadProviderForSideloadedApk() {
         assertEquals(
-            AppCheckDistributionStrategy.RECAPTCHA_ENTERPRISE_SIDELOAD,
-            resolveReleaseAppCheckStrategy("6L_REAL_RECAPTCHA_ENTERPRISE_SITE_KEY")
-        )
-        assertEquals(
-            AppCheckDistributionStrategy.DEBUG_PROVIDER,
-            resolveReleaseAppCheckStrategy("6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI")
+            AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK,
+            resolveReleaseAppCheckStrategy("PLAY_INTEGRITY")
         )
         assertEquals(
             AppCheckDistributionStrategy.DEBUG_PROVIDER,
@@ -293,5 +289,291 @@ class EnterpriseAuditRemediationTest {
             "Blank passwords must never default to 123456 and must fail",
             blankResult.isFailure
         )
+    }
+
+    @Test
+    fun adminInstantLocalLogin_and_failClosedWrongPassword(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        ensureFirebaseInitialized(context)
+        com.example.security.EnterpriseRateLimiter.resetAllForTests(context)
+        val repo = InstituteRepository.create(context)
+        val provider = FirebaseAuthServiceProvider(repo, context = context)
+
+        val digest = com.example.auth.Argon2CredentialHasher.hashPasswordPbkdf2WebParity("waqar".toCharArray())
+        val adminCred = com.example.data.model.PortalCredential(
+            username = "waqar",
+            passwordHash = digest.hashHex,
+            passwordSalt = digest.saltHex,
+            role = PortalRole.ADMIN.key,
+            linkedEntityId = "ADMIN_ROOT",
+            displayName = "Waqar Khan (Admin)",
+            assignedByUid = "admin_waqar_root",
+            active = true,
+            isAdmin = true,
+            portalRoles = listOf(PortalRole.ADMIN.key)
+        )
+        InstituteRepository.cacheCredentialLocally(adminCred)
+
+        val startNs = System.nanoTime()
+        val successResult = provider.signInToPortalWithCredentials(
+            activityContext = context,
+            role = PortalRole.ADMIN,
+            username = "Waqar",
+            passwordChars = "waqar".toCharArray()
+        )
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+
+        assertTrue(
+            "Expected AuthPortalResult.Success for cached Waqar Admin, got $successResult",
+            successResult is com.example.auth.AuthPortalResult.Success
+        )
+        assertTrue(
+            "Expected sub-250ms Robolectric login (no network wait), took ${elapsedMs}ms",
+            elapsedMs < 250L
+        )
+
+        val wrongResult = provider.signInToPortalWithCredentials(
+            activityContext = context,
+            role = PortalRole.ADMIN,
+            username = "Waqar",
+            passwordChars = "wrong_pass".toCharArray()
+        )
+        assertTrue(
+            "Wrong password must fail closed immediately",
+            wrongResult is com.example.auth.AuthPortalResult.Failure
+        )
+        InstituteRepository.localCredentialsCache.remove("waqar")
+    }
+
+    @Test
+    fun enterpriseRaspGuard_detectsPcEmulatorsIncludingBlueStacksLdPlayerNoxGenymotionQemu() {
+        assertTrue(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "samsung/beyond1lte/beyond1:11/RP1A/test-keys",
+                model = "BlueStacks App Player",
+                manufacturer = "BlueStacks",
+                brand = "bluestacks",
+                device = "bst",
+                product = "bluestacks_cn",
+                hardware = "ranchu",
+                board = "unknown"
+            )
+        )
+        assertTrue(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "ldplayer/generic/x86",
+                model = "LDPlayer 9",
+                manufacturer = "leidian",
+                brand = "ldplayer",
+                device = "ldplayer",
+                product = "ldplayer",
+                hardware = "x86",
+                board = "goldfish"
+            )
+        )
+        assertTrue(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "nox/bignox/nox",
+                model = "SM-G977N",
+                manufacturer = "samsung",
+                brand = "samsung",
+                device = "nox",
+                product = "nox",
+                hardware = "nox",
+                board = "nox"
+            )
+        )
+        assertTrue(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "genymotion/vbox86p/vbox86p:11",
+                model = "Custom Phone",
+                manufacturer = "Genymotion",
+                brand = "generic",
+                device = "vbox86p",
+                product = "vbox86p",
+                hardware = "vbox86",
+                board = "unknown"
+            )
+        )
+        assertTrue(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "google/sdk_gphone64_x86_64/emu64x:14",
+                model = "sdk_gphone64_x86_64",
+                manufacturer = "Google",
+                brand = "google",
+                device = "emu64x",
+                product = "sdk_gphone64_x86_64",
+                hardware = "ranchu",
+                board = "goldfish_x86_64"
+            )
+        )
+        assertFalse(
+            "Clean physical Snapdragon phone must not be flagged as emulator",
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "xiaomi/marble_in/marble:14/UKQ1.230804.001/release-keys",
+                model = "23049PCD8I",
+                manufacturer = "Xiaomi",
+                brand = "POCO",
+                device = "marble",
+                product = "marble_in",
+                hardware = "qcom",
+                board = "ukee"
+            )
+        )
+    }
+
+    @Test
+    fun preExamSecurityGate_blocksDeveloperOptionsAndUsbDebugging() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        android.provider.Settings.Global.putInt(
+            context.contentResolver,
+            android.provider.Settings.Global.DEVELOPMENT_SETTINGS_ENABLED,
+            1
+        )
+        android.provider.Settings.Global.putInt(
+            context.contentResolver,
+            android.provider.Settings.Global.ADB_ENABLED,
+            1
+        )
+        val blockedReport = com.example.security.PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+        assertTrue(blockedReport.isDeveloperOptionsEnabled)
+        assertTrue(blockedReport.isUsbDebuggingEnabled)
+        assertTrue(blockedReport.blockingReasons.any { it.contains("Developer Options") })
+        assertTrue(blockedReport.blockingReasons.any { it.contains("USB Debugging") })
+        assertFalse(
+            "Exam entry must remain blocked when ADB/Developer Options are active",
+            blockedReport.isClearedToStartExam
+        )
+
+        android.provider.Settings.Global.putInt(
+            context.contentResolver,
+            android.provider.Settings.Global.DEVELOPMENT_SETTINGS_ENABLED,
+            0
+        )
+        android.provider.Settings.Global.putInt(
+            context.contentResolver,
+            android.provider.Settings.Global.ADB_ENABLED,
+            0
+        )
+        val cleanReport = com.example.security.PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+        assertFalse(cleanReport.isDeveloperOptionsEnabled)
+        assertFalse(cleanReport.isUsbDebuggingEnabled)
+        assertFalse(cleanReport.blockingReasons.any { it.contains("Developer Options") || it.contains("USB Debugging") })
+    }
+
+    @Test
+    fun tamperProofExamClock_ignoresManualWallClockJumpsAndTracksMonotonicElapsed() {
+        com.example.exam.TamperProofExamClock.resetAnchorForTests()
+        val serverAnchorEpoch = 1_780_000_000_000L
+        val elapsedAnchor = 50_000L
+        com.example.exam.TamperProofExamClock.anchorServerEpoch(serverAnchorEpoch, elapsedAnchor)
+
+        // Advance monotonic uptime by 60 seconds, while user manually rolls phone clock back 3 hours
+        val monotonicLater = elapsedAnchor + 60_000L
+        val manipulatedWallClock = serverAnchorEpoch - (3L * 3_600_000L)
+        val trustedNow = com.example.exam.TamperProofExamClock.currentTrustedEpochMs(
+            currentElapsedRealtimeMs = monotonicLater,
+            fallbackWallClockMs = manipulatedWallClock
+        )
+        assertEquals(serverAnchorEpoch + 60_000L, trustedNow)
+        assertTrue(
+            com.example.exam.TamperProofExamClock.detectManualClockJump(
+                toleranceMs = 60_000L,
+                currentElapsedRealtimeMs = monotonicLater,
+                wallClockMs = manipulatedWallClock
+            )
+        )
+
+        val deadline = com.example.exam.TamperProofExamClock.elapsedDeadlineAfterDurationMinutes(
+            durationMinutes = 30,
+            currentElapsedRealtimeMs = elapsedAnchor
+        )
+        assertEquals(
+            1800,
+            com.example.exam.TamperProofExamClock.computeRemainingSeconds(deadline, elapsedAnchor)
+        )
+        assertEquals(
+            1740,
+            com.example.exam.TamperProofExamClock.computeRemainingSeconds(deadline, monotonicLater)
+        )
+        assertEquals(
+            0,
+            com.example.exam.TamperProofExamClock.computeRemainingSeconds(deadline, deadline + 5_000L)
+        )
+    }
+
+    @Test
+    fun sanitizedExamPaper_stripsAnswerKeysAndGradesThroughSealedVault() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        ensureFirebaseInitialized(context)
+        val repo = InstituteRepository.create(context)
+        val examRepo = com.example.exam.ExamRepository(context, repo)
+
+        val qJson = com.example.exam.PdfMcqBankParser.serializeCustomExamBankJson(
+            questions = listOf(
+                com.example.exam.ExamQuestionItem(
+                    id = "SEC_Q1",
+                    category = "Cybersecurity",
+                    questionText = "Which flag prevents Android screenshots?",
+                    options = listOf("FLAG_KEEP_SCREEN_ON", "FLAG_SECURE", "FLAG_FULLSCREEN", "FLAG_LAYOUT_NO_LIMITS"),
+                    correctOptionIndex = 1,
+                    marks = 10
+                ),
+                com.example.exam.ExamQuestionItem(
+                    id = "SEC_Q2",
+                    category = "ADCA",
+                    questionText = "Which command invokes Kiosk pinning?",
+                    options = listOf("startLockTask()", "enableEdgeToEdge()", "finishAffinity()", "requestFocus()"),
+                    correctOptionIndex = 0,
+                    marks = 10
+                )
+            ),
+            questionsPerStudent = 2
+        )
+        val exam = com.example.data.model.ExamRecord(
+            id = "exm_sec_audit_1",
+            title = "Security Audit CBT",
+            courseName = "Cybersecurity",
+            durationMinutes = 30,
+            totalMarks = 100,
+            passingMarks = 40,
+            questionsJson = qJson
+        )
+
+        val sanitized = examRepo.prepareSanitizedPaperForExam("stu_sec_01", exam)
+        assertEquals(2, sanitized.size)
+
+        // Identify the right option texts from sanitized options without referencing correctOptionIndex on SanitizedExamQuestion
+        val ansMap = mutableMapOf<String, Int>()
+        sanitized.forEach { sq ->
+            val targetText = if (sq.questionText.contains("screenshots")) "FLAG_SECURE" else "startLockTask()"
+            ansMap[sq.id] = sq.options.indexOf(targetText)
+        }
+
+        val outcome = examRepo.submitSanitizedExamResult(
+            exam = exam,
+            studentId = "stu_sec_01",
+            studentName = "Audit Candidate",
+            sanitizedQuestions = sanitized,
+            selectedAnswers = ansMap,
+            isPreviewOnly = true,
+            ownerUid = "stu_sec_01"
+        )
+        assertEquals(2, outcome.rawCorrectCount)
+        assertEquals(100, outcome.scaledMarks)
+        assertTrue(outcome.passed)
+
+        // Vault must be scrubbed after submission — re-submitting yields 0 rather than stale keys
+        val replayOutcome = examRepo.submitSanitizedExamResult(
+            exam = exam,
+            studentId = "stu_sec_01",
+            studentName = "Audit Candidate",
+            sanitizedQuestions = sanitized,
+            selectedAnswers = ansMap,
+            isPreviewOnly = true,
+            ownerUid = "stu_sec_01"
+        )
+        assertEquals(0, replayOutcome.rawCorrectCount)
+        com.example.exam.ActiveExamAntiCheatGuard.clearActiveExamSession("stu_sec_01")
     }
 }

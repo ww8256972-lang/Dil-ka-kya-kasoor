@@ -72,3 +72,35 @@
 -dontwarn com.aheaditec.talsec_security.**
 -dontwarn com.scottyab.rootbeer.**
 -dontwarn net.sqlcipher.**
+
+# 8. Safe Rules for Jetpack Compose, Face Biometric ML Kit, CameraX, Serialization/Gson & Networking
+-keep class androidx.compose.runtime.** { *; }
+-keepclassmembers class * {
+    @androidx.compose.runtime.Composable *;
+}
+-keepclassmembers class androidx.lifecycle.ViewModel { *; }
+-keep class * extends androidx.lifecycle.ViewModel {
+    <init>(...);
+}
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.android.gms.internal.mlkit_** { *; }
+-dontwarn com.google.mlkit.**
+-dontwarn com.google.android.gms.internal.mlkit_**
+-keep class androidx.camera.** { *; }
+-keep class androidx.credentials.** { *; }
+-keep class com.google.firebase.ai.** { *; }
+-keep class com.google.firebase.firestore.** { *; }
+-keep class kotlinx.serialization.** { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keep class com.google.gson.** { *; }
+-keepclassmembers class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+-dontwarn com.google.gson.**
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-keep class retrofit2.** { *; }
+-dontwarn retrofit2.**
+

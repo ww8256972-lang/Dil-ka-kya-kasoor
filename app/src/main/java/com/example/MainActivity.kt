@@ -9,8 +9,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
@@ -18,6 +21,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,7 +58,6 @@ import com.waqar.institute.security.BindPortalWindowSecurity
 import com.waqar.institute.security.LifecyclePrivacyBlurContainer
 import com.waqar.institute.security.NativeSecurityBridge
 import com.waqar.institute.security.RecentAppsBlurController
-import com.waqar.institute.security.RecaptchaInvisibleManager
 import com.waqar.institute.security.SkiaGpuRenderOptimizer
 import com.waqar.institute.security.TeeSecurityManager
 import com.waqar.institute.security.VirtualSpaceShield
@@ -117,12 +121,22 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 RaspAndRootShieldManager.initializeShield(
                     context = appCtx,
-                    expectedCertBase64Hash = "KpLcLKQN96jtvmfA493NKIoPfD5beiLgEzostnG8EdU="
+                    expectedCertBase64Hash = NativeSecurityBridge.expectedTalsecBase64CertHash()
                 )
             }
-            runCatching { EnterpriseRaspGuard.enforceStartupIntegrity(appCtx) }
+            runCatching {
+                EnterpriseRaspGuard.enforceStartupIntegrity(
+                    context = appCtx,
+                    terminateOnReleaseCompromise = !BuildConfig.DEBUG
+                )
+            }
             runCatching { BaselineProfileOptimization.installAsync(appCtx) }
-            runCatching { NativeSecurityBridge.initializeDefenseGradeSecurity(appCtx) }
+            runCatching {
+                NativeSecurityBridge.initializeDefenseGradeSecurity(
+                    context = appCtx,
+                    enforceReleaseLockdown = !BuildConfig.DEBUG
+                )
+            }
             runCatching { AppSelfHealingManager.initializeSelfHealingDaemon(appCtx) }
             runCatching { AntiHookManager.runComprehensiveHookScan() }
             runCatching { VirtualSpaceShield.evaluateEnvironment(appCtx) }
@@ -168,6 +182,50 @@ fun WaqarInstituteApp(
         mutableStateOf<com.waqar.institute.updater.GitHubOtaUpdater.GitHubReleaseInfo?>(null)
     }
 
+    val raspViolation by RaspAndRootShieldManager.securityViolation.collectAsStateWithLifecycle()
+    val nativeTamperViolation by NativeSecurityBridge.tamperViolationReason.collectAsStateWithLifecycle()
+
+    // Non-Play-Store Signed Release APK policy: ignore RASP_UNTRUSTED_INSTALLER while strictly
+    // blocking APK signature mismatches, repackaging, Frida/Xposed hooks, Root/Magisk, & PC Emulators.
+    val fatalRaspReason = remember(raspViolation, nativeTamperViolation, state.raspReport) {
+        val isRobolectric = Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+        if (BuildConfig.DEBUG || isRobolectric) {
+            null
+        } else {
+            val fatalCodes = setOf(
+                "RASP_ROOT_BINARY_AND_APP_DETECTED",
+                "RASP_ROOT_KERNELSU_DETECTED",
+                "RASP_DEBUGGER_ATTACHED",
+                "RASP_EMULATOR_BLOCKED",
+                "RASP_APK_REPACKAGED_MT_MANAGER",
+                "RASP_FRIDA_LSPOSED_HOOK_DETECTED",
+                "RASP_DEVICE_CLONE_DETECTED",
+                "RASP_DEOBFUSCATION_TAMPER",
+                "RASP_DUAL_SPACE_CLONE_DETECTED"
+            )
+            val audit = state.raspReport
+            when {
+                !nativeTamperViolation.isNullOrBlank() -> nativeTamperViolation
+                raspViolation in fatalCodes -> raspViolation
+                audit?.isCompromised == true -> when {
+                    audit.rootBeerDetected -> "RASP_ROOT_DETECTED"
+                    audit.isEmulatorEnvironment -> "RASP_EMULATOR_BLOCKED"
+                    audit.memoryHookDetected -> "RASP_MEMORY_HOOK_DETECTED"
+                    audit.debuggerConnected || audit.tracerPidDetected -> "RASP_DEBUGGER_ATTACHED"
+                    audit.nativeRaspFlags != 0 -> "RASP_NATIVE_FLAGS_${audit.nativeRaspFlags}"
+                    else -> "ENVIRONMENT_INTEGRITY_COMPROMISED"
+                }
+                else -> null
+            }
+        }
+    }
+
+    LaunchedEffect(fatalRaspReason) {
+        if (fatalRaspReason != null) {
+            runCatching { MemoryScrubberLifecycleObserver.scrubAllRegisteredBuffersNow() }
+        }
+    }
+
     BindPortalWindowSecurity(
         portalRole = state.activePortalRole.key,
         isAuthenticated = isAuthenticated,
@@ -177,9 +235,6 @@ fun WaqarInstituteApp(
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching { viewModel.refreshRaspSecurityAudit(context) }
-            (context.applicationContext as? android.app.Application)?.let { app ->
-                runCatching { RecaptchaInvisibleManager.getOrInitClient(app) }
-            }
             val latestRelease = runCatching {
                 com.waqar.institute.updater.GitHubOtaUpdater.checkForUpdate()
             }.getOrNull()
@@ -195,6 +250,17 @@ fun WaqarInstituteApp(
         uiTier = state.effectiveUiTier,
         languageCode = state.preferences.languageCode
     ) {
+        if (fatalRaspReason != null) {
+            TamperSecurityLockdownScreen(
+                violationCode = fatalRaspReason,
+                onExitApp = {
+                    runCatching { (context as? Activity)?.finishAffinity() }
+                    kotlin.system.exitProcess(1)
+                }
+            )
+            return@WaqarInstituteTheme
+        }
+
         val isWindowProtected = WindowSecureManager.isPortalProtected(
             portalRole = state.activePortalRole.key,
             isAuthenticated = isAuthenticated,
@@ -213,18 +279,20 @@ fun WaqarInstituteApp(
                         instituteTagline = state.preferences.instituteTagline,
                         isAuthenticating = state.isAuthenticating,
                         externalStatusMessage = forceLogoutMsg ?: state.statusMessage,
+                        pendingAdminSetupUsername = state.pendingAdminSetupUsername,
                         onRoleSelected = { role -> viewModel.switchPortalRole(role) },
                         onLanguageToggle = {
-                            val next = if (state.preferences.languageCode == "HI") "EN" else "HI"
-                            viewModel.setLanguage(next)
+                            viewModel.setLanguage("EN")
                         },
                         onCredentialLogin = { actCtx, role, username, password ->
                             SessionManager.clearForceLogoutNotice()
                             viewModel.authenticateWithPortalCredentials(actCtx, role, username, password)
                         },
-                        onGoogleLogin = { actCtx, role, customUsername ->
-                            SessionManager.clearForceLogoutNotice()
-                            viewModel.authenticateWithGoogleRole(actCtx, role, customUsername)
+                        onCompleteFirstRunAdminSetup = { actCtx, username, password ->
+                            viewModel.completeFirstRunAdminSetup(actCtx, username, password)
+                        },
+                        onDismissFirstRunAdminSetup = {
+                            viewModel.dismissFirstRunAdminSetup()
                         }
                     )
                 } else {
@@ -256,6 +324,62 @@ fun WaqarInstituteApp(
                         releaseInfo = releaseInfo
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TamperSecurityLockdownScreen(
+    violationCode: String,
+    onExitApp: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("release_tamper_lockdown_screen"),
+        color = WciColors.BgElevatedDark
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "SECURITY LOCKDOWN",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        color = WciColors.Danger,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                )
+                Text(
+                    text = "Access blocked: APK integrity, root/hook posture, or runtime environment verification failed.",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = Color.White)
+                )
+                Text(
+                    text = "Code: $violationCode",
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontFamily = JetBrainsMono,
+                        color = WciColors.Warning
+                    )
+                )
+                Text(
+                    text = "Install the official signed Release APK on a non-rooted physical Android device without emulators or hooks.",
+                    style = MaterialTheme.typography.labelMedium.copy(color = WciColors.TextSecondaryDark)
+                )
+                ShimmerButton(
+                    text = "Exit Application",
+                    onClick = onExitApp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("tamper_lockdown_exit_button")
+                )
             }
         }
     }

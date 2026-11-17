@@ -20,6 +20,7 @@ import io.ktor.server.request.httpMethod
 import io.ktor.server.request.receive
 import io.ktor.server.request.header
 import io.ktor.server.request.uri
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -75,6 +76,13 @@ fun Application.securityGatewayModule(deps: Deps) {
     }
     install(StatusPages) {
         exception<Denied> { call, cause ->
+            call.response.header("X-Content-Type-Options", "nosniff")
+            call.response.header("X-Frame-Options", "DENY")
+            call.response.header("Referrer-Policy", "strict-origin-when-cross-origin")
+            call.response.header("Cache-Control", "no-store")
+            if (cause.status == 429) {
+                call.response.header("Retry-After", "300")
+            }
             call.respond(
                 HttpStatusCode.fromValue(cause.status),
                 ErrorResponse(error = cause.msg, status = cause.status),
@@ -93,6 +101,7 @@ fun Application.securityGatewayModule(deps: Deps) {
 
         post("/v1/device/enroll") {
             val req = call.receive<EnrollRequest>()
+            deps.rateLimiter.checkAndConsume("enroll:${req.idToken.takeLast(24)}")
             if (!deps.challenges.consume(req.nonce)) {
                 throw Denied(401, "invalid or expired challenge nonce")
             }
@@ -144,6 +153,7 @@ fun Application.securityGatewayModule(deps: Deps) {
 
         post("/v1/session/exchange") {
             val req = call.receive<SessionExchangeRequest>()
+            deps.rateLimiter.checkAndConsume("session_exchange:${req.deviceId}")
             val userId = deps.upstreamAuth.verifyUserId(req.idToken)
             val device = deps.devices.find(req.deviceId) ?: throw Denied(401, "unknown device")
             if (device.userId != userId) throw Denied(403, "device owner mismatch")

@@ -24,6 +24,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.data.model.PortalRole
+import com.example.security.AdminEncryptedCredentialStore
 import com.example.security.HardwareKeystoreVault
 import com.example.security.SecurityPostureManager
 import com.example.ui.designsystem.*
@@ -296,7 +297,7 @@ fun ReportsInventorySupportModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddAsset = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddAsset = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -344,7 +345,7 @@ fun ReportsInventorySupportModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddTicket = false }) { Text("Cancel", color = WciColors.textMuted) } }
+            dismissButton = { TextButton(onClick = { showAddTicket = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 }
@@ -370,11 +371,15 @@ fun SecurityBackupSettingsModuleScreen(
     }
     val hasStrongBox = remember { HardwareKeystoreVault.isStrongBoxSupported(context) }
 
-    // Admin Credential Update States
-    var adminUsername by remember(state.userProfile?.username) {
-        mutableStateOf(state.userProfile?.username?.ifBlank { "admin" } ?: "admin")
+    // Admin Credential Update States (synced from EncryptedSharedPreferences/Keystore)
+    var adminUsername by remember(state.userProfile?.username, activeTab) {
+        mutableStateOf(
+            state.userProfile?.username?.takeIf { it.isNotBlank() }
+                ?: AdminEncryptedCredentialStore.getActiveAdminUsername(context)
+        )
     }
     var adminNewPassword by remember { mutableStateOf("") }
+    var adminConfirmPassword by remember { mutableStateOf("") }
 
     // Issue New Student/Parent/Teacher Credential Dialog
     var showIssueCredentialDialog by remember { mutableStateOf(false) }
@@ -415,11 +420,11 @@ fun SecurityBackupSettingsModuleScreen(
                             glowColor = palette.glow
                         ) {
                             Text(
-                                text = "Admin Portal Username & Password (Cloud Synced)",
+                                text = "Admin Portal Username & Password (Encrypted SHA-256)",
                                 style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary)
                             )
                             Text(
-                                text = "Update your Admin login username and password in Cloud Firestore. Changes take effect immediately across all devices.",
+                                text = "Saves SHA-256 digest immediately into EncryptedSharedPreferences / Keystore (works offline & online in <0.1s) and syncs to Cloud Firestore.",
                                 style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                             )
                             Spacer(modifier = Modifier.height(10.dp))
@@ -446,12 +451,13 @@ fun SecurityBackupSettingsModuleScreen(
                             }
                             Spacer(modifier = Modifier.height(10.dp))
                             ShimmerButton(
-                                text = "Update Admin Username & Password in Cloud",
+                                text = "Update Admin Credentials (Keystore + Cloud)",
                                 icon = Icons.Default.SyncLock,
-                                enabled = adminUsername.length >= 3 && adminNewPassword.length >= 3,
+                                enabled = adminUsername.trim().length >= 3 && adminNewPassword.trim().length >= 4,
                                 onClick = {
                                     viewModel.updateAdminCredentials(adminUsername, adminNewPassword)
                                     adminNewPassword = ""
+                                    adminConfirmPassword = ""
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 testTag = "save_admin_credentials_button"
@@ -598,6 +604,20 @@ fun SecurityBackupSettingsModuleScreen(
                                 color = if (ipFlowClean) WciColors.textSecondary else WciColors.dangerColor
                             )
                         )
+                        val ledgerIntact = remember(state.auditLogs.size) {
+                            com.waqar.institute.ledger.ImmutableEventSourcedLedger.verifyMerkleChainIntegrity()
+                        }
+                        val ledgerRootHex = remember(state.auditLogs.size) {
+                            com.waqar.institute.ledger.ImmutableEventSourcedLedger.latestMerkleRootHex()
+                        }
+                        Text(
+                            text = "Merkle Audit Ledger: ${if (ledgerIntact) "VERIFIED" else "TAMPER ALERT"} • Root:$ledgerRootHex",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = JetBrainsMono,
+                                color = if (ledgerIntact) WciColors.successColor else WciColors.dangerColor,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -659,18 +679,18 @@ fun SecurityBackupSettingsModuleScreen(
                                     style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                                 )
                                 LiquidPill(
-                                    text = "Run Telemetry Drill",
+                                    text = "Run Telemetry Drill (Diagnostic Self-Test)",
                                     selected = true,
                                     icon = Icons.Default.Shield,
                                     onClick = {
                                         viewModel.reportSecurityIncidentAndNotifyAdmin(
                                             context = context,
                                             username = state.userProfile?.username ?: "admin_telemetry_drill",
-                                            fullName = "Admin Security Drill",
+                                            fullName = "Diagnostic Security Self-Test",
                                             phone = "",
                                             studentId = "",
                                             violationType = "RASP_MEMORY_INTEGRITY_SCAN",
-                                            details = "Automated RASP & Single-Device Telemetry Verification Drill"
+                                            details = "Diagnostic Security Self-Test: Automated RASP & Single-Device Telemetry Verification Drill"
                                         )
                                     },
                                     modifier = Modifier.fillMaxWidth()
@@ -790,11 +810,11 @@ fun SecurityBackupSettingsModuleScreen(
                 }
             }
             else -> {
-                // 1. Portal Language Selection Card (English Default / Hindi Option in Settings)
+                // 1. Portal Language Card (Strict English Standard)
                 item {
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        glowColor = Color(0xFF00E5FF)
+                        glowColor = WciColors.Info
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -803,25 +823,21 @@ fun SecurityBackupSettingsModuleScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (state.preferences.languageCode == "HI") "पोर्टल भाषा (App Language)" else "Portal Language (English / Hindi)",
+                                    text = "Portal Language (English Standard)",
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         color = WciColors.textPrimary,
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                 )
                                 Text(
-                                    text = if (state.preferences.languageCode == "HI") {
-                                        "पूरे ऐप को अंग्रेजी (English) या हिंदी (Hindi) में बदलें"
-                                    } else {
-                                        "Keep the entire portal in English by default, or switch to Hindi anytime"
-                                    },
+                                    text = "All portals (Admin, Teacher, Student, Parent) are standardized to clean English UI",
                                     style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                                 )
                             }
                             Icon(
                                 imageVector = Icons.Default.Translate,
                                 contentDescription = "Language",
-                                tint = Color(0xFF00E5FF)
+                                tint = WciColors.Info
                             )
                         }
                         Spacer(modifier = Modifier.height(10.dp))
@@ -830,20 +846,12 @@ fun SecurityBackupSettingsModuleScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             LiquidPill(
-                                text = "English (Default)",
-                                selected = state.preferences.languageCode != "HI",
+                                text = "English (Active)",
+                                selected = true,
                                 icon = Icons.Default.Language,
                                 onClick = { viewModel.setLanguage("EN") },
                                 modifier = Modifier.weight(1f),
                                 testTag = "settings_lang_en_button"
-                            )
-                            LiquidPill(
-                                text = "हिन्दी (Hindi)",
-                                selected = state.preferences.languageCode == "HI",
-                                icon = Icons.Default.Translate,
-                                onClick = { viewModel.setLanguage("HI") },
-                                modifier = Modifier.weight(1f),
-                                testTag = "settings_lang_hi_button"
                             )
                         }
                     }
@@ -853,7 +861,7 @@ fun SecurityBackupSettingsModuleScreen(
                 item {
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            text = if (state.preferences.languageCode == "HI") "दिखावट और बैटरी सेवर मोड" else "Theme & Battery Saver Mode",
+                            text = "Theme & Battery Saver Mode",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
@@ -867,7 +875,7 @@ fun SecurityBackupSettingsModuleScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (state.preferences.languageCode == "HI") "डार्क थीम (Dark Cosmos Theme)" else "Dark Cosmos Theme",
+                                    text = "Dark Cosmos Theme",
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         color = WciColors.textPrimary,
                                         fontWeight = FontWeight.Bold
@@ -891,7 +899,7 @@ fun SecurityBackupSettingsModuleScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (state.preferences.languageCode == "HI") "बैटरी सेवर मोड (Battery Saver Mode)" else "Battery Saver Mode",
+                                    text = "Battery Saver Mode",
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         color = WciColors.textPrimary,
                                         fontWeight = FontWeight.Bold
@@ -911,6 +919,81 @@ fun SecurityBackupSettingsModuleScreen(
                 }
 
                 if (isAdmin) {
+                    item {
+                        GlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            glowColor = palette.glow
+                        ) {
+                            Text(
+                                text = "Admin Login Username & Password",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    color = WciColors.textPrimary,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                            )
+                            Text(
+                                text = "New password SHA-256 hash is written immediately to EncryptedSharedPreferences / Android Keystore for offline & online instant login.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            OutlinedTextField(
+                                value = adminUsername,
+                                onValueChange = { adminUsername = it },
+                                label = { Text("Admin Username") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("settings_admin_username_input")
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = adminNewPassword,
+                                    onValueChange = { adminNewPassword = it },
+                                    label = { Text("New Password (min 4 chars)") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("settings_admin_password_input")
+                                )
+                                OutlinedTextField(
+                                    value = adminConfirmPassword,
+                                    onValueChange = { adminConfirmPassword = it },
+                                    label = { Text("Confirm Password") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("settings_admin_confirm_password_input")
+                                )
+                            }
+                            if (adminConfirmPassword.isNotEmpty() && adminConfirmPassword != adminNewPassword) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Passwords do not match.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Danger)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            val canSaveCreds = adminUsername.trim().length >= 3 &&
+                                adminNewPassword.trim().length >= 4 &&
+                                (adminConfirmPassword.isEmpty() || adminConfirmPassword == adminNewPassword)
+                            ShimmerButton(
+                                text = "Save New Username & Password",
+                                icon = Icons.Default.SyncLock,
+                                enabled = canSaveCreds,
+                                onClick = {
+                                    viewModel.updateAdminCredentials(adminUsername, adminNewPassword)
+                                    adminNewPassword = ""
+                                    adminConfirmPassword = ""
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                testTag = "settings_save_admin_credentials_button"
+                            )
+                        }
+                    }
+
                     item {
                         GlassCard(modifier = Modifier.fillMaxWidth()) {
                             Text("Institute Branding & Tax Profile", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary))
@@ -1067,7 +1150,9 @@ fun SecurityBackupSettingsModuleScreen(
                 )
             },
             dismissButton = {
-                TextButton(onClick = { showIssueCredentialDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showIssueCredentialDialog = false }) {
+                    Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold)
+                }
             }
         )
     }

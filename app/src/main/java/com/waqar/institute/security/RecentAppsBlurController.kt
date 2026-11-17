@@ -11,8 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.ui.designsystem.WciColors
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -92,7 +92,7 @@ fun LifecyclePrivacyBlurContainer(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xE60B0F29))
+                    .background(WciColors.VeilDarkOverlay)
             )
         }
     }

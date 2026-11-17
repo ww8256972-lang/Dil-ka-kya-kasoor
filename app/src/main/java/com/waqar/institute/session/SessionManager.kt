@@ -164,7 +164,8 @@ object SessionManager {
         )
 
         watchSetupJob = ioScope.launch {
-            val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
+            val loginEpochMs = System.currentTimeMillis()
+            val safeNow = Timestamp(Date(loginEpochMs))
             val sessionPayload = mapOf(
                 "sessionId" to sessionDocId,
                 "uid" to effectiveUid,
@@ -179,13 +180,16 @@ object SessionManager {
                 "createdAt" to safeNow
             )
 
+            var serverSyncConfirmed = false
             // 1. Write active session token to Firestore BEFORE attaching listener so we don't race against old token
             runCatching {
-                withTimeoutOrNull(6_000L) {
+                val synced = withTimeoutOrNull(4_000L) {
                     firestore.collection("sessions").document(sessionDocId)
                         .set(sessionPayload, SetOptions.merge())
                         .await()
-                }
+                    true
+                } ?: false
+                serverSyncConfirmed = synced
             }.onFailure { err ->
                 Log.w(TAG, "Deferred offline session sync for $cleanUser: ${err.localizedMessage}")
             }
@@ -197,7 +201,7 @@ object SessionManager {
                     "activeDeviceId" to deviceId,
                     "lastActiveTimestamp" to safeNow
                 )
-                withTimeoutOrNull(4_000L) {
+                withTimeoutOrNull(3_000L) {
                     val userRef = firestore.collection("users").document(effectiveUid)
                     val snap = userRef.get().await()
                     if (snap.exists()) {
@@ -214,18 +218,30 @@ object SessionManager {
                     return@addSnapshotListener
                 }
                 if (snap == null || !snap.exists()) return@addSnapshotListener
-                // Skip local unconfirmed pending writes from this same device
-                if (snap.metadata.hasPendingWrites()) return@addSnapshotListener
+                // Skip local unconfirmed pending writes or stale offline cache snapshots
+                if (snap.metadata.hasPendingWrites() || snap.metadata.isFromCache) return@addSnapshotListener
 
                 val remoteToken = snap.getString("activeSessionToken").orEmpty()
+                val remoteDevice = snap.getString("activeDeviceId").orEmpty()
+                val remoteTimestampMs = snap.getTimestamp("lastActiveTimestamp")?.toDate()?.time ?: 0L
                 val isActive = snap.getBoolean("active") ?: true
                 val expectedToken = inMemoryToken ?: getLocalSessionToken(appCtx)
 
-                val tokenMismatch = expectedToken.isNotBlank() &&
-                    remoteToken.isNotBlank() &&
-                    remoteToken != expectedToken
+                if (remoteToken == expectedToken) {
+                    serverSyncConfirmed = true
+                    return@addSnapshotListener
+                }
 
-                val revokedByAdmin = !isActive
+                // Only trigger token mismatch if our initial session write was confirmed and a strictly newer session from another device overwrote it
+                val tokenMismatch = serverSyncConfirmed &&
+                    expectedToken.isNotBlank() &&
+                    remoteToken.isNotBlank() &&
+                    remoteToken != expectedToken &&
+                    remoteDevice.isNotBlank() &&
+                    remoteDevice != deviceId &&
+                    remoteTimestampMs > (loginEpochMs + 2_000L)
+
+                val revokedByAdmin = serverSyncConfirmed && !isActive && remoteTimestampMs > (loginEpochMs + 2_000L)
 
                 if (tokenMismatch || revokedByAdmin) {
                     val reason = if (tokenMismatch) {

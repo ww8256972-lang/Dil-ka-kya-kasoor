@@ -112,7 +112,7 @@ object DocumentExportHelper {
         exportOfficialTemplatePdf(
             context = context,
             studentName = cert.studentName,
-            certificateOrRollNo = "${cert.serialNo} / $resolvedRoll",
+            certificateOrRollNo = resolvedRoll,
             serialNo = cert.serialNo,
             courseTitle = cert.courseName,
             durationFrom = "Enrolled Term",
@@ -201,13 +201,13 @@ object DocumentExportHelper {
             typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD_ITALIC)
         }
 
-        canvas.drawText(studentName, pageWidth * 0.315f, pageHeight * 0.485f, fieldPaint)
-        canvas.drawText(certificateOrRollNo, pageWidth * 0.355f, pageHeight * 0.535f, monoPaint)
-        canvas.drawText(courseTitle, pageWidth * 0.315f, pageHeight * 0.585f, fieldPaint)
-        canvas.drawText(durationFrom, pageWidth * 0.365f, pageHeight * 0.635f, fieldPaint)
-        canvas.drawText(durationTo, pageWidth * 0.642f, pageHeight * 0.635f, fieldPaint)
-        canvas.drawText(gradeAndPercentage, pageWidth * 0.362f, pageHeight * 0.684f, gradePaint)
-        canvas.drawText(dateOfIssue, pageWidth * 0.362f, pageHeight * 0.734f, fieldPaint)
+        canvas.drawText(studentName, pageWidth * 0.345f, pageHeight * 0.435f, fieldPaint)
+        canvas.drawText(certificateOrRollNo, pageWidth * 0.355f, pageHeight * 0.483f, monoPaint)
+        canvas.drawText(courseTitle, pageWidth * 0.345f, pageHeight * 0.531f, fieldPaint)
+        canvas.drawText(durationFrom, pageWidth * 0.380f, pageHeight * 0.578f, fieldPaint)
+        canvas.drawText(durationTo, pageWidth * 0.625f, pageHeight * 0.578f, fieldPaint)
+        canvas.drawText(gradeAndPercentage, pageWidth * 0.362f, pageHeight * 0.626f, gradePaint)
+        canvas.drawText(dateOfIssue, pageWidth * 0.362f, pageHeight * 0.674f, fieldPaint)
         canvas.drawText(studentSignature, pageWidth * 0.165f, pageHeight * 0.878f, sigPaint)
 
         // 3. Draw Scannable ISO/IEC 18004 Verification QR Code in Top-Right Frame

@@ -45,3 +45,12 @@ CREATE TABLE IF NOT EXISTS replay_nonces (
 
 CREATE INDEX IF NOT EXISTS idx_replay_nonces_seen_at ON replay_nonces (seen_at);
 -- Scheduled cleanup job: DELETE FROM replay_nonces WHERE seen_at < now() - interval '10 minutes';
+
+CREATE TABLE IF NOT EXISTS rate_limit_buckets (
+    bucket_key       TEXT PRIMARY KEY,
+    request_count    INT NOT NULL,
+    window_start_ms  BIGINT NOT NULL,
+    blocked_until_ms BIGINT NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+

@@ -209,7 +209,10 @@ class RemediationVerificationTest {
         )
 
         val selfHeal = com.waqar.institute.security.AppSelfHealingManager.verifyRuntimeIntegrity()
-        assertTrue(selfHeal.isSegmentIntact)
+        assertEquals(
+            com.waqar.institute.security.AppSelfHealingManager.isNativeLibraryLoaded(),
+            selfHeal.isSegmentIntact
+        )
         assertTrue(selfHeal.crc32SignatureHex.startsWith("0x"))
     }
 

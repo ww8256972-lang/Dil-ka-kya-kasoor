@@ -14,7 +14,6 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
-import com.google.firebase.appcheck.recaptcha.RecaptchaAppCheckProviderFactory
 import java.io.File
 
 private const val TAG = "AppCheckInit"
@@ -22,7 +21,6 @@ private const val TAG = "AppCheckInit"
 private const val DEBUG_TOKEN_EXTRA = "FIREBASE_APPCHECK_DEBUG_TOKEN"
 private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store."
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
-private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
 fun ensureFirebaseInitialized(context: Context) {
     val appCtx = context.applicationContext ?: context
@@ -54,24 +52,22 @@ fun ensureFirebaseInitialized(context: Context) {
 
 enum class AppCheckDistributionStrategy {
     DEBUG_PROVIDER,
-    RECAPTCHA_ENTERPRISE_SIDELOAD,
     PLAY_INTEGRITY_FALLBACK
 }
 
-fun resolveReleaseAppCheckStrategy(recaptchaSiteKey: String?): AppCheckDistributionStrategy {
-    val cleanKey = recaptchaSiteKey?.trim().orEmpty()
-    val isPlaceholderKey = cleanKey.startsWith("6LeIxAcTAAAAAJcZVRqy")
-    return if (cleanKey.isNotBlank() && !isPlaceholderKey) {
-        AppCheckDistributionStrategy.RECAPTCHA_ENTERPRISE_SIDELOAD
+fun resolveReleaseAppCheckStrategy(customTokenOrMode: String? = null): AppCheckDistributionStrategy {
+    val cleanMode = customTokenOrMode?.trim().orEmpty()
+    return if (cleanMode.equals("PLAY_INTEGRITY", ignoreCase = true)) {
+        AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK
     } else {
         AppCheckDistributionStrategy.DEBUG_PROVIDER
     }
 }
 
 /**
- * Configures Firebase App Check for Debug and Sideloaded Release APKs (shared via WhatsApp/Telegram).
- * Uses DebugAppCheckProviderFactory instead of PlayIntegrityAppCheckProviderFactory so sideloaded
- * APKs distributed outside Google Play Store are never blocked by Firebase Play Integrity checks.
+ * Configures Firebase App Check for Debug and Sideloaded Release APKs (shared via GitHub/WhatsApp/Telegram).
+ * Uses DebugAppCheckProviderFactory so sideloaded APKs distributed outside Google Play Store are never
+ * blocked by Play Integrity prompts.
  */
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
@@ -90,44 +86,23 @@ fun configureAppCheck(context: Context, intent: Intent?) {
             Log.d(TAG, "App Check debug/sideload secret configured successfully.")
         }
 
-        if (BuildConfig.DEBUG) {
-            FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                DebugAppCheckProviderFactory.getInstance()
-            )
-            Log.d(TAG, "DebugAppCheckProviderFactory installed for debug build.")
-        } else {
-            val resId = context.resources.getIdentifier(
-                RECAPTCHA_SITE_KEY_RES,
-                "string",
-                context.packageName
-            )
-            val siteKey = if (resId != 0) runCatching { context.getString(resId) }.getOrNull() else null
-            when (resolveReleaseAppCheckStrategy(siteKey)) {
-                AppCheckDistributionStrategy.RECAPTCHA_ENTERPRISE_SIDELOAD -> {
-                    val installedRecaptcha = runCatching {
-                        FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                            RecaptchaAppCheckProviderFactory.getInstance(siteKey!!.trim())
-                        )
-                        Log.d(TAG, "RecaptchaAppCheckProviderFactory installed for sideloaded release APK.")
-                        true
-                    }.getOrDefault(false)
-                    if (!installedRecaptcha) {
-                        runCatching {
-                            FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                                DebugAppCheckProviderFactory.getInstance()
-                            )
-                            Log.d(TAG, "Fallback DebugAppCheckProviderFactory installed for sideloaded APK.")
-                        }
-                    }
+        when (resolveReleaseAppCheckStrategy(null)) {
+            AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK -> {
+                runCatching {
+                    FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                        PlayIntegrityAppCheckProviderFactory.getInstance()
+                    )
+                }.onFailure {
+                    FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                        DebugAppCheckProviderFactory.getInstance()
+                    )
                 }
-                else -> {
-                    runCatching {
-                        FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                            DebugAppCheckProviderFactory.getInstance()
-                        )
-                        Log.d(TAG, "DebugAppCheckProviderFactory installed for sideloaded release APK.")
-                    }
-                }
+            }
+            AppCheckDistributionStrategy.DEBUG_PROVIDER -> {
+                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+                    DebugAppCheckProviderFactory.getInstance()
+                )
+                Log.d(TAG, "DebugAppCheckProviderFactory installed for sideload-ready APK.")
             }
         }
     } catch (e: Exception) {
@@ -150,7 +125,7 @@ data class DeviceSecurityPosture(
         get() = when {
             hasRootBinarySignal -> "WARN_ROOT_SIGNAL"
             isEmulator -> "EMULATOR_DEV_TRUSTED"
-            else -> "MEETS_STRONG_INTEGRITY"
+            else -> "LOCAL_POSTURE_CLEAN"
         }
 }
 

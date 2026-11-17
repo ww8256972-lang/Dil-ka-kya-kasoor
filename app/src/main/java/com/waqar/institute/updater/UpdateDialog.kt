@@ -104,7 +104,7 @@ fun UpdateDialog(
 
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF090D24),
+                    color = WciColors.BgPrimaryDark,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
@@ -160,7 +160,7 @@ fun UpdateDialog(
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = WciColors.Success,
-                    contentColor = Color(0xFF052E16)
+                    contentColor = WciColors.UpdateBannerTextDark
                 ),
                 modifier = Modifier
                     .fillMaxWidth()

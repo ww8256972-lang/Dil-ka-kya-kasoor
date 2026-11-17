@@ -74,6 +74,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.media.BindScreenCapturePolicy
 import com.example.media.ScreenCapturePolicy
 import com.example.security.HardwareKeystoreVault
+import com.example.ui.designsystem.WciColors
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.Face
 import com.google.mlkit.vision.face.FaceDetection
@@ -167,6 +168,15 @@ object TeacherBiometricGateManager {
 
     fun recordSuccessful24HourVerification(context: Context, teacherUid: String, cosineScore: Float) {
         val cleanId = normalizeTeacherGateId(teacherUid) ?: return
+        val receipt = runCatching {
+            HardwareBiometricAttestor.issueKeystoreAttestedPassReceipt(
+                context = context,
+                subjectId = cleanId,
+                portalRole = "TEACHER",
+                challenge = HardwareBiometricAttestor.LivenessChallenge.BLINK_BOTH_EYES,
+                similarity = cosineScore
+            )
+        }.getOrNull()
         val targetPrefs = runCatching {
             HardwareKeystoreVault.openEncryptedPreferences(context.applicationContext ?: context)
         }.getOrElse {
@@ -175,6 +185,11 @@ object TeacherBiometricGateManager {
         targetPrefs.edit()
             .putLong("$KEY_LAST_VERIFIED_PREFIX$cleanId", System.currentTimeMillis())
             .putFloat("$KEY_LAST_COSINE_PREFIX$cleanId", cosineScore)
+            .apply {
+                if (receipt != null) {
+                    putString("lastBiometricAttestDigest_$cleanId", receipt.receiptDigestHex)
+                }
+            }
             .apply()
     }
 }
@@ -199,16 +214,16 @@ private val meshLines = listOf(
     0 to 1, 0 to 2, 1 to 2, 3 to 2, 4 to 2, 3 to 4, 5 to 0, 6 to 1, 3 to 7, 4 to 7
 )
 
-private val Purple = Color(0xFF7C3AED)
-private val BlueBg = Color(0xFF2563EB)
-private val Teal = Color(0xFF06B6D4)
-private val PinkGlow = Color(0xFFEC4899)
-private val OrangeGlow = Color(0xFFF97316)
-private val VioletGlow = Color(0xFFA78BFA)
-private val Indigo = Color(0xFF4F46E5)
-private val Yellow = Color(0xFFFDE68A)
-private val Green = Color(0xFF22C55E)
-private val Red = Color(0xFFEF4444)
+private val Purple get() = WciColors.ScannerPurple
+private val BlueBg get() = WciColors.ScannerBlue
+private val Teal get() = WciColors.ScannerTeal
+private val PinkGlow get() = WciColors.ScannerPink
+private val OrangeGlow get() = WciColors.ScannerOrange
+private val VioletGlow get() = WciColors.ScannerViolet
+private val Indigo get() = WciColors.ScannerIndigo
+private val Yellow get() = WciColors.ScannerYellow
+private val Green get() = WciColors.ScannerGreen
+private val Red get() = WciColors.ScannerRed
 
 @Composable
 fun TeacherBiometricGateOverlay(
@@ -228,7 +243,7 @@ fun TeacherBiometricGateOverlay(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                Icon(Icons.Default.Lock, contentDescription = "Blocked", tint = Color(0xFFFCA5A5), modifier = Modifier.size(56.dp))
+                Icon(Icons.Default.Lock, contentDescription = "Blocked", tint = WciColors.BiometricCoralAlert, modifier = Modifier.size(56.dp))
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = "Biometric Gate Blocked: Missing linked Teacher ID",
@@ -240,7 +255,7 @@ fun TeacherBiometricGateOverlay(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Ask Admin to link this faculty credential to a valid Teacher record and upload your profile photo.",
-                    color = Color(0xFFE0E7FF),
+                    color = WciColors.BiometricSubtext,
                     fontSize = 13.5.sp,
                     textAlign = TextAlign.Center
                 )
@@ -249,10 +264,10 @@ fun TeacherBiometricGateOverlay(
                     onClick = onSignOutRequested,
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5)),
-                    border = BorderStroke(1.dp, Color(0xFFFCA5A5).copy(alpha = 0.5f))
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = WciColors.BiometricCoralAlert),
+                    border = BorderStroke(1.dp, WciColors.BiometricCoralAlert.copy(alpha = 0.5f))
                 ) {
-                    Text("Sign Out", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
+                    Text("Sign Out", color = WciColors.BiometricCoralAlert, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -568,7 +583,7 @@ fun TeacherBiometricGateOverlay(
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = "Faculty: $teacherName (ID: $teacherUid)",
-                color = Color(0xFFE0E7FF),
+                color = WciColors.BiometricSubtext,
                 fontSize = 13.5.sp,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center
@@ -605,7 +620,7 @@ fun TeacherBiometricGateOverlay(
                             )
                             Text(
                                 text = "128-D Facial Biometric Signature linked · Live Blink Required",
-                                color = Color(0xFFBBF7D0),
+                                color = WciColors.BiometricMintBadgeText,
                                 fontSize = 11.5.sp
                             )
                         }
@@ -646,7 +661,7 @@ fun TeacherBiometricGateOverlay(
                 ) {
                     Text(
                         text = "GPS Geofence Verified (${"%.1f".format(verifiedDist)}m ≤ 50m · ${TeacherGpsGeofenceVerifier.INSTITUTE_PLUS_CODE_LABEL}) ✓",
-                        color = Color(0xFFBBF7D0),
+                        color = WciColors.BiometricMintBadgeText,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
@@ -830,7 +845,7 @@ fun TeacherBiometricGateOverlay(
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = statusDetail,
-                color = Color(0xFFE0E7FF),
+                color = WciColors.BiometricSubtext,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center,
                 lineHeight = 18.sp,
@@ -872,38 +887,40 @@ fun TeacherBiometricGateOverlay(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            // Fallback manual selfie button — also gated behind the 50m GPS Geofence check
-            OutlinedButton(
-                onClick = {
-                    if (isGpsGeofenceVerified) {
-                        fallbackCameraLauncher.launch(null)
-                    } else {
-                        triggerAttendanceWithGpsGate(true)
-                    }
-                },
-                enabled = !isVerifying && !isCheckingGpsLocation,
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f))
-            ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Take Live Photo with Camera", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
+            // Fallback live camera verification only available for Admin-enrolled teachers (first-time enrollment requires live blink)
+            if (!isFirstTimeEnrollment) {
+                OutlinedButton(
+                    onClick = {
+                        if (isGpsGeofenceVerified) {
+                            fallbackCameraLauncher.launch(null)
+                        } else {
+                            triggerAttendanceWithGpsGate(true)
+                        }
+                    },
+                    enabled = !isVerifying && !isCheckingGpsLocation,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f))
+                ) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Take Live Photo with Camera", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+            }
 
             OutlinedButton(
                 onClick = onSignOutRequested,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5)),
-                border = BorderStroke(1.dp, Color(0xFFFCA5A5).copy(alpha = 0.4f))
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = WciColors.BiometricCoralAlert),
+                border = BorderStroke(1.dp, WciColors.BiometricCoralAlert.copy(alpha = 0.4f))
             ) {
-                Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFFFCA5A5))
+                Icon(Icons.Default.Lock, contentDescription = null, tint = WciColors.BiometricCoralAlert)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Cancel & Sign Out", color = Color(0xFFFCA5A5))
+                Text("Cancel & Sign Out", color = WciColors.BiometricCoralAlert)
             }
         }
     }
@@ -1213,40 +1230,46 @@ internal fun processLiveFrame(
     onMultipleFaces: (Int) -> Unit,
     onFaceDetected: (Face, List<Offset?>, Int, Int) -> Unit
 ) {
-    val mediaImage = imageProxy.image
-    if (mediaImage == null) {
-        imageProxy.close()
-        return
-    }
+    runCatching {
+        val mediaImage = imageProxy.image
+        if (mediaImage == null) {
+            imageProxy.close()
+            return
+        }
 
-    val rotation = imageProxy.imageInfo.rotationDegrees
-    val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
-    val rotatedW = if (rotation % 180 == 0) mediaImage.width else mediaImage.height
-    val rotatedH = if (rotation % 180 == 0) mediaImage.height else mediaImage.width
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        val inputImage = InputImage.fromMediaImage(mediaImage, rotation)
+        val rotatedW = if (rotation % 180 == 0) mediaImage.width else mediaImage.height
+        val rotatedH = if (rotation % 180 == 0) mediaImage.height else mediaImage.width
 
-    detector.process(inputImage)
-        .addOnSuccessListener(executor) { faces ->
-            if (faces.size > 1) {
-                callbackExecutor.execute { onMultipleFaces(faces.size) }
-                return@addOnSuccessListener
-            }
-            val face = faces.firstOrNull()
-            if (face == null) {
-                callbackExecutor.execute { onNoFace() }
-            } else {
-                val side = minOf(rotatedW, rotatedH).toFloat().coerceAtLeast(1f)
-                val ox = (rotatedW - side) / 2f
-                val oy = (rotatedH - side) / 2f
-                val mapped = landmarkTypes.map { type ->
-                    face.getLandmark(type)?.position?.let { p ->
-                        // Front camera is mirrored horizontally
-                        Offset(1f - (p.x - ox) / side, (p.y - oy) / side)
+        detector.process(inputImage)
+            .addOnSuccessListener(executor) { faces ->
+                runCatching {
+                    if (faces.size > 1) {
+                        callbackExecutor.execute { onMultipleFaces(faces.size) }
+                        return@addOnSuccessListener
+                    }
+                    val face = faces.firstOrNull()
+                    if (face == null) {
+                        callbackExecutor.execute { onNoFace() }
+                    } else {
+                        val side = minOf(rotatedW, rotatedH).toFloat().coerceAtLeast(1f)
+                        val ox = (rotatedW - side) / 2f
+                        val oy = (rotatedH - side) / 2f
+                        val mapped = landmarkTypes.map { type ->
+                            face.getLandmark(type)?.position?.let { p ->
+                                // Front camera is mirrored horizontally
+                                Offset(1f - (p.x - ox) / side, (p.y - oy) / side)
+                            }
+                        }
+                        callbackExecutor.execute { onFaceDetected(face, mapped, rotatedW, rotatedH) }
                     }
                 }
-                callbackExecutor.execute { onFaceDetected(face, mapped, rotatedW, rotatedH) }
             }
-        }
-        .addOnCompleteListener(executor) {
-            imageProxy.close()
-        }
+            .addOnCompleteListener(executor) {
+                runCatching { imageProxy.close() }
+            }
+    }.onFailure {
+        runCatching { imageProxy.close() }
+    }
 }

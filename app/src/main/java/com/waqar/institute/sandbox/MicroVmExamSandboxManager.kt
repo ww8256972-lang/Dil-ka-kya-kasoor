@@ -6,14 +6,20 @@ import org.lsposed.lsparanoid.Obfuscate
 @Obfuscate
 @Keep
 object MicroVmExamSandboxManager {
+    private var nativeLoaded = false
+
     init {
-        runCatching { System.loadLibrary("waqar_native_security") }
+        nativeLoaded = runCatching {
+            System.loadLibrary("waqar_native_security")
+            true
+        }.getOrDefault(false)
     }
 
     @Keep
     private external fun nativeEnterMicroVmExamSandbox(): Boolean
 
     fun activateIsolatedExamMicroVm(): Boolean {
-        return runCatching { nativeEnterMicroVmExamSandbox() }.getOrDefault(true)
+        if (!nativeLoaded) return false
+        return runCatching { nativeEnterMicroVmExamSandbox() }.getOrDefault(false)
     }
 }

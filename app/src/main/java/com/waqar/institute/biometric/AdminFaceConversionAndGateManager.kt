@@ -275,7 +275,10 @@ object AdminFaceConversionAndGateManager {
      * Extracts both the 128-D ML Kit facial geometry embedding (falling back to visual signature if
      * running in headless JVM or when landmarks are partial) and the 128-D visual signature.
      */
-    suspend fun extractAdminBiometricVectorsFromBitmap(bitmap: Bitmap): Pair<FloatArray, FloatArray> =
+    suspend fun extractAdminBiometricVectorsFromBitmap(
+        bitmap: Bitmap,
+        context: Context? = null
+    ): Pair<FloatArray, FloatArray> =
         withContext(Dispatchers.Default) {
             val visualSig = extractDeterministic128DVisualSignature(bitmap)
             val mlKitVec = runCatching {
@@ -299,7 +302,7 @@ object AdminFaceConversionAndGateManager {
                         Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
                     }.getOrDefault(bitmap)
                     val croppedVisual = extractDeterministic128DVisualSignature(croppedFace)
-                    val geom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face)
+                    val geom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
                     if (FaceBiometricVerificationEngine.isValidEmbeddingVector(geom)) {
                         return@withContext Pair(geom, croppedVisual)
                     }
@@ -323,7 +326,7 @@ object AdminFaceConversionAndGateManager {
             }
 
             val bitmap = loadBundledMasterAdminBitmap(context) ?: return@withContext localCached
-            val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(bitmap)
+            val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(bitmap, context)
             val dataUri = localCached?.photoDataUri?.takeIf { it.isNotBlank() }
                 ?: encodeBitmapToCompactDataUri(bitmap, maxDimensionPx = 280, quality = 76)
 
@@ -478,7 +481,7 @@ object AdminFaceConversionAndGateManager {
                 "Admin password must be at least 3 characters."
             }
 
-            val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(photoBitmap)
+            val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(photoBitmap, context)
             val dataUri = encodeBitmapToCompactDataUri(photoBitmap, maxDimensionPx = 280, quality = 78)
             val docId = if (cleanUsername == "waqar") MASTER_ADMIN_DOC_ID else "${ADMIN_FACE_DOC_PREFIX}$cleanUsername"
 
@@ -541,7 +544,7 @@ object AdminFaceConversionAndGateManager {
             return@withContext AdminFaceMatchOutcome.Error("Admin Face Vault is empty. Re-enroll Master Admin photo.")
         }
 
-        val (liveGeom, liveVis) = extractAdminBiometricVectorsFromBitmap(liveBitmap)
+        val (liveGeom, liveVis) = extractAdminBiometricVectorsFromBitmap(liveBitmap, context)
         var bestProfile: AuthorizedAdminFaceProfile? = null
         var bestScore = -1f
 
@@ -589,7 +592,7 @@ object AdminFaceConversionAndGateManager {
             return@withContext AdminFaceMatchOutcome.Error("Admin Face Vault is empty.")
         }
 
-        val liveGeom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face)
+        val liveGeom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
         var bestProfile: AuthorizedAdminFaceProfile? = null
         var bestScore = -1f
 
@@ -729,6 +732,8 @@ fun AdminBiometricGateOverlay(
         hasCameraPermission = granted
     }
 
+    val frontCamStatus = remember { HardwareBiometricAttestor.verifyPhysicalFrontCameraPresent(context) }
+
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val bmp = AdminFaceConversionAndGateManager.loadBundledMasterAdminBitmap(context)
@@ -736,62 +741,61 @@ fun AdminBiometricGateOverlay(
             withContext(Dispatchers.Main) {
                 masterBitmap = bmp
                 authorizedAdmins = list
+                if (!frontCamStatus.hasPhysicalFrontCamera) {
+                    statusDetail = "Warning: ${frontCamStatus.reason}"
+                }
             }
         }
+    }
+
+    // Prevent accidental back navigation or lifecycle auto-close while Admin Biometric Gate is active
+    androidx.activity.compose.BackHandler(enabled = !isVerified) {
+        // Stay on Admin Biometric Gate until verified or explicit Cancel & Sign Out is tapped
     }
 
     val verifyBitmapLambda: (Bitmap) -> Unit = { bmp ->
-        isVerifying = true
-        statusDetail = "Matching against ${authorizedAdmins.size.coerceAtLeast(1)} authorized Admin face(s) in Firebase Vault…"
-        scope.launch {
-            val outcome = AdminFaceConversionAndGateManager.verifyLiveBitmapAgainstAdminVault(context, bmp)
-            withContext(Dispatchers.Main) {
-                when (outcome) {
-                    is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched -> {
-                        AdminFaceConversionAndGateManager.recordSuccessfulAdminVerification(adminUsername)
-                        scanState = BiometricScanState.Matched
-                        statusDetail = outcome.message
-                        delay(700)
-                        isVerified = true
+        if (!isVerifying) {
+            isVerifying = true
+            statusDetail = "Verifying Admin Biometric for $adminDisplayName (@$adminUsername)…"
+            scope.launch {
+                val outcome = AdminFaceConversionAndGateManager.verifyLiveBitmapAgainstAdminVault(context, bmp)
+                val receipt = if (outcome is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched) {
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            HardwareBiometricAttestor.issueKeystoreAttestedPassReceipt(
+                                context = context,
+                                subjectId = outcome.matchedAdmin.adminUsername,
+                                portalRole = "ADMIN",
+                                challenge = HardwareBiometricAttestor.LivenessChallenge.BLINK_BOTH_EYES,
+                                similarity = outcome.cosineSimilarity
+                            )
+                        }.getOrNull()
                     }
-                    is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Mismatch -> {
-                        scanState = BiometricScanState.NotRecognized
-                        statusDetail = outcome.message
-                        delay(1500)
-                        scanState = BiometricScanState.Scanning
+                } else null
+                withContext(Dispatchers.Main) {
+                    when (outcome) {
+                        is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched -> {
+                            AdminFaceConversionAndGateManager.recordSuccessfulAdminVerification(adminUsername)
+                            scanState = BiometricScanState.Matched
+                            val hwBadge = if (receipt?.hardwareBackedKey == true) " [Keystore TEE]" else ""
+                            statusDetail = "Verified Admin: ${outcome.matchedAdmin.displayName} (@${outcome.matchedAdmin.adminUsername})$hwBadge"
+                            delay(450)
+                            isVerified = true
+                        }
+                        is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Mismatch -> {
+                            scanState = BiometricScanState.NotRecognized
+                            statusDetail = outcome.message
+                            delay(1500)
+                            scanState = BiometricScanState.Scanning
+                        }
+                        is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Error -> {
+                            scanState = BiometricScanState.NotRecognized
+                            statusDetail = outcome.errorMessage
+                            delay(1500)
+                            scanState = BiometricScanState.Scanning
+                        }
                     }
-                    is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Error -> {
-                        scanState = BiometricScanState.NotRecognized
-                        statusDetail = outcome.errorMessage
-                        delay(1500)
-                        scanState = BiometricScanState.Scanning
-                    }
-                }
-                isVerifying = false
-            }
-        }
-    }
-
-    val liveCameraCaptureLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        if (bitmap != null) {
-            verifyBitmapLambda(bitmap)
-        }
-    }
-
-    val photoPickerVerifyLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            scope.launch(Dispatchers.IO) {
-                val bmp = runCatching {
-                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                }.getOrNull()
-                if (bmp != null) {
-                    withContext(Dispatchers.Main) {
-                        verifyBitmapLambda(bmp)
-                    }
+                    isVerifying = false
                 }
             }
         }
@@ -914,6 +918,16 @@ fun AdminBiometricGateOverlay(
         }
     }
 
+    val liveAdminCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { liveCapturedBitmap ->
+        if (liveCapturedBitmap != null) {
+            verifyBitmapLambda(liveCapturedBitmap)
+        } else {
+            statusDetail = "Live camera capture cancelled. Please blink at the front camera or capture a live photo."
+        }
+    }
+
     GradientBackground {
         Column(
             modifier = Modifier
@@ -933,19 +947,20 @@ fun AdminBiometricGateOverlay(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Admin Session: $adminDisplayName (@$adminUsername) · ${authorizedAdmins.size.coerceAtLeast(1)} Authorized Admin Face(s)",
-                color = Color(0xFFE0E7FF),
+                text = "Admin Session: $adminDisplayName (@$adminUsername) · ${authorizedAdmins.size} Authorized Admin Face(s)",
+                color = WciColors.BiometricSubtext,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
             )
 
             val localMasterBmp = masterBitmap
+            val hasEnrolledAdminFaces = localMasterBmp != null || authorizedAdmins.isNotEmpty()
             if (localMasterBmp != null) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Surface(
                     shape = RoundedCornerShape(14.dp),
                     color = Color.White.copy(alpha = 0.14f),
-                    border = BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.75f)),
+                    border = BorderStroke(1.dp, WciColors.ScannerGreen.copy(alpha = 0.75f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -960,7 +975,7 @@ fun AdminBiometricGateOverlay(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .border(1.5.dp, Color(0xFF22C55E), CircleShape)
+                                .border(1.5.dp, WciColors.ScannerGreen, CircleShape)
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
@@ -971,10 +986,32 @@ fun AdminBiometricGateOverlay(
                             )
                             Text(
                                 text = "Enrolled in Firebase Vault + ${authorizedAdmins.count { !it.isPrimaryMaster }} Converted Admin(s)",
-                                color = Color(0xFFBBF7D0),
+                                color = WciColors.BiometricMintBadgeText,
                                 fontSize = 11.5.sp
                             )
                         }
+                    }
+                }
+            } else if (!hasEnrolledAdminFaces) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = WciColors.ScannerRed.copy(alpha = 0.18f),
+                    border = BorderStroke(1.dp, WciColors.BiometricCoralAlert.copy(alpha = 0.8f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            text = "Admin Biometric Enrollment Required",
+                            color = WciColors.BiometricCoralAlert,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "No Master Admin reference face is enrolled in the vault. Enroll an authorized Admin face before unlocking.",
+                            color = Color.White,
+                            fontSize = 11.5.sp
+                        )
                     }
                 }
             }
@@ -1046,7 +1083,7 @@ fun AdminBiometricGateOverlay(
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = statusDetail,
-                color = Color(0xFFE0E7FF),
+                color = WciColors.BiometricSubtext,
                 fontSize = 12.5.sp,
                 textAlign = TextAlign.Center,
                 lineHeight = 17.sp,
@@ -1064,7 +1101,7 @@ fun AdminBiometricGateOverlay(
                         .testTag("admin_gate_grant_camera_button"),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                    border = BorderStroke(1.5.dp, Color(0xFF22C55E))
+                    border = BorderStroke(1.5.dp, WciColors.ScannerGreen)
                 ) {
                     Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.White)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1073,64 +1110,48 @@ fun AdminBiometricGateOverlay(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            OutlinedButton(
-                onClick = { liveCameraCaptureLauncher.launch(null) },
-                enabled = !isVerifying,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("admin_gate_live_photo_button"),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.65f))
-            ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Color.White)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Scan Face with Camera Photo", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
+            // Live Camera Biometric Verification Button for Admin (Requires genuine live match; no self-match or null-master bypass)
+            Button(
                 onClick = {
-                    photoPickerVerifyLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                    )
+                    when {
+                        scanState == BiometricScanState.Matched -> {
+                            AdminFaceConversionAndGateManager.recordSuccessfulAdminVerification(adminUsername)
+                            isVerified = true
+                        }
+                        !hasEnrolledAdminFaces -> {
+                            scanState = BiometricScanState.NotRecognized
+                            statusDetail = "Setup Required: No Master Admin face is enrolled in the vault. Enroll an Admin reference face first."
+                        }
+                        !hasCameraPermission -> {
+                            permissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                        else -> {
+                            statusDetail = "Opening live front camera to capture and verify your Admin face against the vault…"
+                            liveAdminCameraLauncher.launch(null)
+                        }
+                    }
                 },
                 enabled = !isVerifying,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("admin_gate_pick_photo_button"),
+                    .height(52.dp)
+                    .testTag("admin_gate_master_photo_verify_button"),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.75f))
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (scanState == BiometricScanState.Matched) WciColors.EmeraldVerified else WciColors.EmeraldAction
+                )
             ) {
-                Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color(0xFFBAE6FD))
+                Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.White)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Verify with Enrolled Admin Reference Photo", color = Color(0xFFBAE6FD), fontWeight = FontWeight.SemiBold)
-            }
-
-            if (localMasterBmp != null && adminUsername.lowercase() in setOf("waqar", "admin", "waqar_admin")) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Button(
-                    onClick = { verifyBitmapLambda(localMasterBmp) },
-                    enabled = !isVerifying,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .testTag("admin_gate_master_photo_verify_button"),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A))
-                ) {
-                    Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.White)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        "Match Attached Master Admin Photo (@$adminUsername)",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                Text(
+                    text = when {
+                        scanState == BiometricScanState.Matched -> "Verified Admin ✓ — Enter Admin Portal"
+                        !hasEnrolledAdminFaces -> "Admin Biometric Setup Required"
+                        else -> "Verify Live Admin Camera Scan (@$adminUsername)"
+                    },
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -1142,12 +1163,12 @@ fun AdminBiometricGateOverlay(
                     .height(48.dp)
                     .testTag("admin_gate_sign_out_button"),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5)),
-                border = BorderStroke(1.dp, Color(0xFFFCA5A5).copy(alpha = 0.45f))
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = WciColors.BiometricCoralAlert),
+                border = BorderStroke(1.dp, WciColors.BiometricCoralAlert.copy(alpha = 0.45f))
             ) {
-                Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFFFCA5A5))
+                Icon(Icons.Default.Lock, contentDescription = null, tint = WciColors.BiometricCoralAlert)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Cancel & Sign Out", color = Color(0xFFFCA5A5))
+                Text("Cancel & Sign Out", color = WciColors.BiometricCoralAlert)
             }
         }
     }
@@ -1244,12 +1265,12 @@ fun AdminConversionModuleScreen(
                     Icon(
                         imageVector = Icons.Default.AdminPanelSettings,
                         contentDescription = "Admin Conversion",
-                        tint = Color(0xFF10F596),
+                        tint = WciColors.SuccessNeon,
                         modifier = Modifier.size(32.dp)
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "एडमिन कन्वर्जन (Admin Conversion & Face Vault)",
+                            text = "Admin Conversion & Face Vault",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
@@ -1304,7 +1325,7 @@ fun AdminConversionModuleScreen(
                             color = WciColors.elevatedSurface.copy(alpha = 0.85f),
                             border = BorderStroke(
                                 1.5.dp,
-                                if (adminProfile.isPrimaryMaster) Color(0xFF10F596) else Color(0xFF38BDF8)
+                                if (adminProfile.isPrimaryMaster) WciColors.SuccessNeon else WciColors.Warning
                             ),
                             modifier = Modifier.width(175.dp)
                         ) {
@@ -1321,14 +1342,14 @@ fun AdminConversionModuleScreen(
                                         modifier = Modifier
                                             .size(68.dp)
                                             .clip(CircleShape)
-                                            .border(2.dp, Color(0xFF10F596), CircleShape)
+                                            .border(2.dp, WciColors.SuccessNeon, CircleShape)
                                     )
                                 } else {
                                     Box(
                                         modifier = Modifier
                                             .size(68.dp)
                                             .clip(CircleShape)
-                                            .background(Color(0xFF1E293B)),
+                                            .background(WciColors.SurfaceSlateDark),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Icon(
@@ -1351,22 +1372,22 @@ fun AdminConversionModuleScreen(
                                 Text(
                                     text = "@${adminProfile.adminUsername}",
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        color = Color(0xFF38BDF8),
+                                        color = WciColors.Warning,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = if (adminProfile.isPrimaryMaster) {
-                                        Color(0xFF10F596).copy(alpha = 0.18f)
+                                        WciColors.SuccessNeon.copy(alpha = 0.18f)
                                     } else {
-                                        Color(0xFF38BDF8).copy(alpha = 0.18f)
+                                        WciColors.Warning.copy(alpha = 0.18f)
                                     }
                                 ) {
                                     Text(
                                         text = if (adminProfile.isPrimaryMaster) "Master Admin ✓" else adminProfile.sourceRoleLabel,
                                         style = MaterialTheme.typography.labelSmall.copy(
-                                            color = if (adminProfile.isPrimaryMaster) Color(0xFF10F596) else Color(0xFF38BDF8),
+                                            color = if (adminProfile.isPrimaryMaster) WciColors.SuccessNeon else WciColors.Warning,
                                             fontWeight = FontWeight.Bold
                                         ),
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -1461,7 +1482,7 @@ fun AdminConversionModuleScreen(
                 OutlinedTextField(
                     value = selectedName,
                     onValueChange = { selectedName = it },
-                    label = { Text("Person's Full Name (पूरा नाम)") },
+                    label = { Text("Person's Full Name") },
                     placeholder = { Text("e.g. Waqar Ahmed / Co-Director") },
                     singleLine = true,
                     modifier = Modifier
@@ -1508,8 +1529,8 @@ fun AdminConversionModuleScreen(
                         modifier = Modifier
                             .size(84.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF0F172A))
-                            .border(2.dp, if (previewBmp != null) Color(0xFF10F596) else Color(0xFF475569), CircleShape),
+                            .background(WciColors.SurfaceDeepNavy)
+                            .border(2.dp, if (previewBmp != null) WciColors.SuccessNeon else WciColors.SlateBorderMuted, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         if (previewBmp != null) {
@@ -1523,7 +1544,7 @@ fun AdminConversionModuleScreen(
                             Icon(
                                 imageVector = Icons.Default.AddAPhoto,
                                 contentDescription = "No Photo Selected",
-                                tint = Color(0xFF94A3B8),
+                                tint = WciColors.SlateIconMuted,
                                 modifier = Modifier.size(32.dp)
                             )
                         }
@@ -1547,7 +1568,7 @@ fun AdminConversionModuleScreen(
                         ) {
                             Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Select Photo from Gallery (फोटो चुनें)", fontWeight = FontWeight.SemiBold)
+                            Text("Select Photo from Gallery", fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
@@ -1560,7 +1581,7 @@ fun AdminConversionModuleScreen(
                         ) {
                             Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Capture Live Camera Photo (कैमरा फोटो)", fontWeight = FontWeight.SemiBold)
+                            Text("Capture Live Camera Photo", fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -1568,16 +1589,16 @@ fun AdminConversionModuleScreen(
                 if (statusBannerText != null) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = if (isStatusError) Color(0xFFEF4444).copy(alpha = 0.16f) else Color(0xFF10F596).copy(alpha = 0.16f),
+                        color = if (isStatusError) WciColors.ScannerRed.copy(alpha = 0.16f) else WciColors.SuccessNeon.copy(alpha = 0.16f),
                         border = BorderStroke(
                             1.dp,
-                            if (isStatusError) Color(0xFFEF4444) else Color(0xFF10F596)
+                            if (isStatusError) WciColors.ScannerRed else WciColors.SuccessNeon
                         ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
                             text = statusBannerText.orEmpty(),
-                            color = if (isStatusError) Color(0xFFFCA5A5) else Color(0xFFBBF7D0),
+                            color = if (isStatusError) WciColors.BiometricCoralAlert else WciColors.BiometricMintBadgeText,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(12.dp)
@@ -1625,7 +1646,7 @@ fun AdminConversionModuleScreen(
                         .height(52.dp)
                         .testTag("admin_conversion_save_firebase_button"),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                    colors = ButtonDefaults.buttonColors(containerColor = WciColors.EmeraldAction)
                 ) {
                     Icon(Icons.Default.CloudUpload, contentDescription = null, tint = Color.White)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -1633,7 +1654,7 @@ fun AdminConversionModuleScreen(
                         text = if (isSavingToFirebase) {
                             "Saving 128-D Admin Face to Firebase…"
                         } else {
-                            "Save to Firebase (सेव टू फायरबेस - एडमिन बनाएं)"
+                            "Save to Firebase - Create Admin"
                         },
                         color = Color.White,
                         fontSize = 15.sp,

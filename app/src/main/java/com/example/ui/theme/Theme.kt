@@ -128,7 +128,8 @@ fun WaqarInstituteTheme(
             onSecondary = Color(0xFF05060F),
             onBackground = WciColors.TextPrimaryDark,
             onSurface = WciColors.TextPrimaryDark,
-            onSurfaceVariant = WciColors.TextMutedDark,
+            onSurfaceVariant = WciColors.TextSecondaryDark,
+            outline = WciColors.GlassBorderLight,
             error = WciColors.Danger
         )
     } else {

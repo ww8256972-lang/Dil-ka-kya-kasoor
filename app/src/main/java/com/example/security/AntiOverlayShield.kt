@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.Context
 import android.hardware.display.DisplayManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Display
 import android.view.View
 import android.view.accessibility.AccessibilityManager
@@ -25,10 +27,11 @@ data class OverlaySecurityPosture(
     val isExternalOrVirtualDisplayConnected: Boolean,
     val externalDisplayNames: List<String>,
     val hasScreenReaderOrScraperActive: Boolean,
-    val activeAccessibilityServiceIds: List<String>
+    val activeAccessibilityServiceIds: List<String>,
+    val suspiciousAccessibilityServiceIds: List<String> = activeAccessibilityServiceIds
 ) {
     val isSafeForProctoredExam: Boolean
-        get() = !isExternalOrVirtualDisplayConnected
+        get() = !isExternalOrVirtualDisplayConnected && suspiciousAccessibilityServiceIds.isEmpty()
 }
 
 object AntiOverlayShield {
@@ -64,12 +67,67 @@ object AntiOverlayShield {
             info.id?.takeIf { it.isNotBlank() }
         }
 
+        // Flag third-party / automation / screen-scraping accessibility services active during CBT exams
+        val suspiciousServices = enabledServices.filter { info ->
+            val idLower = info.id?.lowercase().orEmpty()
+            val canReadWindowContent =
+                (info.capabilities and AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT) != 0
+            val isTalkBack = idLower.contains("com.google.android.marvin.talkback") ||
+                idLower.contains("com.samsung.android.accessibility.talkback")
+            canReadWindowContent || (!isTalkBack && idLower.isNotBlank())
+        }.mapNotNull { it.id?.takeIf { id -> id.isNotBlank() } }
+
         return OverlaySecurityPosture(
             isOverlayShieldApplied = true,
             isExternalOrVirtualDisplayConnected = nonDefaultDisplays.isNotEmpty(),
             externalDisplayNames = nonDefaultDisplays.map { "${it.name} (ID:${it.displayId})" },
             hasScreenReaderOrScraperActive = serviceNames.isNotEmpty(),
-            activeAccessibilityServiceIds = serviceNames
+            activeAccessibilityServiceIds = serviceNames,
+            suspiciousAccessibilityServiceIds = suspiciousServices
         )
+    }
+
+    /**
+     * Registers a live `DisplayManager.DisplayListener` during active CBT exams so newly attached
+     * virtual/cast/secondary displays (AnyDesk, Miracast, HDMI capture) are caught immediately.
+     * Returns an unregister lambda suitable for `DisposableEffect.onDispose`.
+     */
+    fun observeSecondaryDisplays(
+        context: Context,
+        onSecondaryDisplayDetected: (List<String>) -> Unit
+    ): () -> Unit {
+        val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            ?: return {}
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) {
+                if (displayId != Display.DEFAULT_DISPLAY) {
+                    val names = dm.displays
+                        .filter { it.displayId != Display.DEFAULT_DISPLAY }
+                        .map { "${it.name} (ID:${it.displayId})" }
+                    if (names.isNotEmpty()) {
+                        onSecondaryDisplayDetected(names)
+                    }
+                }
+            }
+
+            override fun onDisplayRemoved(displayId: Int) = Unit
+
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId != Display.DEFAULT_DISPLAY) {
+                    val names = dm.displays
+                        .filter { it.displayId != Display.DEFAULT_DISPLAY }
+                        .map { "${it.name} (ID:${it.displayId})" }
+                    if (names.isNotEmpty()) {
+                        onSecondaryDisplayDetected(names)
+                    }
+                }
+            }
+        }
+        runCatching {
+            dm.registerDisplayListener(listener, Handler(Looper.getMainLooper()))
+        }
+        return {
+            runCatching { dm.unregisterDisplayListener(listener) }
+        }
     }
 }

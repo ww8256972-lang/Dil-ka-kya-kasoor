@@ -55,10 +55,12 @@ fun NeonWaveLoginScreen(
     instituteTagline: String,
     isAuthenticating: Boolean = false,
     externalStatusMessage: String? = null,
+    pendingAdminSetupUsername: String? = null,
     onRoleSelected: (PortalRole) -> Unit,
     onLanguageToggle: () -> Unit,
     onCredentialLogin: (Context, PortalRole, String, String) -> Unit,
-    onGoogleLogin: (Context, PortalRole, String) -> Unit
+    onCompleteFirstRunAdminSetup: (Context, String, String) -> Unit = { _, _, _ -> },
+    onDismissFirstRunAdminSetup: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val palette = WciColors.paletteForRole(selectedRole)
@@ -76,7 +78,8 @@ fun NeonWaveLoginScreen(
         if (!externalStatusMessage.isNullOrBlank()) {
             val isInformationalNotice = externalStatusMessage.startsWith("Signed out", ignoreCase = true) ||
                 externalStatusMessage.startsWith("Session expired", ignoreCase = true) ||
-                externalStatusMessage.startsWith("Signed in", ignoreCase = true)
+                externalStatusMessage.startsWith("Signed in", ignoreCase = true) ||
+                externalStatusMessage.startsWith("Language set", ignoreCase = true)
             if (!isInformationalNotice) {
                 failedAttempts += 1
                 if (failedAttempts >= 5) {
@@ -138,7 +141,7 @@ fun NeonWaveLoginScreen(
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontFamily = PlusJakartaSans,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFF05060F)
+                                color = WciColors.OnAccentDark
                             )
                         )
                     }
@@ -161,7 +164,7 @@ fun NeonWaveLoginScreen(
                 }
 
                 LiquidPill(
-                    text = if (languageCode == "HI") "हिंदी • HI" else "English • EN",
+                    text = if (languageCode.equals("EN", ignoreCase = true)) "English • EN" else "Language • $languageCode",
                     selected = true,
                     onClick = onLanguageToggle,
                     icon = Icons.Default.Translate,
@@ -211,10 +214,10 @@ fun NeonWaveLoginScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (languageCode == "HI") role.hindiLabel.substringBefore(" ") else role.label,
+                                    text = role.label,
                                     style = MaterialTheme.typography.labelLarge.copy(
                                         fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                                        color = if (isSelected) Color(0xFF05060F) else WciColors.textSecondary
+                                        color = if (isSelected) WciColors.OnAccentDark else WciColors.textSecondary
                                     )
                                 )
                             }
@@ -263,10 +266,10 @@ fun NeonWaveLoginScreen(
                             Spacer(modifier = Modifier.height(10.dp))
                             Text(
                                 text = when (role) {
-                                    PortalRole.ADMIN -> if (languageCode == "HI") "एडमिन एवं डायरेक्टर कमांड सेंटर" else "Director & Admin Command Center"
-                                    PortalRole.STUDENT -> if (languageCode == "HI") "छात्र लर्निंग एवं फीस पोर्टल" else "Student Learning, Exam & Fee Hub"
-                                    PortalRole.TEACHER -> if (languageCode == "HI") "फैकल्टी बैच एवं अटेंडेंस पोर्टल" else "Faculty Classroom & Attendance Hub"
-                                    PortalRole.PARENT -> if (languageCode == "HI") "अभिभावक प्रोग्रेस एवं फीस पोर्टल" else "Parent Ward Progress & Fee Portal"
+                                    PortalRole.ADMIN -> "Director & Admin Command Center"
+                                    PortalRole.STUDENT -> "Student Learning, Exam & Fee Hub"
+                                    PortalRole.TEACHER -> "Faculty Classroom & Attendance Hub"
+                                    PortalRole.PARENT -> "Parent Ward Progress & Fee Portal"
                                 },
                                 style = MaterialTheme.typography.headlineMedium.copy(
                                     color = WciColors.textPrimary
@@ -275,10 +278,10 @@ fun NeonWaveLoginScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = when (role) {
-                                    PortalRole.ADMIN -> if (languageCode == "HI") "अपना एडमिन यूजरनेम और पासवर्ड दर्ज करें।" else "Sign in with your Admin username and password."
-                                    PortalRole.STUDENT -> if (languageCode == "HI") "एडमिन द्वारा दिया गया छात्र यूजरनेम और पासवर्ड दर्ज करें।" else "Enter your Admin-issued Student username & password to view your personal record."
-                                    PortalRole.TEACHER -> if (languageCode == "HI") "अपना फैकल्टी यूजरनेम और पासवर्ड दर्ज करें।" else "Sign in with your Admin-issued Faculty username and password."
-                                    PortalRole.PARENT -> if (languageCode == "HI") "अपना अभिभावक यूजरनेम और पासवर्ड या Google लॉगिन चुनें।" else "Enter your Parent username & password or sign in with Google."
+                                    PortalRole.ADMIN -> "Sign in with your Admin username and password."
+                                    PortalRole.STUDENT -> "Enter your Admin-issued Student username & password to view your personal record."
+                                    PortalRole.TEACHER -> "Sign in with your Admin-issued Faculty username and password."
+                                    PortalRole.PARENT -> "Enter your Admin-issued Parent username and password."
                                 },
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = WciColors.textMuted
@@ -302,10 +305,10 @@ fun NeonWaveLoginScreen(
                         label = {
                             Text(
                                 when (selectedRole) {
-                                    PortalRole.ADMIN -> if (languageCode == "HI") "एडमिन यूजरनेम" else "Admin Username"
-                                    PortalRole.STUDENT -> if (languageCode == "HI") "छात्र यूजरनेम / एनरोलमेंट आईडी" else "Student Username / Enrollment ID"
-                                    PortalRole.TEACHER -> if (languageCode == "HI") "शिक्षक यूजरनेम / कोड" else "Teacher Username / Employee Code"
-                                    PortalRole.PARENT -> if (languageCode == "HI") "अभिभावक यूजरनेम / फोन" else "Parent Username / Guardian ID"
+                                    PortalRole.ADMIN -> "Admin Username"
+                                    PortalRole.STUDENT -> "Student Username / Enrollment ID"
+                                    PortalRole.TEACHER -> "Teacher Username / Employee Code"
+                                    PortalRole.PARENT -> "Parent Username / Guardian ID"
                                 }
                             )
                         },
@@ -324,7 +327,7 @@ fun NeonWaveLoginScreen(
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,
-                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else Color(0x470F172A),
+                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else WciColors.GlassBorderLightMode,
                             focusedTextColor = WciColors.textPrimary,
                             unfocusedTextColor = WciColors.textPrimary,
                             focusedLabelColor = palette.start,
@@ -346,9 +349,7 @@ fun NeonWaveLoginScreen(
                             .fillMaxWidth()
                             .testTag("login_password_input"),
                         label = {
-                            Text(
-                                if (languageCode == "HI") "पासवर्ड (Password)" else "Password"
-                            )
+                            Text("Password")
                         },
                         leadingIcon = {
                             Icon(
@@ -371,7 +372,7 @@ fun NeonWaveLoginScreen(
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,
-                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else Color(0x470F172A),
+                            unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else WciColors.GlassBorderLightMode,
                             focusedTextColor = WciColors.textPrimary,
                             unfocusedTextColor = WciColors.textPrimary,
                             focusedLabelColor = palette.start,
@@ -399,11 +400,11 @@ fun NeonWaveLoginScreen(
                                 onCheckedChange = { keepSignedIn = it },
                                 colors = CheckboxDefaults.colors(
                                     checkedColor = palette.start,
-                                    checkmarkColor = Color(0xFF05060F)
+                                    checkmarkColor = WciColors.OnAccentDark
                                 )
                             )
                             Text(
-                                text = if (languageCode == "HI") "इस डिवाइस पर लॉगिन रखें" else "Keep session active",
+                                text = "Keep session active",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = WciColors.textSecondary
                                 )
@@ -412,19 +413,24 @@ fun NeonWaveLoginScreen(
 
                         TextButton(onClick = { showRecoverySheet = true }) {
                             Text(
-                                text = if (languageCode == "HI") "सहायता?" else "Account Help?",
+                                text = "Account Help?",
                                 style = MaterialTheme.typography.labelLarge.copy(color = palette.start)
                             )
                         }
                     }
 
                     AnimatedVisibility(visible = activeMessage != null) {
+                        val msg = activeMessage.orEmpty()
+                        val isInfoNotice = msg.startsWith("Signed out", ignoreCase = true) ||
+                            msg.startsWith("Signed in", ignoreCase = true) ||
+                            msg.startsWith("Language set", ignoreCase = true)
+                        val bannerAccent = if (isInfoNotice) WciColors.infoColor else WciColors.dangerColor
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(bottom = 12.dp)
-                                .background(WciColors.Danger.copy(alpha = 0.16f), RoundedCornerShape(WciRadius.sm))
-                                .border(1.dp, WciColors.Danger.copy(alpha = 0.5f), RoundedCornerShape(WciRadius.sm))
+                                .background(bannerAccent.copy(alpha = 0.16f), RoundedCornerShape(WciRadius.sm))
+                                .border(1.dp, bannerAccent.copy(alpha = 0.5f), RoundedCornerShape(WciRadius.sm))
                                 .padding(12.dp)
                         ) {
                             Row(
@@ -432,28 +438,27 @@ fun NeonWaveLoginScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
+                                    imageVector = if (isInfoNotice) Icons.Default.Info else Icons.Default.ErrorOutline,
                                     contentDescription = "Notice",
-                                    tint = WciColors.dangerColor
+                                    tint = bannerAccent
                                 )
                                 Text(
-                                    text = activeMessage.orEmpty(),
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textPrimary)
+                                    text = msg,
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = WciColors.textPrimary,
+                                        fontWeight = FontWeight.Medium
+                                    )
                                 )
                             }
                         }
                     }
 
-                    // 1. Primary Username + Password Login Button
+                    // Primary Username + Password Login Button (Ultra-Fast Instant Auth)
                     ShimmerButton(
                         text = if (isAuthenticating) {
-                            if (languageCode == "HI") "सत्यापित किया जा रहा है..." else "Verifying Credentials..."
+                            "Signing In..."
                         } else {
-                            if (languageCode == "HI") {
-                                "${selectedRole.label} पोर्टल खोलें (Login)"
-                            } else {
-                                "Login to ${selectedRole.label} Portal"
-                            }
+                            "Login to ${selectedRole.label} Portal"
                         },
                         onClick = {
                             val now = System.currentTimeMillis()
@@ -466,11 +471,7 @@ fun NeonWaveLoginScreen(
                             }
                             val act = context.findActivity() ?: context
                             if (usernameInput.isBlank() || passwordInput.isBlank()) {
-                                localErrorMessage = if (languageCode == "HI") {
-                                    "कृपया यूजरनेम और पासवर्ड दोनों दर्ज करें।"
-                                } else {
-                                    "Please enter both your username and password."
-                                }
+                                localErrorMessage = "Please enter both your username and password."
                             } else {
                                 localErrorMessage = null
                                 val effectiveRole = if (isAdminUser) {
@@ -488,45 +489,6 @@ fun NeonWaveLoginScreen(
                         modifier = Modifier.fillMaxWidth(),
                         testTag = "portal_credential_login_button"
                     )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    OutlinedButton(
-                        onClick = {
-                            localErrorMessage = null
-                            val act = context.findActivity() ?: context
-                            onGoogleLogin(act, selectedRole, usernameInput.trim())
-                        },
-                        enabled = !isAuthenticating,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp)
-                            .testTag("google_signin_button"),
-                        shape = RoundedCornerShape(WciRadius.pill),
-                        border = androidx.compose.foundation.BorderStroke(1.2.dp, palette.start.copy(alpha = 0.65f)),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = WciColors.textPrimary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.VerifiedUser,
-                            contentDescription = "Continue with Google",
-                            tint = palette.start,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (languageCode == "HI") {
-                                "Google से साइन इन करें (${selectedRole.label})"
-                            } else {
-                                "Continue with Google (${selectedRole.label})"
-                            },
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = WciColors.textPrimary
-                            )
-                        )
-                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -555,11 +517,7 @@ fun NeonWaveLoginScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (languageCode == "HI") {
-                                    "संस्थान क्रेडेंशियल प्रमाणीकरण (${selectedRole.label})"
-                                } else {
-                                    "Institute Credential Secured (${selectedRole.label})"
-                                },
+                                text = "Institute Credential Secured (${selectedRole.label})",
                                 style = MaterialTheme.typography.labelMedium.copy(
                                     fontWeight = FontWeight.Medium,
                                     color = WciColors.textSecondary
@@ -590,6 +548,95 @@ fun NeonWaveLoginScreen(
             confirmButton = {
                 TextButton(onClick = { showRecoverySheet = false }) {
                     Text("Got it", color = palette.start)
+                }
+            }
+        )
+    }
+
+    if (!pendingAdminSetupUsername.isNullOrBlank()) {
+        var setupPassword by remember(pendingAdminSetupUsername) { mutableStateOf("") }
+        var setupConfirmPassword by remember(pendingAdminSetupUsername) { mutableStateOf("") }
+        var setupError by remember(pendingAdminSetupUsername) { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = onDismissFirstRunAdminSetup,
+            containerColor = WciColors.elevatedSurface,
+            titleContentColor = WciColors.textPrimary,
+            textContentColor = WciColors.textSecondary,
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = palette.start)
+                    Text("First-Run Admin Setup")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "No Master Admin credential exists in Cloud Firestore yet for '$pendingAdminSetupUsername'. Create your Admin password (min 6 characters) to initialize and enter the Admin Portal.",
+                        style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
+                    )
+                    OutlinedTextField(
+                        value = setupPassword,
+                        onValueChange = {
+                            setupPassword = it
+                            setupError = null
+                        },
+                        label = { Text("New Admin Password (min 6 chars)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        colors = wciOutlinedTextFieldColors(palette),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("first_run_admin_password_input")
+                    )
+                    OutlinedTextField(
+                        value = setupConfirmPassword,
+                        onValueChange = {
+                            setupConfirmPassword = it
+                            setupError = null
+                        },
+                        label = { Text("Confirm Admin Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        colors = wciOutlinedTextFieldColors(palette),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("first_run_admin_confirm_input")
+                    )
+                    if (!setupError.isNullOrBlank()) {
+                        Text(
+                            text = setupError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.dangerColor)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                ShimmerButton(
+                    text = if (isAuthenticating) "Creating..." else "Create & Enter Admin",
+                    onClick = {
+                        val p1 = setupPassword.trim()
+                        val p2 = setupConfirmPassword.trim()
+                        when {
+                            p1.length < 6 -> setupError = "Password must be at least 6 characters."
+                            p1 != p2 -> setupError = "Passwords do not match."
+                            else -> {
+                                val act = context.findActivity() ?: context
+                                onCompleteFirstRunAdminSetup(act, pendingAdminSetupUsername, p1)
+                            }
+                        }
+                    },
+                    palette = palette,
+                    enabled = !isAuthenticating,
+                    testTag = "first_run_admin_submit_button"
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissFirstRunAdminSetup) {
+                    Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -634,6 +681,7 @@ fun TotpMfaChallengeDialog(
                     label = { Text("6-Digit TOTP Code") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     singleLine = true,
+                    colors = wciOutlinedTextFieldColors(palette),
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (error) {

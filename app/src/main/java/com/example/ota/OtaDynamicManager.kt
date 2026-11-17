@@ -16,9 +16,9 @@ import kotlinx.coroutines.tasks.await
  */
 data class OtaDynamicConfig(
     val qrRefreshIntervalSeconds: Long = 15L,
-    val geofenceRadiusMeters: Float = 100.0f,
-    val instituteLatitude: Double = 28.6139,
-    val instituteLongitude: Double = 77.2090,
+    val geofenceRadiusMeters: Float = 50.0f,
+    val instituteLatitude: Double = 26.538162,
+    val instituteLongitude: Double = 80.484187,
     val examQuestionSetSize: Int = 50,
     val dynamicBannerHeadline: String = "Grow Up Computer Skill — ISO 9001:2015 Certified",
     val festivalAutoThemeEnabled: Boolean = true,
@@ -32,9 +32,9 @@ object OtaDynamicManager {
 
     private val defaultMap: Map<String, Any> = mapOf(
         "qr_refresh_interval_sec" to 15L,
-        "geofence_radius_meters" to 100.0,
-        "institute_lat" to 28.6139,
-        "institute_lng" to 77.2090,
+        "geofence_radius_meters" to 50.0,
+        "institute_lat" to 26.538162,
+        "institute_lng" to 80.484187,
         "exam_question_set_size" to 50L,
         "dynamic_banner_headline" to "Grow Up Computer Skill — ISO 9001:2015 Certified",
         "festival_auto_theme_enabled" to true,

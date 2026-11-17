@@ -28,6 +28,10 @@
 #define WCI_EXPECTED_CERT_SHA256 "2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5"
 #endif
 
+#ifndef WCI_EXPECTED_DEX_CRC32
+#define WCI_EXPECTED_DEX_CRC32 ""
+#endif
+
 #define WCI_LOG_TAG "WciNativeSecurity"
 #define WCI_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, WCI_LOG_TAG, __VA_ARGS__)
 #define WCI_LOGI(...) __android_log_print(ANDROID_LOG_INFO, WCI_LOG_TAG, __VA_ARGS__)
@@ -35,7 +39,9 @@
 namespace {
 
 static std::atomic<bool> g_tamperDetected{false};
+static std::atomic<bool> gHighSecurityExamMode{false};
 static std::atomic<uint64_t> gBaselineTextSegmentChecksum{0ULL};
+static std::atomic<uint32_t> gBaselineDexCrc32{0U};
 static std::array<char, 65> gBaselineApkDigestHex{};
 static std::atomic<bool> gBaselineApkDigestSet{false};
 
@@ -494,6 +500,10 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
         }
 
         uint16_t flags = static_cast<uint16_t>(header[6] | (header[7] << 8));
+        uint32_t entryCrc32 = static_cast<uint32_t>(header[14]) |
+                              (static_cast<uint32_t>(header[15]) << 8) |
+                              (static_cast<uint32_t>(header[16]) << 16) |
+                              (static_cast<uint32_t>(header[17]) << 24);
         uint32_t compressedSize = static_cast<uint32_t>(header[18]) |
                                   (static_cast<uint32_t>(header[19]) << 8) |
                                   (static_cast<uint32_t>(header[20]) << 16) |
@@ -510,7 +520,33 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
             raw_sys_lseek(fd, static_cast<off_t>(extraLen), SEEK_CUR);
         }
 
-        if (entryName == "classes.dex") foundClassesDex = true;
+        if (entryName == "classes.dex") {
+            foundClassesDex = true;
+            if (entryCrc32 != 0U) {
+                uint32_t expectedBaseline = 0U;
+                if (!gBaselineDexCrc32.compare_exchange_strong(expectedBaseline, entryCrc32)) {
+                    if (expectedBaseline != entryCrc32) {
+                        raw_sys_close(fd);
+                        g_tamperDetected.store(true, std::memory_order_release);
+                        return false;
+                    }
+                }
+                const char* pinnedDexHex = WCI_EXPECTED_DEX_CRC32;
+                if (!isDebuggableBuild && pinnedDexHex != nullptr && std::strlen(pinnedDexHex) == 8) {
+                    char actualDexHex[9] = {0};
+                    std::snprintf(actualDexHex, sizeof(actualDexHex), "%08x", entryCrc32);
+                    uint8_t dexDiff = 0;
+                    for (int di = 0; di < 8; ++di) {
+                        dexDiff |= static_cast<uint8_t>(actualDexHex[di] ^ pinnedDexHex[di]);
+                    }
+                    if (dexDiff != 0) {
+                        raw_sys_close(fd);
+                        g_tamperDetected.store(true, std::memory_order_release);
+                        return false;
+                    }
+                }
+            }
+        }
         if (entryName == "AndroidManifest.xml") foundManifest = true;
         if (entryName.rfind("META-INF/", 0) == 0 &&
             (entryName.ends_with(".RSA") || entryName.ends_with(".EC") ||
@@ -675,7 +711,8 @@ static void* antiTamperWatchdogLoop(void*) noexcept {
             !verifyInRamTextSegmentChecksum()) {
             g_tamperDetected.store(true, std::memory_order_release);
         }
-        for (int sec = 0; sec < 15 && gWatchdogRunning.load(std::memory_order_acquire); ++sec) {
+        const int waitSeconds = gHighSecurityExamMode.load(std::memory_order_acquire) ? 2 : 15;
+        for (int sec = 0; sec < waitSeconds && gWatchdogRunning.load(std::memory_order_acquire); ++sec) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
@@ -858,6 +895,51 @@ static jbyteArray JNICALL native_deriveTrustZoneBoundKeyMask(JNIEnv* env, jobjec
     return computeHardwareBoundKeyMask(env, hardwareSeed);
 }
 
+static void JNICALL native_setHighSecurityExamWatchdogMode(JNIEnv* /* env */, jobject /* thiz */, jboolean active) {
+    const bool enabled = (active == JNI_TRUE);
+    gHighSecurityExamMode.store(enabled, std::memory_order_release);
+    startPtraceDebuggerWatchdogThread();
+    if (enabled && (scanKernelMapsAndTracerForHooks(true) || inspectInlineHooksAndTrampolines() || !verifyInRamTextSegmentChecksum())) {
+        g_tamperDetected.store(true, std::memory_order_release);
+    }
+}
+
+static jboolean JNICALL native_isRuntimeTamperDetected(JNIEnv* /* env */, jobject /* thiz */) {
+    if (g_tamperDetected.load(std::memory_order_acquire)) {
+        return JNI_TRUE;
+    }
+    if (scanKernelMapsAndTracerForHooks(true) ||
+        inspectInlineHooksAndTrampolines() ||
+        !verifyInRamTextSegmentChecksum()) {
+        g_tamperDetected.store(true, std::memory_order_release);
+        return JNI_TRUE;
+    }
+    return JNI_FALSE;
+}
+
+static jboolean JNICALL native_verifyReleaseSigningCertPin(JNIEnv* env, jobject /* thiz */, jstring runtimeCertHexStr) {
+    if (env == nullptr || runtimeCertHexStr == nullptr) return JNI_FALSE;
+    const char* rawHex = env->GetStringUTFChars(runtimeCertHexStr, nullptr);
+    if (rawHex == nullptr) return JNI_FALSE;
+    const size_t len = std::strlen(rawHex);
+    const char* expected = WCI_EXPECTED_CERT_SHA256;
+    bool match = false;
+    if (len == 64 && expected != nullptr && std::strlen(expected) == 64) {
+        uint8_t diff = 0;
+        for (size_t i = 0; i < 64; ++i) {
+            char c = rawHex[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            diff |= static_cast<uint8_t>(c ^ expected[i]);
+        }
+        match = (diff == 0);
+    }
+    env->ReleaseStringUTFChars(runtimeCertHexStr, rawHex);
+    if (!match) {
+        g_tamperDetected.store(true, std::memory_order_release);
+    }
+    return match ? JNI_TRUE : JNI_FALSE;
+}
+
 static jstring JNICALL native_unshieldNative(JNIEnv* env, jobject /* thiz */, jbyteArray encodedBytes, jint keyMask) {
     if (env == nullptr || encodedBytes == nullptr) {
         return env != nullptr ? env->NewStringUTF("") : nullptr;
@@ -915,11 +997,14 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /* reserved */) {
         {"startDebuggerWatchdog", "()V", reinterpret_cast<void*>(native_startDebuggerWatchdog)},
         {"detectHypervisorAndEmulation", "()I", reinterpret_cast<void*>(native_detectHypervisorAndEmulation)},
         {"inspectInlineFunctionHooks", "()Z", reinterpret_cast<void*>(native_inspectInlineFunctionHooks)},
-        {"verifySelfHealingCodePolymorphism", "()Z", reinterpret_cast<void*>(native_verifySelfHealingCodePolymorphism)}
+        {"verifySelfHealingCodePolymorphism", "()Z", reinterpret_cast<void*>(native_verifySelfHealingCodePolymorphism)},
+        {"setHighSecurityExamWatchdogMode", "(Z)V", reinterpret_cast<void*>(native_setHighSecurityExamWatchdogMode)},
+        {"isRuntimeTamperDetected", "()Z", reinterpret_cast<void*>(native_isRuntimeTamperDetected)},
+        {"verifyReleaseSigningCertPin", "(Ljava/lang/String;)Z", reinterpret_cast<void*>(native_verifyReleaseSigningCertPin)}
     };
     jclass waqarBridgeCls = env->FindClass("com/waqar/institute/security/NativeSecurityBridge");
     if (waqarBridgeCls != nullptr) {
-        env->RegisterNatives(waqarBridgeCls, waqarBridgeMethods, 5);
+        env->RegisterNatives(waqarBridgeCls, waqarBridgeMethods, 8);
         env->DeleteLocalRef(waqarBridgeCls);
     } else {
         env->ExceptionClear();

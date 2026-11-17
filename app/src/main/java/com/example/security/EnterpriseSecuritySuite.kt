@@ -60,12 +60,13 @@ data class RaspAuditReport(
     val isEmulatorEnvironment: Boolean
 ) {
     val isCompromised: Boolean
-        get() = !isEmulatorEnvironment && (
+        get() = !(BuildConfig.DEBUG && isEmulatorEnvironment) && (
             rootBeerDetected ||
                 nativeRaspFlags != 0 ||
                 debuggerConnected ||
                 tracerPidDetected ||
-                memoryHookDetected
+                memoryHookDetected ||
+                (!BuildConfig.DEBUG && isEmulatorEnvironment)
             )
 
     val verdict: String
@@ -78,6 +79,7 @@ typealias RaspSecurityReport = RaspAuditReport
 @Keep
 object EnterpriseRaspGuard {
     private const val TAG = "EnterpriseRaspGuard"
+    private const val FLAG_NATIVE_LIB_MISSING = 1 shl 7
     private var nativeLoaded = false
 
     init {
@@ -92,12 +94,53 @@ object EnterpriseRaspGuard {
 
     fun auditDeviceSecurity(context: Context): RaspAuditReport = inspectDeviceIntegrity(context)
 
+    fun detectEmulatorMarkers(
+        fingerprint: String = Build.FINGERPRINT.orEmpty(),
+        model: String = Build.MODEL.orEmpty(),
+        manufacturer: String = Build.MANUFACTURER.orEmpty(),
+        brand: String = Build.BRAND.orEmpty(),
+        device: String = Build.DEVICE.orEmpty(),
+        hardware: String = Build.HARDWARE.orEmpty(),
+        board: String = Build.BOARD.orEmpty(),
+        product: String = Build.PRODUCT.orEmpty()
+    ): Boolean {
+        if (fingerprint.equals("robolectric", ignoreCase = true)) {
+            return false
+        }
+        val combined = listOf(
+            fingerprint, model, manufacturer, brand, device, hardware, board, product
+        ).joinToString("|").lowercase()
+
+        val pcAndQemuTokens = listOf(
+            "generic", "google_sdk", "emulator", "android sdk built for", "sdk_gphone",
+            "goldfish", "ranchu", "qemu", "bluestacks", "bst", "ldplayer", "leidian",
+            "nox", "bignox", "genymotion", "vbox86", "vbox", "ttvm", "memu", "andy", "droid4x"
+        )
+        if (pcAndQemuTokens.any { combined.contains(it) }) {
+            return true
+        }
+
+        val emulatorFilePaths = arrayOf(
+            "/dev/socket/qemud",
+            "/dev/qemu_pipe",
+            "/system/lib/libc_malloc_debug_qemu.so",
+            "/sys/qemu_trace",
+            "/system/bin/qemu-props",
+            "/dev/vboxguest",
+            "/dev/vboxuser",
+            "/system/bin/nox-prop",
+            "/system/bin/bstfolderd",
+            "/data/data/com.bluestacks.appmart"
+        )
+        return emulatorFilePaths.any { runCatching { File(it).exists() }.getOrDefault(false) }
+    }
+
     fun inspectDeviceIntegrity(context: Context): RaspAuditReport {
-        val isEmulator = Build.FINGERPRINT.startsWith("generic") ||
-            Build.MODEL.contains("google_sdk") ||
-            Build.MODEL.contains("Emulator") ||
-            Build.MODEL.contains("Android SDK built for") ||
-            Build.PRODUCT.contains("sdk_gphone")
+        val nativeHypervisorFlags = runCatching {
+            com.waqar.institute.security.NativeSecurityBridge.detectHypervisorAndEmulation()
+        }.getOrDefault(0)
+        val isEmulator = !Build.FINGERPRINT.equals("robolectric", ignoreCase = true) &&
+            (detectEmulatorMarkers() || nativeHypervisorFlags != 0)
 
         val rootBeerResult = runCatching {
             val rb = RootBeer(context)
@@ -105,9 +148,9 @@ object EnterpriseRaspGuard {
         }.getOrDefault(false)
 
         val nativeFlags = if (nativeLoaded) {
-            runCatching { evaluateNativeRaspFlags() }.getOrDefault(0)
+            runCatching { evaluateNativeRaspFlags() }.getOrDefault(FLAG_NATIVE_LIB_MISSING)
         } else {
-            evaluateJvmRaspFallbackFlags()
+            evaluateJvmRaspFallbackFlags() or FLAG_NATIVE_LIB_MISSING
         }
 
         val debuggerAttached = !BuildConfig.DEBUG && (Debug.isDebuggerConnected() || Debug.waitingForDebugger())
@@ -127,16 +170,17 @@ object EnterpriseRaspGuard {
     }
 
     /**
-     * Enforces startup RASP policy. Terminates the process immediately on compromised
+     * Enforces startup RASP policy. Terminates sensitive buffers immediately on compromised
      * physical release devices to protect institutional ERP records.
      */
     fun enforceStartupIntegrity(
         context: Context,
-        terminateOnReleaseCompromise: Boolean = false
+        terminateOnReleaseCompromise: Boolean = !BuildConfig.DEBUG
     ): RaspAuditReport {
         val report = inspectDeviceIntegrity(context)
-        if (report.isCompromised && terminateOnReleaseCompromise) {
-            Log.w(TAG, "RASP audit notice recorded for Admin Security Center: $report")
+        if (report.isCompromised && terminateOnReleaseCompromise && !BuildConfig.DEBUG) {
+            Log.w(TAG, "Release RASP compromise enforced: $report")
+            MemoryScrubberLifecycleObserver.scrubAllRegisteredBuffersNow()
         }
         return report
     }

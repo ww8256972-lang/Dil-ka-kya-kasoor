@@ -164,13 +164,14 @@ object Argon2CredentialHasher {
                 val hash12kHex = skf.generateSecret(spec12k).encoded.joinToString("") { "%02x".format(it) }
                 spec12k.clearPassword()
                 val match12k = MessageDigest.isEqual(targetBytes, hash12kHex.toByteArray(Charsets.UTF_8))
-
-                val spec65k = PBEKeySpec(passwordChars, saltBytes, LEGACY_PBKDF2_ITERATIONS, LEGACY_PBKDF2_BITS)
-                val hash65kHex = skf.generateSecret(spec65k).encoded.joinToString("") { "%02x".format(it) }
-                spec65k.clearPassword()
-                val match65k = MessageDigest.isEqual(targetBytes, hash65kHex.toByteArray(Charsets.UTF_8))
-
-                match12k || match65k
+                if (match12k) {
+                    true
+                } else {
+                    val spec65k = PBEKeySpec(passwordChars, saltBytes, LEGACY_PBKDF2_ITERATIONS, LEGACY_PBKDF2_BITS)
+                    val hash65kHex = skf.generateSecret(spec65k).encoded.joinToString("") { "%02x".format(it) }
+                    spec65k.clearPassword()
+                    MessageDigest.isEqual(targetBytes, hash65kHex.toByteArray(Charsets.UTF_8))
+                }
             }.getOrDefault(false)
             verifiedDigestCache[cacheKey] = matched
             return matched

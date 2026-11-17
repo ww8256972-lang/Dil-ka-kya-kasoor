@@ -111,8 +111,8 @@ fun CodingSandboxScreen(
             item {
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFF450A0A),
-                    border = BorderStroke(2.dp, Color(0xFFEF4444)),
+                    color = WciColors.SandboxDangerBg,
+                    border = BorderStroke(2.dp, WciColors.ScannerRed),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("coding_sandbox_revoked_banner")
@@ -125,14 +125,14 @@ fun CodingSandboxScreen(
                         Icon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = "Coding Access Revoked",
-                            tint = Color(0xFFFCA5A5),
+                            tint = WciColors.BiometricCoralAlert,
                             modifier = Modifier.size(32.dp)
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = state.securityLockoutBanner
                                     ?: CodingSandboxUiState.PERMANENT_REVOCATION_BANNER,
-                                color = Color(0xFFFEE2E2),
+                                color = WciColors.SandboxDangerText,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 14.sp,
                                 lineHeight = 19.sp
@@ -140,7 +140,7 @@ fun CodingSandboxScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "Brahmastra Sandbox Intrusion Prevention System • Incident logged to Firestore Audit Trail",
-                                color = Color(0xFFFCA5A5),
+                                color = WciColors.BiometricCoralAlert,
                                 fontFamily = JetBrainsMono,
                                 fontSize = 11.sp
                             )
@@ -164,14 +164,14 @@ fun CodingSandboxScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "कोडिंग, टेस्टिंग और लर्निंग स्किल",
+                            text = "Coding, Testing & Learning Lab",
                             style = MaterialTheme.typography.titleLarge.copy(
                                 color = WciColors.textPrimary,
                                 fontWeight = FontWeight.ExtraBold
                             )
                         )
                         Text(
-                            text = "100% Offline Coding Lab • Python 3 • JavaScript • HTML5/CSS3 • 3s Watchdog & AST Security Shield",
+                            text = "100% Offline Coding Lab • Python Evaluator • JavaScript Evaluator • HTML5/CSS3 • 3s Watchdog & AST Security Shield",
                             style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                         )
                     }
@@ -316,7 +316,7 @@ fun CodingSandboxScreen(
                         textStyle = TextStyle(
                             fontFamily = JetBrainsMono,
                             fontSize = 13.sp,
-                            color = Color(0xFFE2E8F0),
+                            color = WciColors.SlateTrack,
                             lineHeight = 19.sp
                         ),
                         modifier = Modifier
@@ -328,9 +328,9 @@ fun CodingSandboxScreen(
                             focusedBorderColor = palette.start,
                             unfocusedBorderColor = WciColors.GlassBorderLight,
                             disabledBorderColor = WciColors.Danger.copy(alpha = 0.6f),
-                            focusedContainerColor = Color(0xFF090D16),
-                            unfocusedContainerColor = Color(0xFF090D16),
-                            disabledContainerColor = Color(0xFF1A0B0E)
+                            focusedContainerColor = WciColors.SandboxEditorBg,
+                            unfocusedContainerColor = WciColors.SandboxEditorBg,
+                            disabledContainerColor = WciColors.SandboxEditorDisabledBg
                         )
                     )
 
@@ -406,19 +406,19 @@ fun CodingSandboxScreen(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFFEF4444))
+                                    .background(WciColors.ScannerRed)
                             )
                             Box(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFFF59E0B))
+                                    .background(WciColors.AmberWarm)
                             )
                             Box(
                                 modifier = Modifier
                                     .size(10.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF22C55E))
+                                    .background(WciColors.ScannerGreen)
                             )
                         }
                     }
@@ -446,7 +446,7 @@ fun CodingSandboxScreen(
 
                     Box(
                         modifier = frameModifier
-                            .background(Color(0xFF050811))
+                            .background(WciColors.SandboxTerminalBg)
                             .padding(12.dp)
                     ) {
                         if (state.selectedLanguage == SandboxLanguage.HTML_CSS_JS && !state.codingAccessLocked) {
@@ -466,7 +466,7 @@ fun CodingSandboxScreen(
                                     text = "$ wci-sandbox --offline --watchdog=3000ms",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontFamily = JetBrainsMono,
-                                        color = Color(0xFF38BDF8)
+                                        color = WciColors.Warning
                                     )
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -475,9 +475,9 @@ fun CodingSandboxScreen(
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFamily = JetBrainsMono,
                                         color = if (state.codingAccessLocked) {
-                                            Color(0xFFFCA5A5)
+                                            WciColors.BiometricCoralAlert
                                         } else {
-                                            Color(0xFFA7F3D0)
+                                            WciColors.MintTextSoft
                                         },
                                         lineHeight = 18.sp
                                     ),

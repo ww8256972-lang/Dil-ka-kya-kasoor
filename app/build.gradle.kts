@@ -24,6 +24,19 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+    val expectedCertSha256 = (
+      System.getenv("EXPECTED_CERT_SHA256")?.takeIf { it.isNotBlank() }
+        ?: project.findProperty("EXPECTED_CERT_SHA256")?.toString()?.takeIf { it.isNotBlank() }
+        ?: "2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5"
+      ).replace(":", "").lowercase()
+    buildConfigField("String", "EXPECTED_RELEASE_CERT_SHA256", "\"$expectedCertSha256\"")
+
+    val expectedDexCrc32 = (
+      System.getenv("EXPECTED_DEX_CRC32")?.takeIf { it.isNotBlank() }
+        ?: project.findProperty("EXPECTED_DEX_CRC32")?.toString()?.takeIf { it.isNotBlank() }
+        ?: ""
+      ).trim().lowercase().let { if (it == "unset" || it == "auto_baseline") "" else it }
+
     ndk {
       abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
     }
@@ -33,7 +46,8 @@ android {
         cppFlags("-std=c++20 -fvisibility=hidden -fvisibility-inlines-hidden -ffunction-sections -fdata-sections -fstack-protector-strong -O2")
         arguments(
           "-DANDROID_STL=c++_shared",
-          "-DWCI_EXPECTED_CERT_SHA256=\"2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5\""
+          "-DWCI_EXPECTED_CERT_SHA256=\"$expectedCertSha256\"",
+          "-DWCI_EXPECTED_DEX_CRC32=\"$expectedDexCrc32\""
         )
       }
     }
@@ -85,8 +99,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
-      isShrinkResources = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -167,7 +181,6 @@ dependencies {
   implementation(libs.androidx.credentials)
   implementation(libs.androidx.credentials.play.services)
   implementation(libs.googleid)
-  implementation(libs.firebase.appcheck.recaptcha)
   implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
@@ -181,7 +194,6 @@ dependencies {
   implementation(libs.mlkit.face.detection)
   implementation(libs.mlkit.barcode.scanning)
   implementation(libs.google.play.integrity)
-  implementation(libs.google.recaptcha)
 
   // Enterprise Security & Performance Libraries (9-Library Blueprint):
   implementation(libs.google.tink.android)

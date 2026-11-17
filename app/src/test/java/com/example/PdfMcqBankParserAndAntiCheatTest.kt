@@ -20,10 +20,14 @@ import java.nio.charset.StandardCharsets
 @Config(sdk = [34])
 class PdfMcqBankParserAndAntiCheatTest {
 
+    @org.junit.Before
     @After
     fun cleanupAntiCheatState() {
         ActiveExamAntiCheatGuard.clearActiveExamSession("stu_test_1")
         ActiveExamAntiCheatGuard.clearActiveExamSession("stu_test_2")
+        ActiveExamAntiCheatGuard.clearActiveExamSession("stu_samaf")
+        ActiveExamAntiCheatGuard.clearActiveExamSession("stu_mb_01")
+        ActiveExamAntiCheatGuard.clearActiveExamSession("stu_sec_01")
     }
 
     @Test
@@ -278,7 +282,7 @@ class PdfMcqBankParserAndAntiCheatTest {
                 "Expected M25_CODING_SANDBOX in drawer for $role",
                 allowed.any {
                     it.routeId == com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX &&
-                        it.title == "कोडिंग, टेस्टिंग और लर्निंग स्किल"
+                        it.title == "Coding, Testing & Learning Lab"
                 }
             )
         }
@@ -452,11 +456,71 @@ class PdfMcqBankParserAndAntiCheatTest {
             matchOutcome is com.waqar.institute.biometric.AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched
         )
 
-        // 3. Verify "एडमिन कन्वर्जन (Admin Conversion)" route is in Admin Portal drawer only
+        // 3. Verify "Admin Conversion" route is in Admin Portal drawer only
         val adminRoutes = com.example.ui.portal.allowedDrawerDestinationsForRole(PortalRole.ADMIN).map { it.routeId }
         val studentRoutes = com.example.ui.portal.allowedDrawerDestinationsForRole(PortalRole.STUDENT).map { it.routeId }
         assertTrue(adminRoutes.contains(com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ROUTE_ADMIN_CONVERSION))
         org.junit.Assert.assertFalse(studentRoutes.contains(com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ROUTE_ADMIN_CONVERSION))
+    }
+
+    @Test
+    fun verifyCertificateRollMapping_examCleanup_and_instantLocalCredentialLookup() {
+        // 1. Certificate Data Mapping: Student Name -> studentName, Roll No -> certificateOrRollNo
+        val student = com.example.data.model.StudentRecord(
+            id = "stu_samaf",
+            enrollmentNo = "WCI-2026-7048",
+            fullName = "Samaf Khan",
+            courseName = "ADCA (Advanced Diploma in Computer Applications)",
+            status = "GRADUATED"
+        )
+        val certModel = com.waqar.institute.certificate.CertificateGeneratorViewModel.buildAutoFilledCertificate(
+            student = student,
+            issuedCert = null,
+            courses = emptyList(),
+            examResults = emptyList()
+        )
+        assertEquals("Samaf Khan", certModel.studentName)
+        assertEquals("WCI-2026-7048", certModel.certificateOrRollNo)
+
+        // 2. Exam Portal Cleanup: empty questionsJson returns emptyList() (no hardcoded dummy questions)
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val examRepo = com.example.exam.ExamRepository(
+            context = context,
+            instituteRepository = com.example.data.firestore.InstituteRepository.create(context)
+        )
+        val emptyExam = com.example.data.model.ExamRecord(
+            id = "exm_clean_1",
+            title = "Empty Scheduled Exam",
+            courseName = "ADCA",
+            questionsJson = "[]"
+        )
+        val generatedPaper = examRepo.generateShuffledPaperForExam(
+            studentId = "stu_samaf",
+            exam = emptyExam
+        )
+        assertTrue("Expected empty question list when exam has no database questions", generatedPaper.isEmpty())
+
+        // 3. Instant Local Credential Cache Lookup (<5ms) by Username and Enrollment No
+        val cred = com.example.data.model.PortalCredential(
+            username = "samaf_wci",
+            passwordHash = "hash",
+            role = "student",
+            displayName = "Samaf Khan",
+            linkedEntityId = "stu_samaf",
+            active = true
+        )
+        com.example.data.firestore.InstituteRepository.localCredentialsCache["samaf_wci"] = cred
+        com.example.data.firestore.InstituteRepository.localStudentsCache["stu_samaf"] = student
+
+        val startNs = System.nanoTime()
+        val byUsername = com.example.data.firestore.InstituteRepository.getCachedCredentialLocally("samaf_wci")
+        val byRollNo = com.example.data.firestore.InstituteRepository.getCachedCredentialLocally("WCI-2026-7048")
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+
+        org.junit.Assert.assertNotNull("Expected instant match by username", byUsername)
+        org.junit.Assert.assertNotNull("Expected instant match by student roll number", byRollNo)
+        assertEquals("samaf_wci", byRollNo?.username)
+        assertTrue("Expected sub-15ms local credential resolution, took ${elapsedMs}ms", elapsedMs < 15L)
     }
 }
 

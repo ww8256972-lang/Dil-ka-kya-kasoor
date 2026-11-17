@@ -238,7 +238,7 @@ class CertificateGeneratorViewModel : ViewModel() {
             return AutoFilledCertificateModel(
                 studentId = student?.id ?: issuedCert?.studentId ?: "stu_verified",
                 studentName = studentName,
-                certificateOrRollNo = "$serialNo / $enrollmentNo",
+                certificateOrRollNo = enrollmentNo,
                 serialNo = serialNo,
                 courseTitle = courseTitle,
                 durationMonthsRequired = requiredMonths,
@@ -284,7 +284,7 @@ fun WaqarOfficialDynamicCertificateCard(
 
     GlassCard(
         modifier = modifier.fillMaxWidth(),
-        glowColor = if (model.isUnlocked) Color(0xFF14F195) else Color(0xFFFFB547),
+        glowColor = if (model.isUnlocked) WciColors.Success else WciColors.CertAmber,
         strongSurface = true
     ) {
         // 1. Lock / Unlock Status Header Bar
@@ -361,7 +361,7 @@ fun WaqarOfficialDynamicCertificateCard(
                 .fillMaxWidth()
                 .aspectRatio(1.414f)
                 .clip(RoundedCornerShape(14.dp))
-                .border(2.dp, Color(0xFFD4AF37), RoundedCornerShape(14.dp))
+                .border(2.dp, WciColors.CertGold, RoundedCornerShape(14.dp))
                 .background(Color.White)
         ) {
             val w = maxWidth
@@ -382,99 +382,99 @@ fun WaqarOfficialDynamicCertificateCard(
                 )
 
                 // Auto-Filled Dynamic Fields Positioned Precisely on the Certificate Lines
-                // Field 1: Student Name (y = 46.8%, x = 31.5%..82%)
+                // Field 1: Student Name (strictly aligned with "Student Name:" row)
                 Text(
                     text = model.studentName,
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (11.5f * scaleFactor).sp,
                     fontWeight = FontWeight.ExtraBold,
                     fontFamily = FontFamily.Serif,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .offset(x = w * 0.315f, y = h * 0.463f)
-                        .width(w * 0.50f)
+                        .offset(x = w * 0.345f, y = h * 0.415f)
+                        .width(w * 0.47f)
                 )
 
-                // Field 2: Certificate / Roll No. (y = 51.8%, x = 35.5%..82%)
+                // Field 2: Certificate / Roll No. (strictly aligned with "Certificate / Roll No.:" row)
                 Text(
                     text = model.certificateOrRollNo,
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (9.5f * scaleFactor).sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = JetBrainsMono,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .offset(x = w * 0.355f, y = h * 0.514f)
+                        .offset(x = w * 0.355f, y = h * 0.463f)
                         .width(w * 0.46f)
                 )
 
-                // Field 3: Course Title (y = 56.8%, x = 31.5%..82%)
+                // Field 3: Course Title (strictly aligned with "Course Title:" row)
                 Text(
                     text = model.courseTitle,
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (10f * scaleFactor).sp,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .offset(x = w * 0.315f, y = h * 0.564f)
-                        .width(w * 0.50f)
+                        .offset(x = w * 0.345f, y = h * 0.512f)
+                        .width(w * 0.47f)
                 )
 
-                // Field 4a: Duration From (y = 61.8%, x = 36%..59%)
+                // Field 4a: Duration From (strictly aligned with "Duration / Period: From" row)
                 Text(
                     text = model.durationFrom,
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (9.2f * scaleFactor).sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     modifier = Modifier
-                        .offset(x = w * 0.365f, y = h * 0.614f)
-                        .width(w * 0.22f)
+                        .offset(x = w * 0.380f, y = h * 0.558f)
+                        .width(w * 0.21f)
                 )
 
-                // Field 4b: Duration To (y = 61.8%, x = 64.5%..82%)
+                // Field 4b: Duration To (strictly aligned with "To" column on Duration row)
                 Text(
                     text = "${model.durationTo} (${model.durationMonthsRequired}M)",
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (9.2f * scaleFactor).sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     modifier = Modifier
-                        .offset(x = w * 0.642f, y = h * 0.614f)
-                        .width(w * 0.20f)
+                        .offset(x = w * 0.625f, y = h * 0.558f)
+                        .width(w * 0.21f)
                 )
 
-                // Field 5: Grade / Percentage (y = 66.8%, x = 36%..82%)
+                // Field 5: Grade / Percentage (strictly aligned with "Grade / Percentage:" row)
                 Text(
                     text = model.gradeAndPercentageLabel,
-                    color = Color(0xFF0A5C36),
+                    color = WciColors.CertEmerald,
                     fontSize = (10f * scaleFactor).sp,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
                     modifier = Modifier
-                        .offset(x = w * 0.362f, y = h * 0.663f)
+                        .offset(x = w * 0.362f, y = h * 0.606f)
                         .width(w * 0.45f)
                 )
 
-                // Field 6: Date of Issue (y = 71.8%, x = 36%..82%)
+                // Field 6: Date of Issue (strictly aligned with "Date of Issue:" row)
                 Text(
                     text = model.dateOfIssue,
-                    color = Color(0xFF0A1D4E),
+                    color = WciColors.CertNavy,
                     fontSize = (9.5f * scaleFactor).sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     modifier = Modifier
-                        .offset(x = w * 0.362f, y = h * 0.713f)
+                        .offset(x = w * 0.362f, y = h * 0.654f)
                         .width(w * 0.45f)
                 )
 
                 // Field 7: Student's Signature (bottom left line: x = 15%..35%, y = 86.2%)
                 Text(
                     text = model.studentSignatureText,
-                    color = Color(0xFF1A365D),
+                    color = WciColors.CertNavySecondary,
                     fontSize = (10.5f * scaleFactor).sp,
                     fontStyle = FontStyle.Italic,
                     fontWeight = FontWeight.Bold,
@@ -491,7 +491,7 @@ fun WaqarOfficialDynamicCertificateCard(
                     modifier = Modifier
                         .offset(x = w * 0.76f, y = h * 0.14f)
                         .background(Color.White, RoundedCornerShape(6.dp))
-                        .border(1.dp, Color(0xFFD4AF37), RoundedCornerShape(6.dp))
+                        .border(1.dp, WciColors.CertGold, RoundedCornerShape(6.dp))
                         .padding(3.dp)
                 ) {
                     Image(
@@ -501,7 +501,7 @@ fun WaqarOfficialDynamicCertificateCard(
                     )
                     Text(
                         text = "SCAN TO VERIFY",
-                        color = Color(0xFF0A1D4E),
+                        color = WciColors.CertNavy,
                         fontSize = (5.5f * scaleFactor).sp,
                         fontWeight = FontWeight.ExtraBold,
                         fontFamily = JetBrainsMono
@@ -514,7 +514,7 @@ fun WaqarOfficialDynamicCertificateCard(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color(0xCC070B1E)),
+                        .background(WciColors.CertBannerOverlay),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -574,7 +574,7 @@ fun WaqarOfficialDynamicCertificateCard(
                         .size(64.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color.White)
-                        .border(1.5.dp, Color(0xFFD4AF37), RoundedCornerShape(8.dp))
+                        .border(1.5.dp, WciColors.CertGold, RoundedCornerShape(8.dp))
                         .padding(4.dp)
                 )
                 Column(modifier = Modifier.weight(1f)) {

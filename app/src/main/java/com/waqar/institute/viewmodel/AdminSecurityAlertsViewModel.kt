@@ -61,4 +61,25 @@ class AdminSecurityAlertsViewModel(
             violationDetails = details
         )
     }
+
+    /** Diagnostic self-test alias for Admin Telemetry Verification Drill. */
+    fun runTelemetryDiagnosticDrill(
+        context: Context,
+        actorUid: String,
+        username: String,
+        fullName: String,
+        phone: String,
+        studentId: String,
+        violationType: String,
+        details: String
+    ) = triggerSimulatedOrLiveSecurityAuditAlert(
+        context = context,
+        actorUid = actorUid,
+        username = username,
+        fullName = fullName,
+        phone = phone,
+        studentId = studentId,
+        violationType = violationType,
+        details = details
+    )
 }

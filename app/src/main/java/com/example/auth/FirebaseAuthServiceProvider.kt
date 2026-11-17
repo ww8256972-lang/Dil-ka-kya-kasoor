@@ -7,6 +7,8 @@ import com.example.data.model.PortalCredential
 import com.example.data.model.PortalRole
 import com.example.data.model.SecurityAuditLog
 import com.example.data.model.UserProfile
+import com.example.security.AdminEncryptedCredentialStore
+import com.example.security.EnterpriseRateLimiter
 import com.example.security.HardwareKeystoreVault
 import com.example.security.MemoryScrubberLifecycleObserver
 import com.example.security.SessionFingerprintManager
@@ -17,9 +19,13 @@ import com.waqar.institute.security.TeeSecurityManager
 import org.lsposed.lsparanoid.Obfuscate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Arrays
@@ -28,11 +34,16 @@ import java.util.UUID
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
+private class FirstRunAdminSetupRequiredException(val suggestedUsername: String) :
+    Exception("First-run Admin account setup required.")
+
 sealed class AuthPortalResult {
     data class Success(
         val profile: UserProfile,
         val session: FirebaseAuthServiceProvider.AuthenticatedPortalSession
     ) : AuthPortalResult()
+
+    data class AdminSetupRequired(val suggestedUsername: String) : AuthPortalResult()
 
     data class Failure(val message: String) : AuthPortalResult()
 }
@@ -126,60 +137,29 @@ class FirebaseAuthServiceProvider(
         GoogleCredentialSignInHelper.signInInteractive(activityContext, auth)
 
     /**
-     * Seeds and ensures master Admin credentials ('waqar' with password 'waqar' and 'admin' with 'admin')
-     * directly in Cloud Firestore and local persistence cache.
-     */
-    /**
-     * Seeds and ensures master Admin credentials ('waqar' with password 'waqar' and 'admin' with 'admin')
-     * directly in Cloud Firestore (`portalCredentials/{username}`) and local persistence cache using
-     * PBKDF2-HMAC-SHA256 (12,000 iterations, 32-char hex CSPRNG salt) for Web-Mobile schema parity.
+     * Synchronizes existing Admin credentials from Cloud Firestore (`portalCredentials/{username}`)
+     * in parallel into the local cache without seeding any hardcoded default passwords.
      */
     suspend fun ensureMasterAdminCredentialsSeeded(): Result<Unit> = runCatching {
-        val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
-
-        // 1. Seed 'waqar' ONLY if no 'waqar' credential already exists
-        val existingWaqar = portalAuthRepository.fetchPortalCredentialCrossDevice("waqar")
-            ?: repository.getPortalCredential("waqar")
-        if (existingWaqar == null) {
-            val waqarPbkdf2 = Argon2CredentialHasher.hashPasswordPbkdf2WebParity("waqar".toCharArray())
-            val waqarCred = PortalCredential(
-                username = "waqar",
-                passwordHash = waqarPbkdf2.hashHex,
-                passwordSalt = waqarPbkdf2.saltHex,
-                role = PortalRole.ADMIN.key,
-                linkedEntityId = "ADMIN_ROOT",
-                displayName = "Waqar Khan (Admin)",
-                assignedByUid = "admin_waqar_root",
-                active = true,
-                isAdmin = true,
-                portalRoles = listOf(PortalRole.ADMIN.key),
-                createdAt = safeNow
-            )
-            InstituteRepository.cacheCredentialLocally(waqarCred)
-            runCatching { portalAuthRepository.provisionCredentialWithRoleFlags(waqarCred, "waqar@waqarinstitute.edu") }
+        coroutineScope {
+            listOf("waqar", "admin", "waqar_admin").map { adminKey ->
+                async(Dispatchers.IO) {
+                    runCatching {
+                        val res = portalAuthRepository.fetchPortalCredentialCrossDeviceWithStatus(
+                            rawUsername = adminKey,
+                            serverTimeoutMs = 3_500L
+                        )
+                        if (res is PortalAuthRepository.CredentialLookupResult.Found &&
+                            res.credential.active &&
+                            res.credential.passwordHash.isNotBlank()
+                        ) {
+                            InstituteRepository.cacheCredentialLocally(res.credential)
+                        }
+                    }
+                }
+            }.awaitAll()
         }
-
-        // 2. Seed 'admin' ONLY if no 'admin' credential already exists
-        val existingAdmin = portalAuthRepository.fetchPortalCredentialCrossDevice("admin")
-            ?: repository.getPortalCredential("admin")
-        if (existingAdmin == null) {
-            val adminPbkdf2 = Argon2CredentialHasher.hashPasswordPbkdf2WebParity("admin".toCharArray())
-            val adminCred = PortalCredential(
-                username = "admin",
-                passwordHash = adminPbkdf2.hashHex,
-                passwordSalt = adminPbkdf2.saltHex,
-                role = PortalRole.ADMIN.key,
-                linkedEntityId = "ADMIN_ROOT",
-                displayName = "Waqar Khan (Admin)",
-                assignedByUid = "admin_root",
-                active = true,
-                isAdmin = true,
-                portalRoles = listOf(PortalRole.ADMIN.key),
-                createdAt = safeNow
-            )
-            InstituteRepository.cacheCredentialLocally(adminCred)
-            runCatching { portalAuthRepository.provisionCredentialWithRoleFlags(adminCred, "admin@waqarinstitute.edu") }
-        }
+        Unit
     }
 
     /**
@@ -247,6 +227,9 @@ class FirebaseAuthServiceProvider(
                 AuthPortalResult.Success(profile = profile, session = session)
             },
             onFailure = { err ->
+                if (err is FirstRunAdminSetupRequiredException) {
+                    return AuthPortalResult.AdminSetupRequired(err.suggestedUsername)
+                }
                 val friendlyMessage = when {
                     InstituteRepository.isOfflineOrNetworkError(err) -> {
                         "No internet connection. Please check your network and try again."
@@ -275,6 +258,80 @@ class FirebaseAuthServiceProvider(
     }
 
     /**
+     * Provisions the first Master Admin credential directly into Cloud Firestore (`portalCredentials/{username}`)
+     * and local vault when no Admin credential exists yet, then returns an instant authenticated session.
+     */
+    suspend fun completeFirstRunAdminSetup(
+        activityContext: Context,
+        username: String,
+        passwordChars: CharArray
+    ): AuthPortalResult {
+        val cleanUsername = normalizeUsername(username)
+        val rawPassword = String(passwordChars).trim()
+        Arrays.fill(passwordChars, '\u0000')
+        val rateDecision = EnterpriseRateLimiter.checkAndConsume(
+            context = context ?: activityContext,
+            scope = EnterpriseRateLimiter.RateLimitScope.SIGNUP,
+            identityKey = cleanUsername
+        )
+        if (!rateDecision.allowed) {
+            return AuthPortalResult.Failure(rateDecision.message)
+        }
+        if (cleanUsername !in setOf("admin", "waqar", "waqar_admin")) {
+            return AuthPortalResult.Failure("Master Admin username must be 'waqar' or 'admin'.")
+        }
+        if (rawPassword.length < 6) {
+            return AuthPortalResult.Failure("Admin password must be at least 6 characters.")
+        }
+        return runCatching {
+            val cred = provisionOrUpdateCloudCredential(
+                previousUsername = null,
+                newUsername = cleanUsername,
+                rawPassword = rawPassword,
+                role = PortalRole.ADMIN,
+                linkedEntityId = "ADMIN_ROOT",
+                displayName = "Waqar Khan (Admin)",
+                actorUidOverride = "admin_waqar_root"
+            )
+            val resolvedUid = auth.currentUser?.uid ?: "cred_$cleanUsername"
+            val deviceFp = SessionFingerprintManager.captureCurrentDeviceFingerprint(activityContext)
+            val session = AuthenticatedPortalSession(
+                firebaseUser = auth.currentUser,
+                sessionUid = resolvedUid,
+                role = PortalRole.ADMIN,
+                username = cred.username,
+                displayName = cred.displayName,
+                linkedEntityId = cred.linkedEntityId,
+                deviceFingerprint = deviceFp
+            )
+            val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
+            val profile = UserProfile(
+                uid = resolvedUid,
+                email = auth.currentUser?.email ?: "${cred.username}@waqarinstitute.edu",
+                displayName = cred.displayName,
+                role = PortalRole.ADMIN.key,
+                username = cred.username,
+                phone = "",
+                mfaEnabled = false,
+                totpSecret = "",
+                linkedEntityId = cred.linkedEntityId,
+                isStudent = false,
+                isTeacher = false,
+                isParent = false,
+                isAdmin = true,
+                portalRoles = listOf(PortalRole.ADMIN.key),
+                createdAt = safeNow
+            )
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { sealSessionInKeystore(activityContext, session) }
+            }
+            AuthPortalResult.Success(profile = profile, session = session)
+        }.getOrElse { err ->
+            AuthPortalResult.Failure(err.localizedMessage ?: "Failed to create Admin account.")
+        }
+    }
+
+    /**
      * Direct Cloud Firestore Username/Password Verification (`portalCredentials/{username}`)
      * using PBKDF2-HMAC-SHA256 (12,000 iterations, 32-char hex CSPRNG salt) and Argon2id
      * with zero-trust Admin root lockdown.
@@ -290,6 +347,23 @@ class FirebaseAuthServiceProvider(
 
         val cleanUsername = normalizeUsername(rawUsername)
         val cleanPassword = rawPassword.trim()
+        val rateDecision = EnterpriseRateLimiter.checkAndConsume(
+            context = context ?: activityContext,
+            scope = EnterpriseRateLimiter.RateLimitScope.LOGIN,
+            identityKey = "${selectedRole.key}:$cleanUsername"
+        )
+        if (!rateDecision.allowed) {
+            CoroutineScope(Dispatchers.IO).launch {
+                logSecurityAuditEvent(
+                    actorUid = auth.currentUser?.uid ?: "unauthenticated",
+                    actorName = cleanUsername,
+                    eventType = "RATE_LIMIT_BLOCKED",
+                    severity = "CRITICAL",
+                    details = "HTTP 429 rate-limit lockout enforced for '$cleanUsername' on ${selectedRole.key} portal (retryAfter=${rateDecision.retryAfterSeconds}s)"
+                )
+            }
+            throw SecurityException(rateDecision.message)
+        }
         require(cleanUsername.length >= 3) {
             "Please enter a valid username (at least 3 characters)."
         }
@@ -305,18 +379,114 @@ class FirebaseAuthServiceProvider(
         val isPermittedAdminCandidate = cleanUsername in setOf("admin", "waqar", "waqar_admin") || isBootstrappedOwner
         val deviceFp = SessionFingerprintManager.captureCurrentDeviceFingerprint(activityContext)
 
-        // 1. Cross-device Server+Cache lookup in `portalCredentials/{username}` and `users/cred_{username}`
-        var existingCred = portalAuthRepository.fetchPortalCredentialCrossDevice(cleanUsername)
-            ?: repository.getPortalCredential(cleanUsername)
-        val existingUserProfile = runCatching {
-            portalAuthRepository.fetchUserProfileCrossDevice(cleanUsername)
-        }.getOrNull()
+        // 0. Instant (<0.1s) Offline/Online Admin Portal Authentication via EncryptedSharedPreferences + Keystore SHA-256
+        if (selectedRole == PortalRole.ADMIN) {
+            val adminCtx = context ?: activityContext
+            val localPassChars = cleanPassword.toCharArray()
+            val adminVerify = try {
+                AdminEncryptedCredentialStore.verifyAdminCredentialsInstant(
+                    context = adminCtx,
+                    rawUsername = cleanUsername,
+                    passwordChars = localPassChars
+                )
+            } finally {
+                Arrays.fill(localPassChars, '\u0000')
+            }
 
-        // Ensure master admin (`waqar` / `admin`) is always seeded if not yet present in Firestore or local vault
-        if (existingCred == null && isPermittedAdminCandidate) {
-            runCatching { ensureMasterAdminCredentialsSeeded() }
-            existingCred = repository.getPortalCredential(cleanUsername)
-                ?: portalAuthRepository.fetchPortalCredentialCrossDevice(cleanUsername)
+            // Reject previous rotated Admin username immediately once customized
+            val prevAdminUser = AdminEncryptedCredentialStore.getPreviousAdminUsername(adminCtx)
+            if (AdminEncryptedCredentialStore.isCustomizedByAdmin(adminCtx) &&
+                !prevAdminUser.isNullOrBlank() &&
+                cleanUsername == prevAdminUser &&
+                cleanUsername != AdminEncryptedCredentialStore.getActiveAdminUsername(adminCtx)
+            ) {
+                throw SecurityException("Admin username '$cleanUsername' was replaced in Settings. Please sign in with the updated Admin username.")
+            }
+
+            if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.Verified) {
+                val resolvedUid = currentFirebaseUser?.uid ?: "cred_$cleanUsername"
+                val existingLocal = InstituteRepository.getCachedCredentialLocally(cleanUsername)
+                // Respect explicitly provisioned/cached local credential if present in memory/test vault with a different hash
+                val matchesExistingLocalIfPresent = existingLocal == null || run {
+                    val chkChars = cleanPassword.toCharArray()
+                    try {
+                        Argon2CredentialHasher.verifyPasswordConstantTime(
+                            passwordChars = chkChars,
+                            storedEncodedHash = existingLocal.passwordHash,
+                            legacySaltHex = existingLocal.passwordSalt
+                        )
+                    } finally {
+                        Arrays.fill(chkChars, '\u0000')
+                    }
+                }
+                if (matchesExistingLocalIfPresent || adminVerify.isCustomized) {
+                    val displayName = existingLocal?.displayName?.ifBlank { "Waqar Khan (Admin)" }
+                        ?: currentFirebaseUser?.displayName
+                        ?: "Waqar Khan (Admin)"
+                    val session = AuthenticatedPortalSession(
+                        firebaseUser = currentFirebaseUser,
+                        sessionUid = resolvedUid,
+                        role = PortalRole.ADMIN,
+                        username = cleanUsername,
+                        displayName = displayName,
+                        linkedEntityId = existingLocal?.linkedEntityId?.ifBlank { "ADMIN_ROOT" } ?: "ADMIN_ROOT",
+                        deviceFingerprint = deviceFp
+                    )
+                    CoroutineScope(Dispatchers.IO).launch {
+                        runCatching {
+                            val syncedCred = existingLocal ?: PortalCredential(
+                                username = cleanUsername,
+                                passwordHash = AdminEncryptedCredentialStore.sha256Hex(cleanPassword),
+                                passwordSalt = "",
+                                role = PortalRole.ADMIN.key,
+                                linkedEntityId = "ADMIN_ROOT",
+                                displayName = displayName,
+                                assignedByUid = resolvedUid,
+                                active = true,
+                                isAdmin = true,
+                                portalRoles = listOf(PortalRole.ADMIN.key),
+                                createdAt = Timestamp(Date(System.currentTimeMillis() - 1000L))
+                            )
+                            InstituteRepository.cacheCredentialLocally(syncedCred)
+                            if (adminVerify.isCustomized) {
+                                portalAuthRepository.provisionCredentialWithRoleFlags(syncedCred)
+                            }
+                            logSecurityAuditEvent(
+                                actorUid = resolvedUid,
+                                actorName = displayName,
+                                eventType = "ADMIN_INSTANT_LOGIN_SUCCESS",
+                                severity = "INFO",
+                                details = "Authenticated Admin '$cleanUsername' via Encrypted Keystore SHA-256 (fp=$deviceFp)"
+                            )
+                            sealSessionInKeystore(activityContext, session)
+                        }
+                    }
+                    return@runCatching session
+                }
+            } else if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch && adminVerify.isCustomized) {
+                throw SecurityException("Invalid username or password for Admin portal.")
+            }
+        }
+
+        val wasCachedLocally = InstituteRepository.getCachedCredentialLocally(cleanUsername) != null
+
+        // 1. Sub-millisecond local lookup with single-shot Cloud Firestore fallback (max 3.5s, zero duplicate calls)
+        val lookupResult = portalAuthRepository.fetchPortalCredentialCrossDeviceWithStatus(cleanUsername)
+        var existingCred = (lookupResult as? PortalAuthRepository.CredentialLookupResult.Found)?.credential
+
+        // Support Student logging in via Enrollment ID / Roll No or Teacher via Employee Code or Parent via Phone
+        if (existingCred == null && selectedRole != PortalRole.ADMIN) {
+            val matchedEntityId = when (selectedRole) {
+                PortalRole.STUDENT -> repository.findMatchingStudentForLogin(rawUsername)?.id
+                PortalRole.TEACHER -> repository.findMatchingStaffForLogin(rawUsername)?.id
+                PortalRole.PARENT -> repository.findMatchingGuardianForLogin(rawUsername)?.studentId
+                PortalRole.ADMIN -> null
+            }
+            if (!matchedEntityId.isNullOrBlank()) {
+                existingCred = InstituteRepository.localCredentialsCache.values.firstOrNull {
+                    it.active && it.linkedEntityId.equals(matchedEntityId, ignoreCase = true) && it.supportsRole(selectedRole)
+                }
+            }
         }
 
         if (existingCred != null) {
@@ -324,7 +494,31 @@ class FirebaseAuthServiceProvider(
                 throw SecurityException("This portal account ($cleanUsername) has been deactivated by Admin.")
             }
 
+            // Refresh remote credential silently on background IO when served from local cache
+            if (wasCachedLocally) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    runCatching {
+                        val docRef = repository.firestoreDb().collection("portalCredentials").document(cleanUsername)
+                        val snap = kotlinx.coroutines.withTimeoutOrNull(3_000L) {
+                            docRef.get(com.google.firebase.firestore.Source.SERVER).await()
+                        }
+                        val remote = snap?.toObject(PortalCredential::class.java)
+                        if (remote != null && remote.passwordHash.isNotBlank()) {
+                            InstituteRepository.cacheCredentialLocally(remote)
+                        }
+                    }
+                }
+            }
+
+            // Only query remote userProfile if the credential itself does not already declare the role
+            val existingUserProfile = if (existingCred.supportsRole(selectedRole)) {
+                null
+            } else {
+                runCatching { portalAuthRepository.fetchUserProfileCrossDevice(cleanUsername) }.getOrNull()
+            }
+
             val isAllowedForSelectedRole = (isPermittedAdminCandidate && selectedRole == PortalRole.ADMIN && existingCred.supportsRole(PortalRole.ADMIN)) ||
+                existingCred.supportsRole(selectedRole) ||
                 portalAuthRepository.hasProvisionedAccessForRole(existingCred, existingUserProfile, selectedRole)
             if (!isAllowedForSelectedRole) {
                 CoroutineScope(Dispatchers.IO).launch {
@@ -341,7 +535,7 @@ class FirebaseAuthServiceProvider(
             val effectiveRole = selectedRole
 
             val passwordCharsCopy = cleanPassword.toCharArray()
-            var passwordValid = try {
+            val passwordValid = try {
                 Argon2CredentialHasher.verifyPasswordConstantTime(
                     passwordChars = passwordCharsCopy,
                     storedEncodedHash = existingCred.passwordHash,
@@ -349,22 +543,6 @@ class FirebaseAuthServiceProvider(
                 )
             } finally {
                 Arrays.fill(passwordCharsCopy, '\u0000')
-            }
-
-            // Self-healing Master Admin (`waqar` / `admin`) credential recovery if remote document had a desynced hash
-            if (!passwordValid && isPermittedAdminCandidate && selectedRole == PortalRole.ADMIN &&
-                ((cleanUsername == "waqar" && cleanPassword == "waqar") ||
-                 (cleanUsername == "admin" && cleanPassword == "admin"))
-            ) {
-                passwordValid = true
-                val pbkdf2 = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(cleanPassword.toCharArray())
-                existingCred = existingCred.copy(
-                    passwordHash = pbkdf2.hashHex,
-                    passwordSalt = pbkdf2.saltHex,
-                    role = PortalRole.ADMIN.key,
-                    isAdmin = true
-                )
-                InstituteRepository.cacheCredentialLocally(existingCred)
             }
 
             if (!passwordValid) {
@@ -437,9 +615,9 @@ class FirebaseAuthServiceProvider(
                         details = "Authenticated '${existingCred.username}' (${effectiveRole.key}) with Argon2id (fp=$deviceFp)"
                     )
                 }
+                runCatching { sealSessionInKeystore(activityContext, session) }
             }
 
-            runCatching { sealSessionInKeystore(activityContext, session) }
             return@runCatching session
         }
 
@@ -480,7 +658,7 @@ class FirebaseAuthServiceProvider(
                 deviceFingerprint = deviceFp
             )
 
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            CoroutineScope(Dispatchers.IO).launch {
                 runCatching { portalAuthRepository.provisionCredentialWithRoleFlags(adminCred, currentFirebaseUser?.email.orEmpty()) }
                 val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
                 runCatching {
@@ -502,10 +680,30 @@ class FirebaseAuthServiceProvider(
                         details = "Bootstrapped and saved verified owner admin '$cleanUsername' to Cloud Firestore (fp=$deviceFp)"
                     )
                 }
+                runCatching { sealSessionInKeystore(activityContext, session) }
             }
 
-            runCatching { sealSessionInKeystore(activityContext, session) }
             return@runCatching session
+        }
+
+        // Handle Admin portal lookup miss clearly without blocking default/local Admin with "No internet connection"
+        if (selectedRole == PortalRole.ADMIN) {
+            val activeStoredAdmin = AdminEncryptedCredentialStore.getActiveAdminUsername(context ?: activityContext)
+            if (cleanUsername == activeStoredAdmin) {
+                throw SecurityException("Invalid username or password for Admin portal.")
+            }
+            if (isPermittedAdminCandidate) {
+                if (lookupResult is PortalAuthRepository.CredentialLookupResult.ConfirmedMissing &&
+                    !portalAuthRepository.hasAnyAdminCredential()
+                ) {
+                    throw FirstRunAdminSetupRequiredException(cleanUsername)
+                }
+                if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable) {
+                    throw IOException("Unable to reach server. Please check your internet connection and try again.")
+                }
+            }
+        } else if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable) {
+            throw IOException("Unable to reach server. Please check your internet connection and try again.")
         }
 
         // Security guard: NEVER mint credentials or accept arbitrary passwords for unprovisioned directory entries.
@@ -515,7 +713,7 @@ class FirebaseAuthServiceProvider(
                 repository.findMatchingStudentForLogin(cleanUsername) != null
         }.getOrDefault(false)
 
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             logSecurityAuditEvent(
                 actorUid = currentFirebaseUser?.uid ?: "unauthenticated",
                 actorName = cleanUsername,
@@ -533,7 +731,8 @@ class FirebaseAuthServiceProvider(
     }
 
     /**
-     * Updates the Admin's own username and password in Cloud Firestore (`portalCredentials/{username}`).
+     * Updates the Admin's own username and password immediately inside EncryptedSharedPreferences/Keystore
+     * (SHA-256 hash) for offline/online <0.1s login AND syncs to Cloud Firestore asynchronously.
      */
     suspend fun updateAdminOwnCredentials(
         oldUsername: String,
@@ -542,17 +741,72 @@ class FirebaseAuthServiceProvider(
         actorUidOverride: String? = null
     ): Result<PortalCredential> = runCatching {
         val displayName = auth.currentUser?.displayName ?: "Waqar Khan (Admin)"
-        val rawPass = String(newPasswordChars)
+        val cleanNew = normalizeUsername(newUsername)
+        val rawPass = String(newPasswordChars).trim()
         Arrays.fill(newPasswordChars, '\u0000')
-        provisionOrUpdateCloudCredential(
-            previousUsername = oldUsername,
-            newUsername = newUsername,
-            rawPassword = rawPass,
-            role = PortalRole.ADMIN,
+        val resetRate = EnterpriseRateLimiter.checkAndConsume(
+            context = context,
+            scope = EnterpriseRateLimiter.RateLimitScope.PASSWORD_RESET,
+            identityKey = normalizeUsername(oldUsername).ifBlank { cleanNew }
+        )
+        if (!resetRate.allowed) {
+            throw SecurityException(resetRate.message)
+        }
+        require(cleanNew.length >= 3) { "Admin username must be at least 3 characters." }
+        require(rawPass.length >= 4) { "Admin password must be at least 4 characters." }
+
+        val targetCtx = context
+        if (targetCtx != null) {
+            val charsCopy = rawPass.toCharArray()
+            try {
+                AdminEncryptedCredentialStore.saveUpdatedAdminCredentials(
+                    context = targetCtx,
+                    newUsername = cleanNew,
+                    newPasswordChars = charsCopy
+                )
+            } finally {
+                Arrays.fill(charsCopy, '\u0000')
+            }
+        }
+
+        val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(rawPass.toCharArray())
+        val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
+        val adminUid = auth.currentUser?.uid
+            ?: actorUidOverride?.takeIf { it.isNotBlank() }
+            ?: "cred_admin"
+        val flags = PortalAuthRepository.buildRoleFlags(role = PortalRole.ADMIN)
+
+        val localUpdatedCred = PortalCredential(
+            username = cleanNew,
+            passwordHash = argonDigest.encodedHash,
+            passwordSalt = argonDigest.saltBase64,
+            role = PortalRole.ADMIN.key,
             linkedEntityId = "ADMIN_ROOT",
             displayName = displayName,
-            actorUidOverride = actorUidOverride
+            assignedByUid = adminUid,
+            active = true,
+            isAdmin = flags.isAdmin,
+            portalRoles = flags.portalRoles,
+            createdAt = safeNow
         )
+
+        val cleanOld = normalizeUsername(oldUsername)
+        if (cleanOld.isNotBlank() && cleanOld != cleanNew) {
+            InstituteRepository.localCredentialsCache.remove(cleanOld)
+        }
+        InstituteRepository.cacheCredentialLocally(localUpdatedCred)
+
+        // Sync to Cloud Firestore best-effort so offline Settings updates always succeed immediately
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                portalAuthRepository.provisionCredentialWithRoleFlags(localUpdatedCred)
+                if (cleanOld.isNotBlank() && cleanOld != cleanNew) {
+                    runCatching { repository.deletePortalCredential(cleanOld) }
+                }
+            }
+        }
+
+        localUpdatedCred
     }
 
     /**

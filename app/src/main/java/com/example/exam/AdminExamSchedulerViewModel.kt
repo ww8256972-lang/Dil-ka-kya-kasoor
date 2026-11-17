@@ -60,7 +60,7 @@ class AdminExamSchedulerViewModel(
                 _state.value = _state.value.copy(
                     isScheduling = false,
                     lastScheduledExam = exam,
-                    statusMessage = "Scheduled '${exam.title}' (${exam.durationMinutes} mins, 50 Shuffled MCQs from 156-Question Pool)"
+                    statusMessage = "Scheduled '${exam.title}' (${exam.durationMinutes} mins) — attach PDF/MCQ bank to publish question paper"
                 )
             }.onFailure { err ->
                 _state.value = _state.value.copy(

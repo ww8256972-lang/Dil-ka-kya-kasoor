@@ -133,7 +133,7 @@ object FaceBiometricVerificationEngine {
             runCatching {
                 val detector = FaceDetection.getClient(highPrecisionOptions)
                 val faces = detector.process(InputImage.fromBitmap(bitmap, 0)).await()
-                faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+                faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it, context) }
             }.getOrNull()?.takeIf { isValidEmbeddingVector(it) }
         }
 
@@ -397,7 +397,7 @@ object FaceBiometricVerificationEngine {
                     runCatching {
                         val detector = FaceDetection.getClient(highPrecisionOptions)
                         val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
-                        faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+                        faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it, context) }
                     }.getOrNull()
                 }
                 if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
@@ -417,7 +417,7 @@ object FaceBiometricVerificationEngine {
                 runCatching {
                     val detector = FaceDetection.getClient(highPrecisionOptions)
                     val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
-                    faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it) }
+                    faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it, context) }
                 }.getOrNull()
             }
             if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
@@ -538,7 +538,7 @@ object FaceBiometricVerificationEngine {
             }
 
             val livenessScore = ((leftEye + rightEye) * 0.5f).coerceIn(0f, 1f)
-            val liveEmbedding = extract128DFacialEmbedding(face)
+            val liveEmbedding = extract128DFacialEmbedding(face, context)
             val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
             evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
         } catch (e: Exception) {
@@ -548,7 +548,7 @@ object FaceBiometricVerificationEngine {
 
     /**
      * Verifies a pre-detected ML Kit Face object directly from CameraX stream.
-     * Strictly fail-closed when enrollment is missing, corrupted, or unavailable.
+     * Strictly fail-closed when enrollment or facial landmarks are missing, corrupted, or unavailable.
      */
     suspend fun verifyTeacherLiveFaceWithFaceObject(
         teacherUid: String,
@@ -581,7 +581,7 @@ object FaceBiometricVerificationEngine {
                 )
             }
 
-            val liveEmbedding = extract128DFacialEmbedding(face)
+            val liveEmbedding = extract128DFacialEmbedding(face, context)
             val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
             evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
         } catch (e: Exception) {
@@ -714,8 +714,7 @@ object FaceBiometricVerificationEngine {
                     "Blink liveness confidence too low (${(livenessScore * 100).toInt()}%). Look naturally at the camera."
                 )
             }
-
-            val liveEmbedding = extract128DFacialEmbedding(face)
+            val liveEmbedding = extract128DFacialEmbedding(face, context)
             when (val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)) {
                 is EnrollmentLookupResult.Missing -> {
                     enrollTeacherFirstTimeLiveBlinkEmbedding(
@@ -733,82 +732,53 @@ object FaceBiometricVerificationEngine {
         }
     }
 
+    const val MOBILEFACENET_MODEL_ASSET = "mobilefacenet.tflite"
+
+    fun isNeuralModelAssetAvailable(context: android.content.Context?): Boolean {
+        val ctx = context?.applicationContext ?: context ?: return false
+        return runCatching {
+            ctx.assets.open(MOBILEFACENET_MODEL_ASSET).use { stream ->
+                stream.available() > 0
+            }
+        }.getOrDefault(false)
+    }
+
     /**
-     * Extracts a scale-invariant 128-dimensional facial geometry & contour ratio vector from ML Kit Face.
+     * Extracts an L2-normalized 128-dimensional facial geometry embedding using ML Kit
+     * facial contours (FACE, NOSE_BRIDGE, UPPER_LIP_TOP) with deterministic landmark fallback
+     * when contours are unavailable on fast-mode frames.
      */
-    fun extract128DFacialEmbedding(face: Face): FloatArray {
+    fun extract128DFacialEmbedding(face: Face, context: android.content.Context? = null): FloatArray {
         val raw = FloatArray(EMBEDDING_DIMENSION)
         val bounds = face.boundingBox
         val w = bounds.width().toFloat().coerceAtLeast(1f)
         val h = bounds.height().toFloat().coerceAtLeast(1f)
         val cx = bounds.exactCenterX()
         val cy = bounds.exactCenterY()
-
-        val landmarkTypes = intArrayOf(
-            FaceLandmark.LEFT_EYE,
-            FaceLandmark.RIGHT_EYE,
-            FaceLandmark.NOSE_BASE,
-            FaceLandmark.MOUTH_LEFT,
-            FaceLandmark.MOUTH_RIGHT,
-            FaceLandmark.MOUTH_BOTTOM,
-            FaceLandmark.LEFT_CHEEK,
-            FaceLandmark.RIGHT_CHEEK,
-            FaceLandmark.LEFT_EAR,
-            FaceLandmark.RIGHT_EAR
-        )
-
-        var idx = 0
-        // 1. Normalized landmark coordinates & radial distances (30 features)
-        for (type in landmarkTypes) {
-            val pt = face.getLandmark(type)?.position
-            if (pt != null && idx + 2 < EMBEDDING_DIMENSION) {
-                val nx = (pt.x - cx) / w
-                val ny = (pt.y - cy) / h
-                raw[idx++] = nx
-                raw[idx++] = ny
-                raw[idx++] = hypot(nx, ny)
-            } else if (idx + 2 < EMBEDDING_DIMENSION) {
-                raw[idx++] = 0.25f
-                raw[idx++] = 0.25f
-                raw[idx++] = 0.35f
-            }
-        }
-
-        // 2. Pairwise inter-landmark Euclidean ratios (45 features)
-        for (i in landmarkTypes.indices) {
-            for (j in (i + 1) until landmarkTypes.size) {
-                if (idx >= EMBEDDING_DIMENSION) break
-                val p1 = face.getLandmark(landmarkTypes[i])?.position
-                val p2 = face.getLandmark(landmarkTypes[j])?.position
-                raw[idx++] = if (p1 != null && p2 != null) {
-                    hypot((p1.x - p2.x) / w, (p1.y - p2.y) / h)
-                } else {
-                    0.42f
-                }
-            }
-        }
-
-        // 3. Facial contour points (FACE, NOSE_BRIDGE, UPPER_LIP_TOP) up to 128-D
         val contourPoints = buildList {
             face.getContour(FaceContour.FACE)?.points?.let { addAll(it) }
             face.getContour(FaceContour.NOSE_BRIDGE)?.points?.let { addAll(it) }
             face.getContour(FaceContour.UPPER_LIP_TOP)?.points?.let { addAll(it) }
         }
-
-        var cIdx = 0
-        while (idx < EMBEDDING_DIMENSION) {
-            if (cIdx < contourPoints.size) {
-                val pt = contourPoints[cIdx++]
-                raw[idx++] = (pt.x - cx) / w
-                if (idx < EMBEDDING_DIMENSION) {
-                    raw[idx++] = (pt.y - cy) / h
-                }
-            } else {
-                raw[idx] = ((idx % 17) + 1) * 0.03125f
-                idx++
-            }
+        val featurePoints = if (contourPoints.isNotEmpty()) {
+            contourPoints
+        } else {
+            listOfNotNull(
+                face.getLandmark(FaceLandmark.LEFT_EYE)?.position,
+                face.getLandmark(FaceLandmark.RIGHT_EYE)?.position,
+                face.getLandmark(FaceLandmark.NOSE_BASE)?.position,
+                face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position,
+                face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position,
+                face.getLandmark(FaceLandmark.LEFT_CHEEK)?.position,
+                face.getLandmark(FaceLandmark.RIGHT_CHEEK)?.position,
+                face.getLandmark(FaceLandmark.MOUTH_BOTTOM)?.position
+            )
         }
-
+        if (featurePoints.isEmpty()) return FloatArray(0)
+        for (i in 0 until EMBEDDING_DIMENSION) {
+            val pt = featurePoints[i % featurePoints.size]
+            raw[i] = if (i % 2 == 0) (pt.x - cx) / w else (pt.y - cy) / h
+        }
         return runCatching { nativeNormalizeEmbedding(raw) }.getOrElse {
             var sumSq = 0.0
             for (v in raw) sumSq += v * v

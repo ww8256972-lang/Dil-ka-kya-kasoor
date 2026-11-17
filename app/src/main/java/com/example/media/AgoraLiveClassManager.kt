@@ -65,9 +65,9 @@ object AgoraLiveClassManager {
     private const val DEFAULT_TOKEN_PLACEHOLDER = "AGORA_TEMP_TOKEN_DEFAULT_VALUE"
 
     fun resolvedAgoraAppId(): String =
-        BuildConfig.AGORA_APP_ID.trim().let {
-            if (it == DEFAULT_APP_ID_PLACEHOLDER) "" else it
-        }
+        BuildConfig.AGORA_APP_ID.trim().takeIf {
+            it.isNotEmpty() && it != DEFAULT_APP_ID_PLACEHOLDER
+        }.orEmpty()
 
     fun resolvedAgoraToken(): String? =
         BuildConfig.AGORA_TEMP_TOKEN.trim().takeIf {
@@ -81,8 +81,8 @@ object AgoraLiveClassManager {
         eventHandler: IRtcEngineEventHandler
     ): Result<RtcEngine> = runCatching {
         val appId = resolvedAgoraAppId()
-        require(appId.isNotEmpty()) {
-            "AGORA_APP_ID is empty. Configure AGORA_APP_ID in the AI Studio Secrets panel."
+        require(appId.isNotBlank()) {
+            "Agora App ID (BuildConfig.AGORA_APP_ID) is not configured."
         }
         val config = RtcEngineConfig().apply {
             mContext = context.applicationContext ?: context
@@ -127,22 +127,14 @@ fun AgoraLiveVideoClassroomRoom(
         )
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { perms ->
-        hasAvPermissions = perms[Manifest.permission.CAMERA] == true &&
-            perms[Manifest.permission.RECORD_AUDIO] == true
-    }
-
     var isJoined by remember(channelId) { mutableStateOf(false) }
-    var isAudioMuted by remember { mutableStateOf(!isHostRole) }
-    var isVideoMuted by remember { mutableStateOf(!isHostRole) }
+    var isConnecting by remember(channelId) { mutableStateOf(false) }
+    var connectionErrorMessage by remember(channelId) { mutableStateOf<String?>(null) }
+    var isAudioMuted by remember { mutableStateOf(false) }
+    var isVideoMuted by remember { mutableStateOf(false) }
     var remoteUid by remember(channelId) { mutableStateOf<Int?>(null) }
     var statusText by remember(channelId) {
-        mutableStateOf(
-            if (AgoraLiveClassManager.isConfigured()) "Ready to join Live Video Room ($channelId)"
-            else "Agora App ID not configured yet — add AGORA_APP_ID in AI Studio Secrets"
-        )
+        mutableStateOf("Ready to join Live Video Room ($channelId)")
     }
 
     var rtcEngine by remember(channelId) { mutableStateOf<RtcEngine?>(null) }
@@ -154,6 +146,8 @@ fun AgoraLiveVideoClassroomRoom(
             override fun onJoinChannelSuccess(channel: String?, uid: Int, elapsed: Int) {
                 mainExecutor.execute {
                     isJoined = true
+                    isConnecting = false
+                    connectionErrorMessage = null
                     statusText = "Connected Live • Channel: ${channel ?: channelId} (UID $uid)"
                 }
             }
@@ -182,55 +176,80 @@ fun AgoraLiveVideoClassroomRoom(
 
             override fun onError(err: Int) {
                 mainExecutor.execute {
-                    statusText = "Agora RTC Notice (Code $err) — verify AGORA_APP_ID / Token"
+                    isJoined = false
+                    isConnecting = false
+                    connectionErrorMessage = "Agora RTC connection error (Code $err). Verify network or token configuration."
+                    statusText = "Connection failed (Agora Error $err) • Channel: $channelId"
                 }
             }
         }
     }
 
     fun startOrJoinChannel() {
-        if (!hasAvPermissions) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
+        if (!hasAvPermissions) return
+        isJoined = false
+        isConnecting = true
+        connectionErrorMessage = null
+        isVideoMuted = false
+        statusText = "Connecting to Agora RTC Channel ($channelId)…"
+
+        val engineResult = rtcEngine?.let { Result.success(it) }
+            ?: AgoraLiveClassManager.createEngineSafely(context, rtcEventHandler)
+                .onSuccess { rtcEngine = it }
+
+        val engine = engineResult.getOrElse { err ->
+            isJoined = false
+            isConnecting = false
+            connectionErrorMessage = err.localizedMessage ?: "Unable to initialize Agora RTC Engine."
+            statusText = "Engine initialization failed: ${connectionErrorMessage.orEmpty()}"
             return
         }
-        val appId = AgoraLiveClassManager.resolvedAgoraAppId()
-        if (appId.isEmpty()) {
-            statusText = "Configure AGORA_APP_ID in AI Studio Secrets panel to start real Agora video stream."
-            return
-        }
 
-        val engine = rtcEngine ?: AgoraLiveClassManager.createEngineSafely(context, rtcEventHandler)
-            .onFailure { err ->
-                statusText = "Agora init error: ${err.localizedMessage ?: "SDK unavailable"}"
-            }
-            .getOrNull()
-            ?.also { rtcEngine = it }
-            ?: return
-
-        val clientRole = if (isHostRole) Constants.CLIENT_ROLE_BROADCASTER else Constants.CLIENT_ROLE_AUDIENCE
-        engine.setClientRole(clientRole)
-
-        if (!isVideoMuted || isHostRole) {
+        runCatching {
+            val clientRole = if (isHostRole) Constants.CLIENT_ROLE_BROADCASTER else Constants.CLIENT_ROLE_AUDIENCE
+            engine.setClientRole(clientRole)
             engine.setupLocalVideo(VideoCanvas(localTextureView, VideoCanvas.RENDER_MODE_HIDDEN, 0))
             engine.startPreview()
-        }
-        engine.muteLocalAudioStream(isAudioMuted)
-        engine.muteLocalVideoStream(isVideoMuted)
+            engine.muteLocalAudioStream(isAudioMuted)
+            engine.muteLocalVideoStream(isVideoMuted)
 
-        val token = AgoraLiveClassManager.resolvedAgoraToken()
-        val options = ChannelMediaOptions().apply {
-            channelProfile = Constants.CHANNEL_PROFILE_LIVE_BROADCASTING
-            clientRoleType = clientRole
-            autoSubscribeAudio = true
-            autoSubscribeVideo = true
-            publishCameraTrack = isHostRole && !isVideoMuted
-            publishMicrophoneTrack = isHostRole && !isAudioMuted
+            val token = AgoraLiveClassManager.resolvedAgoraToken()
+            val options = ChannelMediaOptions().apply {
+                channelProfile = Constants.CHANNEL_PROFILE_LIVE_BROADCASTING
+                clientRoleType = clientRole
+                autoSubscribeAudio = true
+                autoSubscribeVideo = true
+                publishCameraTrack = !isVideoMuted
+                publishMicrophoneTrack = !isAudioMuted
+            }
+            val joinCode = engine.joinChannel(token, channelId.ifBlank { "wci_live_class" }, 0, options)
+            if (joinCode < 0) {
+                isJoined = false
+                isConnecting = false
+                connectionErrorMessage = "Agora joinChannel returned error code $joinCode."
+                statusText = "Failed to join channel ($joinCode)"
+            }
+        }.onFailure { err ->
+            isJoined = false
+            isConnecting = false
+            connectionErrorMessage = err.localizedMessage ?: "Failed to join Agora channel."
+            statusText = "Connection error: ${connectionErrorMessage.orEmpty()}"
         }
-        val rc = engine.joinChannel(token, channelId.ifBlank { "wci_live_class" }, 0, options)
-        if (rc == 0) {
-            statusText = "Joining live video classroom $channelId..."
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms[Manifest.permission.CAMERA] == true &&
+            perms[Manifest.permission.RECORD_AUDIO] == true
+        hasAvPermissions = granted
+        if (granted) {
+            startOrJoinChannel()
         } else {
-            statusText = "Could not join channel (code $rc). Check AGORA_APP_ID / Token."
+            isJoined = false
+            isConnecting = false
+            connectionErrorMessage = "Camera and Microphone permissions are required for live video classes."
+            statusText = "Permissions denied for Live Video Classroom"
         }
     }
 
@@ -240,6 +259,7 @@ fun AgoraLiveVideoClassroomRoom(
             rtcEngine?.leaveChannel()
         }
         isJoined = false
+        isConnecting = false
         remoteUid = null
         statusText = "Left live video room"
     }
@@ -289,7 +309,7 @@ fun AgoraLiveVideoClassroomRoom(
 
     GlassCard(
         modifier = modifier.fillMaxWidth(),
-        glowColor = Color(0xFFFF4D79),
+        glowColor = WciColors.Danger,
         strongSurface = true
     ) {
         Row(
@@ -316,18 +336,31 @@ fun AgoraLiveVideoClassroomRoom(
             Box(
                 modifier = Modifier
                     .background(
-                        color = if (isJoined) WciColors.Success.copy(alpha = 0.2f) else WciColors.Warning.copy(alpha = 0.2f),
+                        color = when {
+                            isJoined -> WciColors.Success.copy(alpha = 0.2f)
+                            connectionErrorMessage != null -> WciColors.Danger.copy(alpha = 0.2f)
+                            else -> WciColors.Warning.copy(alpha = 0.2f)
+                        },
                         shape = RoundedCornerShape(999.dp)
                     )
                     .border(
                         width = 1.dp,
-                        color = if (isJoined) WciColors.Success else WciColors.Warning,
+                        color = when {
+                            isJoined -> WciColors.Success
+                            connectionErrorMessage != null -> WciColors.Danger
+                            else -> WciColors.Warning
+                        },
                         shape = RoundedCornerShape(999.dp)
                     )
                     .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = if (isJoined) "LIVE" else "STANDBY",
+                    text = when {
+                        isJoined -> "LIVE"
+                        isConnecting -> "CONNECTING"
+                        connectionErrorMessage != null -> "ERROR"
+                        else -> "STANDBY"
+                    },
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = JetBrainsMono,
                         color = Color.White,
@@ -344,7 +377,7 @@ fun AgoraLiveVideoClassroomRoom(
                 .fillMaxWidth()
                 .height(220.dp)
                 .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFF0A1026))
+                .background(WciColors.BgPrimaryDark)
                 .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(16.dp)),
             contentAlignment = Alignment.Center
         ) {
@@ -385,7 +418,7 @@ fun AgoraLiveVideoClassroomRoom(
                         .padding(8.dp)
                         .size(width = 96.dp, height = 128.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .border(1.5.dp, Color(0xFF00E5FF), RoundedCornerShape(12.dp))
+                        .border(1.5.dp, WciColors.Info, RoundedCornerShape(12.dp))
                 ) {
                     AndroidView(
                         factory = { localTextureView },
@@ -403,6 +436,32 @@ fun AgoraLiveVideoClassroomRoom(
                 color = if (isJoined) WciColors.Success else WciColors.TextMutedDark
             )
         )
+
+        connectionErrorMessage?.let { errMsg ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(WciColors.Danger.copy(alpha = 0.16f), RoundedCornerShape(12.dp))
+                    .border(1.dp, WciColors.Danger.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = errMsg,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                )
+                ShimmerButton(
+                    text = "Retry Connection",
+                    icon = Icons.Default.Videocam,
+                    onClick = { startOrJoinChannel() },
+                    modifier = Modifier.fillMaxWidth().testTag("agora_retry_connection_button")
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.height(10.dp))
 

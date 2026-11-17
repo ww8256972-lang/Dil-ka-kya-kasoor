@@ -4,10 +4,10 @@ import com.google.firebase.Timestamp
 import com.google.firebase.firestore.PropertyName
 
 enum class PortalRole(val key: String, val label: String, val hindiLabel: String) {
-    ADMIN("admin", "Admin", "एडमिन (Owner)"),
-    STUDENT("student", "Student", "छात्र (Student)"),
-    TEACHER("teacher", "Teacher", "शिक्षक (Faculty)"),
-    PARENT("parent", "Parent", "अभिभावक (Parent)");
+    ADMIN("admin", "Admin", "Admin (Owner)"),
+    STUDENT("student", "Student", "Student"),
+    TEACHER("teacher", "Teacher", "Teacher (Faculty)"),
+    PARENT("parent", "Parent", "Parent (Guardian)");
 
     companion object {
         fun fromKey(key: String): PortalRole =

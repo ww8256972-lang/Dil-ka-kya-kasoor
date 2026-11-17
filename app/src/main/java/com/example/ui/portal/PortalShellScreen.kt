@@ -55,8 +55,8 @@ data class ModuleDestination(
     val shortLabel: String,
     val category: String,
     val icon: ImageVector,
-    val accentStart: Color = Color(0xFF00E5FF),
-    val accentEnd: Color = Color(0xFFA855F7)
+    val accentStart: Color = WciColors.Info,
+    val accentEnd: Color = WciColors.PurpleVibrant
 )
 
 object PortalModuleDestination {
@@ -64,40 +64,41 @@ object PortalModuleDestination {
 }
 
 val AllDrawerDestinations = listOf(
-    ModuleDestination("M01_DASHBOARD", "Director Dashboard", "Home", "Core", Icons.Default.Dashboard, Color(0xFFA855F7), Color(0xFFEC4899)),
-    ModuleDestination("M03_STUDENTS", "Student Directory & 360°", "Students", "People", Icons.Default.School, Color(0xFF00E5FF), Color(0xFF3B82F6)),
-    ModuleDestination("M04_ADMISSIONS", "Admissions & Enquiry CRM", "CRM", "People", Icons.Default.SupportAgent, Color(0xFF38BDF8), Color(0xFF6366F1)),
-    ModuleDestination("M05_COURSES", "Courses & Curriculum", "Courses", "Academics", Icons.AutoMirrored.Filled.MenuBook, Color(0xFF10F596), Color(0xFF06B6D4)),
-    ModuleDestination("M06_BATCHES", "Batches & Lab Timetable", "Batches", "Academics", Icons.Default.Schedule, Color(0xFF14F195), Color(0xFF3B82F6)),
-    ModuleDestination("M07_ATTENDANCE", "Attendance & QR Roll-Call", "Attendance", "Academics", Icons.Default.QrCodeScanner, Color(0xFF10F596), Color(0xFF00C6FF)),
-    ModuleDestination("M08_FEES", "Fees, Invoices & GST Receipts", "Fees", "Finance", Icons.AutoMirrored.Filled.ReceiptLong, Color(0xFFFF5894), Color(0xFF8B5CF6)),
-    ModuleDestination("M09_LEDGER", "Accounts & Expense Ledger", "Ledger", "Finance", Icons.Default.AccountBalanceWallet, Color(0xFFFF6B8B), Color(0xFFFF9F43)),
-    ModuleDestination("M10_EXAMS", "Online Exams & CBT Engine", "Exams", "Assessment", Icons.Default.Quiz, Color(0xFF818CF8), Color(0xFFE879F9)),
-    ModuleDestination("M11_RESULTS", "Mark Sheets & Rank Cards", "Results", "Assessment", Icons.Default.EmojiEvents, Color(0xFFA855F7), Color(0xFF00E5FF)),
-    ModuleDestination("M12_MATERIALS", "Study Material & LMS", "Learn", "Academics", Icons.AutoMirrored.Filled.LibraryBooks, Color(0xFF00E5FF), Color(0xFF10F596)),
-    ModuleDestination("M13_CERTIFICATES", "QR Certificates & IDs", "Certificates", "Assessment", Icons.Default.WorkspacePremium, Color(0xFFE879F9), Color(0xFF6366F1)),
-    ModuleDestination(PortalModuleDestination.M13_STAFF, "Faculty & Staff Directory", "Faculty HR", "People", Icons.Default.Badge, Color(0xFF00E5FF), Color(0xFF10F596)),
-    ModuleDestination("M14_PAYROLL", "Staff HR & Monthly Payroll", "Payroll", "People", Icons.Default.Payments, Color(0xFF10F596), Color(0xFFA855F7)),
-    ModuleDestination("M15_PARENTS", "Parent & PTM Records", "PTM Notes", "People", Icons.Default.FamilyRestroom, Color(0xFFFF6B8B), Color(0xFFA855F7)),
-    ModuleDestination("M16_ANNOUNCEMENTS", "Notices & Broadcasts", "Inbox", "Comms", Icons.Default.Campaign, Color(0xFF38BDF8), Color(0xFFA855F7)),
-    ModuleDestination("M17_LIVE_CLASSES", "Live Classes & Lab Polls", "Live", "Comms", Icons.Default.Videocam, Color(0xFFFF4D79), Color(0xFF8B5CF6)),
-    ModuleDestination("M18_AI_HUB", "Waqar Computer Institute AI", "AI Tutor", "AI", Icons.Default.AutoAwesome, Color(0xFFA855F7), Color(0xFF00E5FF)),
-    ModuleDestination("M19_REPORTS", "Analytics & MIS Reports", "Reports", "Operations", Icons.Default.Analytics, Color(0xFF00E5FF), Color(0xFF6366F1)),
-    ModuleDestination("M20_INVENTORY", "Computer Lab & Library Assets", "Inventory", "Operations", Icons.Default.Computer, Color(0xFF14F195), Color(0xFF00E5FF)),
-    ModuleDestination("M21_HELPDESK", "Support Helpdesk & NPS", "Helpdesk", "Operations", Icons.Default.Support, Color(0xFFFF6B8B), Color(0xFF38BDF8)),
-    ModuleDestination("M22_SECURITY", "Security, Vault & Audit Logs", "Security", "Security", Icons.Default.Security, Color(0xFFA855F7), Color(0xFF10F596)),
-    ModuleDestination("M23_BACKUP", "Cloud Backup & Export", "Backup", "Security", Icons.Default.CloudSync, Color(0xFF00E5FF), Color(0xFFA855F7)),
-    ModuleDestination("M24_SETTINGS", "Settings & Language (EN/HI)", "Settings", "Settings", Icons.Default.Settings, Color(0xFF818CF8), Color(0xFF00E5FF)),
+    ModuleDestination("M01_DASHBOARD", "Director Dashboard", "Home", "Core", Icons.Default.Dashboard, WciColors.PurpleVibrant, WciColors.ScannerPink),
+    ModuleDestination("M03_STUDENTS", "Student Directory & 360°", "Students", "People", Icons.Default.School, WciColors.Info, WciColors.BlueAccent),
+    ModuleDestination("M04_ADMISSIONS", "Admissions & Enquiry CRM", "CRM", "People", Icons.Default.SupportAgent, WciColors.Warning, WciColors.IndigoDeep),
+    ModuleDestination("M05_COURSES", "Courses & Curriculum", "Courses", "Academics", Icons.AutoMirrored.Filled.MenuBook, WciColors.SuccessNeon, WciColors.ScannerTeal),
+    ModuleDestination("M06_BATCHES", "Batches & Lab Timetable", "Batches", "Academics", Icons.Default.Schedule, WciColors.Success, WciColors.BlueAccent),
+    ModuleDestination("M07_ATTENDANCE", "Attendance & QR Roll-Call", "Attendance", "Academics", Icons.Default.QrCodeScanner, WciColors.SuccessNeon, WciColors.CyanBright),
+    ModuleDestination("M08_FEES", "Fees, Invoices & GST Receipts", "Fees", "Finance", Icons.AutoMirrored.Filled.ReceiptLong, WciColors.NeonMagenta, WciColors.VioletAccent),
+    ModuleDestination("M09_LEDGER", "Accounts & Expense Ledger", "Ledger", "Finance", Icons.Default.AccountBalanceWallet, WciColors.NeonPinkCoral, WciColors.AmberHighlight),
+    ModuleDestination("M10_EXAMS", "Online Exams & CBT Engine", "Exams", "Assessment", Icons.Default.Quiz, WciColors.IndigoAccent, WciColors.NeonOrchid),
+    ModuleDestination("M11_RESULTS", "Mark Sheets & Rank Cards", "Results", "Assessment", Icons.Default.EmojiEvents, WciColors.PurpleVibrant, WciColors.Info),
+    ModuleDestination("M12_MATERIALS", "Study Material & LMS", "Learn", "Academics", Icons.AutoMirrored.Filled.LibraryBooks, WciColors.Info, WciColors.SuccessNeon),
+    ModuleDestination("M13_CERTIFICATES", "QR Certificates & IDs", "Certificates", "Assessment", Icons.Default.WorkspacePremium, WciColors.NeonOrchid, WciColors.IndigoDeep),
+    ModuleDestination(PortalModuleDestination.M13_STAFF, "Faculty & Staff Directory", "Faculty HR", "People", Icons.Default.Badge, WciColors.Info, WciColors.SuccessNeon),
+    ModuleDestination("M14_PAYROLL", "Staff HR & Monthly Payroll", "Payroll", "People", Icons.Default.Payments, WciColors.SuccessNeon, WciColors.PurpleVibrant),
+    ModuleDestination("M15_PARENTS", "Parent & PTM Records", "PTM Notes", "People", Icons.Default.FamilyRestroom, WciColors.NeonPinkCoral, WciColors.PurpleVibrant),
+    ModuleDestination("M16_ANNOUNCEMENTS", "Notices & Broadcasts", "Inbox", "Comms", Icons.Default.Campaign, WciColors.Warning, WciColors.PurpleVibrant),
+    ModuleDestination("M17_LIVE_CLASSES", "Live Classes & Lab Polls", "Live", "Comms", Icons.Default.Videocam, WciColors.Danger, WciColors.VioletAccent),
+    ModuleDestination("M18_AI_HUB", "Waqar Computer Institute AI", "AI Tutor", "AI", Icons.Default.AutoAwesome, WciColors.PurpleVibrant, WciColors.Info),
+    ModuleDestination("M19_REPORTS", "Analytics & MIS Reports", "Reports", "Operations", Icons.Default.Analytics, WciColors.Info, WciColors.IndigoDeep),
+    ModuleDestination("M20_INVENTORY", "Computer Lab & Library Assets", "Inventory", "Operations", Icons.Default.Computer, WciColors.Success, WciColors.Info),
+    ModuleDestination("M21_HELPDESK", "Support Helpdesk & NPS", "Helpdesk", "Operations", Icons.Default.Support, WciColors.NeonPinkCoral, WciColors.Warning),
+    ModuleDestination("M22_SECURITY", "Security, Vault & Audit Logs", "Security", "Security", Icons.Default.Security, WciColors.PurpleVibrant, WciColors.SuccessNeon),
+    ModuleDestination("M23_BACKUP", "Cloud Backup & Export", "Backup", "Security", Icons.Default.CloudSync, WciColors.Info, WciColors.PurpleVibrant),
+    ModuleDestination("M24_SETTINGS", "Institute & Portal Settings", "Settings", "Settings", Icons.Default.Settings, WciColors.IndigoAccent, WciColors.Info),
     ModuleDestination(
         com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ROUTE_ADMIN_CONVERSION,
-        "एडमिन कन्वर्जन (Admin Conversion)",
+        "Admin Conversion & Face Vault",
         "Admin Conv",
         "Security",
         Icons.Default.AdminPanelSettings,
-        Color(0xFF10F596),
-        Color(0xFF00E5FF)
+        WciColors.SuccessNeon,
+        WciColors.Info
     ),
-    com.waqar.institute.navigation.AppDrawer.codingSandboxDestination
+    com.waqar.institute.navigation.AppDrawer.codingSandboxDestination,
+    com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination
 )
 
 fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> {
@@ -117,7 +118,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M18_AI_HUB",
             "M21_HELPDESK",
             "M24_SETTINGS",
-            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
         )
         PortalRole.STUDENT -> setOf(
             "M01_DASHBOARD",
@@ -134,7 +136,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M18_AI_HUB",
             "M21_HELPDESK",
             "M24_SETTINGS",
-            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
         )
         PortalRole.PARENT -> setOf(
             "M01_DASHBOARD",
@@ -147,7 +150,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M16_ANNOUNCEMENTS",
             "M21_HELPDESK",
             "M24_SETTINGS",
-            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX
+            com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
         )
     }
     return AllDrawerDestinations.filter { it.routeId in allowedIds }.map { dest ->
@@ -179,32 +183,32 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
 
 private fun bottomTabsForRole(role: PortalRole): List<ModuleDestination> = when (role) {
     PortalRole.ADMIN -> listOf(
-        ModuleDestination("M01_DASHBOARD", "Director Dashboard", "Home", "Core", Icons.Default.Home, Color(0xFFA855F7), Color(0xFFEC4899)),
-        ModuleDestination("M03_STUDENTS", "Students", "Students", "People", Icons.Default.School, Color(0xFF00E5FF), Color(0xFF3B82F6)),
-        ModuleDestination("M07_ATTENDANCE", "Attendance", "Attendance", "Academics", Icons.AutoMirrored.Filled.FactCheck, Color(0xFF10F596), Color(0xFF06B6D4)),
-        ModuleDestination("M08_FEES", "Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, Color(0xFFFF5894), Color(0xFF8B5CF6)),
-        ModuleDestination("M16_ANNOUNCEMENTS", "Notices & Broadcasts", "Inbox", "Comms", Icons.Default.Campaign, Color(0xFF38BDF8), Color(0xFFA855F7))
+        ModuleDestination("M01_DASHBOARD", "Director Dashboard", "Home", "Core", Icons.Default.Home, WciColors.PurpleVibrant, WciColors.ScannerPink),
+        ModuleDestination("M03_STUDENTS", "Students", "Students", "People", Icons.Default.School, WciColors.Info, WciColors.BlueAccent),
+        ModuleDestination("M07_ATTENDANCE", "Attendance", "Attendance", "Academics", Icons.AutoMirrored.Filled.FactCheck, WciColors.SuccessNeon, WciColors.ScannerTeal),
+        ModuleDestination("M08_FEES", "Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, WciColors.NeonMagenta, WciColors.VioletAccent),
+        ModuleDestination("M16_ANNOUNCEMENTS", "Notices & Broadcasts", "Inbox", "Comms", Icons.Default.Campaign, WciColors.Warning, WciColors.PurpleVibrant)
     )
     PortalRole.STUDENT -> listOf(
-        ModuleDestination("M01_DASHBOARD", "Learning Home", "Home", "Core", Icons.Default.Home, Color(0xFF818CF8), Color(0xFF6366F1)),
-        ModuleDestination("M06_BATCHES", "Class Timetable & Batches", "Learn", "Academics", Icons.Default.Schedule, Color(0xFF00E5FF), Color(0xFF10F596)),
-        ModuleDestination("M10_EXAMS", "Online Exams", "Exams", "Assessment", Icons.Default.EditNote, Color(0xFF818CF8), Color(0xFFE879F9)),
-        ModuleDestination("M11_RESULTS", "Mark Sheets", "Results", "Assessment", Icons.Default.Star, Color(0xFFA855F7), Color(0xFF00E5FF)),
-        ModuleDestination("M08_FEES", "My Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, Color(0xFFFF5894), Color(0xFF8B5CF6))
+        ModuleDestination("M01_DASHBOARD", "Learning Home", "Home", "Core", Icons.Default.Home, WciColors.IndigoAccent, WciColors.IndigoDeep),
+        ModuleDestination("M06_BATCHES", "Class Timetable & Batches", "Learn", "Academics", Icons.Default.Schedule, WciColors.Info, WciColors.SuccessNeon),
+        ModuleDestination("M10_EXAMS", "Online Exams", "Exams", "Assessment", Icons.Default.EditNote, WciColors.IndigoAccent, WciColors.NeonOrchid),
+        ModuleDestination("M11_RESULTS", "Mark Sheets", "Results", "Assessment", Icons.Default.Star, WciColors.PurpleVibrant, WciColors.Info),
+        ModuleDestination("M08_FEES", "My Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, WciColors.NeonMagenta, WciColors.VioletAccent)
     )
     PortalRole.TEACHER -> listOf(
-        ModuleDestination("M01_DASHBOARD", "Today's Classes", "Today", "Core", Icons.Default.Today, Color(0xFF14F195), Color(0xFF00C6FF)),
-        ModuleDestination("M06_BATCHES", "Batches", "Batches", "Academics", Icons.Default.Schedule, Color(0xFF00E5FF), Color(0xFF3B82F6)),
-        ModuleDestination("M07_ATTENDANCE", "Roll-Call", "Roll-Call", "Academics", Icons.AutoMirrored.Filled.FactCheck, Color(0xFF10F596), Color(0xFF06B6D4)),
-        ModuleDestination("M11_RESULTS", "Grades", "Grades", "Assessment", Icons.Default.Star, Color(0xFFA855F7), Color(0xFFE879F9)),
-        ModuleDestination("M12_MATERIALS", "Material", "Material", "Academics", Icons.AutoMirrored.Filled.LibraryBooks, Color(0xFF38BDF8), Color(0xFFA855F7))
+        ModuleDestination("M01_DASHBOARD", "Today's Classes", "Today", "Core", Icons.Default.Today, WciColors.Success, WciColors.CyanBright),
+        ModuleDestination("M06_BATCHES", "Batches", "Batches", "Academics", Icons.Default.Schedule, WciColors.Info, WciColors.BlueAccent),
+        ModuleDestination("M07_ATTENDANCE", "Roll-Call", "Roll-Call", "Academics", Icons.AutoMirrored.Filled.FactCheck, WciColors.SuccessNeon, WciColors.ScannerTeal),
+        ModuleDestination("M11_RESULTS", "Grades", "Grades", "Assessment", Icons.Default.Star, WciColors.PurpleVibrant, WciColors.NeonOrchid),
+        ModuleDestination("M12_MATERIALS", "Material", "Material", "Academics", Icons.AutoMirrored.Filled.LibraryBooks, WciColors.Warning, WciColors.PurpleVibrant)
     )
     PortalRole.PARENT -> listOf(
-        ModuleDestination("M01_DASHBOARD", "Child Progress", "Child", "Core", Icons.Default.Face, Color(0xFFFF6B8B), Color(0xFFA855F7)),
-        ModuleDestination("M07_ATTENDANCE", "Attendance", "Attendance", "Academics", Icons.AutoMirrored.Filled.FactCheck, Color(0xFF10F596), Color(0xFF06B6D4)),
-        ModuleDestination("M08_FEES", "Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, Color(0xFFFF5894), Color(0xFF8B5CF6)),
-        ModuleDestination("M11_RESULTS", "Results", "Results", "Assessment", Icons.Default.Star, Color(0xFF818CF8), Color(0xFFE879F9)),
-        ModuleDestination("M16_ANNOUNCEMENTS", "Alerts", "Alerts", "Comms", Icons.Default.NotificationsActive, Color(0xFF38BDF8), Color(0xFFA855F7))
+        ModuleDestination("M01_DASHBOARD", "Child Progress", "Child", "Core", Icons.Default.Face, WciColors.NeonPinkCoral, WciColors.PurpleVibrant),
+        ModuleDestination("M07_ATTENDANCE", "Attendance", "Attendance", "Academics", Icons.AutoMirrored.Filled.FactCheck, WciColors.SuccessNeon, WciColors.ScannerTeal),
+        ModuleDestination("M08_FEES", "Fees", "Fees", "Finance", Icons.Default.CurrencyRupee, WciColors.NeonMagenta, WciColors.VioletAccent),
+        ModuleDestination("M11_RESULTS", "Results", "Results", "Assessment", Icons.Default.Star, WciColors.IndigoAccent, WciColors.NeonOrchid),
+        ModuleDestination("M16_ANNOUNCEMENTS", "Alerts", "Alerts", "Comms", Icons.Default.NotificationsActive, WciColors.Warning, WciColors.PurpleVibrant)
     )
 }
 
@@ -349,16 +353,16 @@ private fun PortalShellBody(
             currentDest.title
         } else {
             when (activeRole) {
-                PortalRole.ADMIN -> if (state.preferences.languageCode == "HI") "निदेशक डैशबोर्ड" else "Director Dashboard"
+                PortalRole.ADMIN -> "Director Dashboard"
                 PortalRole.STUDENT -> {
                     val firstName = (state.userProfile?.displayName ?: "Student").substringBefore(" ")
-                    if (state.preferences.languageCode == "HI") "नमस्ते, $firstName!" else "Hi, $firstName!"
+                    "Hi, $firstName!"
                 }
                 PortalRole.PARENT -> {
                     val childName = state.students.firstOrNull()?.fullName?.substringBefore(" ") ?: "Student"
                     "$childName's Progress"
                 }
-                PortalRole.TEACHER -> if (state.preferences.languageCode == "HI") "आज की कक्षाएं" else "Today's Classes"
+                PortalRole.TEACHER -> "Today's Classes"
             }
         }
     }
@@ -387,13 +391,13 @@ private fun PortalShellBody(
             drawerState = drawerState,
             // CRITICAL FIX: Disable edge drag interception while closed so tapping the top-left 3-line Menu button never flickers
             gesturesEnabled = drawerState.isOpen,
-            scrimColor = Color(0x9904071A),
+            scrimColor = WciColors.DrawerScrimDark,
             drawerContent = {
                 ModalDrawerSheet(
                     modifier = Modifier
                         .width(310.dp)
                         .fillMaxHeight(),
-                    drawerContainerColor = if (isDark) Color(0xF5121B46) else Color(0xF7FFFFFF),
+                    drawerContainerColor = if (isDark) WciColors.DrawerContainerDark else WciColors.DrawerContainerLight,
                     drawerContentColor = WciColors.textPrimary,
                     drawerShape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp)
                 ) {
@@ -407,13 +411,13 @@ private fun PortalShellBody(
                                         listOf(
                                             activeRoutePalette.start.copy(alpha = 0.42f),
                                             activeRoutePalette.end.copy(alpha = 0.34f),
-                                            Color(0xFF141D4B)
+                                            WciColors.DrawerHeaderDeepDark
                                         )
                                     } else {
                                         listOf(
                                             activeRoutePalette.start.copy(alpha = 0.18f),
                                             activeRoutePalette.end.copy(alpha = 0.14f),
-                                            Color(0xFFF1F5F9)
+                                            WciColors.BgPrimaryLight
                                         )
                                     }
                                 )
@@ -437,7 +441,7 @@ private fun PortalShellBody(
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = JetBrainsMono,
                                             fontWeight = FontWeight.ExtraBold,
-                                            color = Color(0xFF05060F)
+                                            color = WciColors.OnAccentDark
                                         )
                                     )
                                 }
@@ -507,14 +511,14 @@ private fun PortalShellBody(
                                     )
                                     isDark -> Brush.linearGradient(
                                         colors = listOf(
-                                            Color(0xFF1A255C).copy(alpha = 0.60f),
-                                            Color(0xFF141D4B).copy(alpha = 0.60f)
+                                            WciColors.DrawerItemDarkStart.copy(alpha = 0.60f),
+                                            WciColors.DrawerHeaderDeepDark.copy(alpha = 0.60f)
                                         )
                                     )
                                     else -> Brush.linearGradient(
                                         colors = listOf(
-                                            Color(0xFFF8FAFC),
-                                            Color(0xFFF1F5F9)
+                                            WciColors.SurfaceOffWhite,
+                                            WciColors.BgPrimaryLight
                                         )
                                     )
                                 }
@@ -554,7 +558,7 @@ private fun PortalShellBody(
                                         Icon(
                                             imageVector = dest.icon,
                                             contentDescription = dest.title,
-                                            tint = Color(0xFF05060F),
+                                            tint = WciColors.OnAccentDark,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -592,12 +596,11 @@ private fun PortalShellBody(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         LiquidPill(
-                            text = if (state.preferences.languageCode == "HI") "Language: हिंदी" else "Language: English",
-                            selected = false,
+                            text = "Language: English",
+                            selected = true,
                             icon = Icons.Default.Translate,
                             onClick = {
-                                val next = if (state.preferences.languageCode == "HI") "EN" else "HI"
-                                viewModel.setLanguage(next)
+                                viewModel.setLanguage("EN")
                             }
                         )
                         TextButton(
@@ -792,6 +795,12 @@ private fun PortalShellBody(
                                         palette = activeRoutePalette
                                     )
                                 }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE -> {
+                                    com.waqar.institute.academic.AcademicProSuiteScreen(
+                                        state = state,
+                                        viewModel = viewModel
+                                    )
+                                }
                                 else -> AdminDashboardModule(
                                     state = state,
                                     viewModel = viewModel,
@@ -839,7 +848,7 @@ private fun PortalShellBody(
                             Text(
                                 text = (state.userProfile?.displayName ?: activeRole.label).take(1).uppercase(),
                                 style = MaterialTheme.typography.titleLarge.copy(
-                                    color = Color(0xFF05060F),
+                                    color = WciColors.OnAccentDark,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                             )
@@ -884,12 +893,11 @@ private fun PortalShellBody(
                             testTag = "profile_theme_toggle"
                         )
                         LiquidPill(
-                            text = if (state.preferences.languageCode == "HI") "हिंदी (HI)" else "English (EN)",
-                            selected = state.preferences.languageCode == "HI",
+                            text = "English (EN)",
+                            selected = true,
                             icon = Icons.Default.Translate,
                             onClick = {
-                                val next = if (state.preferences.languageCode == "HI") "EN" else "HI"
-                                viewModel.setLanguage(next)
+                                viewModel.setLanguage("EN")
                             },
                             modifier = Modifier.weight(1f),
                             testTag = "profile_language_toggle"
@@ -897,7 +905,7 @@ private fun PortalShellBody(
                     }
 
                     ShimmerButton(
-                        text = if (state.preferences.languageCode == "HI") "पोर्टल से लॉग आउट करें" else "Sign Out of ${activeRole.label} Portal",
+                        text = "Sign Out of ${activeRole.label} Portal",
                         icon = Icons.AutoMirrored.Filled.Logout,
                         onClick = {
                             showProfileSheet = false
@@ -917,24 +925,20 @@ private fun PortalShellBody(
                 containerColor = WciColors.elevatedSurface,
                 title = {
                     Text(
-                        text = if (state.preferences.languageCode == "HI") "लॉग आउट की पुष्टि करें" else "Confirm Sign Out",
+                        text = "Confirm Sign Out",
                         color = WciColors.textPrimary,
                         fontWeight = FontWeight.ExtraBold
                     )
                 },
                 text = {
                     Text(
-                        text = if (state.preferences.languageCode == "HI") {
-                            "क्या आप वाकई अपने पोर्टल सत्र से लॉग आउट करना चाहते हैं?"
-                        } else {
-                            "Are you sure you want to sign out of your ${activeRole.label} Portal session?"
-                        },
+                        text = "Are you sure you want to sign out of your ${activeRole.label} Portal session?",
                         color = WciColors.textSecondary
                     )
                 },
                 confirmButton = {
                     ShimmerButton(
-                        text = if (state.preferences.languageCode == "HI") "लॉग आउट करें" else "Sign Out",
+                        text = "Sign Out",
                         onClick = {
                             showSignOutConfirmation = false
                             viewModel.signOut()
@@ -943,7 +947,7 @@ private fun PortalShellBody(
                 },
                 dismissButton = {
                     TextButton(onClick = { showSignOutConfirmation = false }) {
-                        Text(if (state.preferences.languageCode == "HI") "रद्द करें" else "Cancel")
+                        Text("Cancel")
                     }
                 }
             )
@@ -997,38 +1001,38 @@ private fun WciTopBar(
             colors = listOf(
                 Color.White.copy(alpha = 0.94f),
                 palette.start.copy(alpha = 0.14f),
-                Color(0xFFF8FAFC).copy(alpha = 0.96f)
+                WciColors.SurfaceOffWhite.copy(alpha = 0.96f)
             )
         )
     } else {
         when (activeRole) {
             PortalRole.STUDENT -> Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF28377E).copy(alpha = 0.96f),
+                    WciColors.TopBarStudentStart.copy(alpha = 0.96f),
                     palette.start.copy(alpha = 0.34f),
-                    Color(0xFF1F2B68).copy(alpha = 0.96f)
+                    WciColors.TopBarStudentEnd.copy(alpha = 0.96f)
                 )
             )
             PortalRole.TEACHER -> Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF123244).copy(alpha = 0.88f),
-                    Color(0xFF10F596).copy(alpha = 0.24f),
-                    Color(0xFF0E2536).copy(alpha = 0.90f)
+                    WciColors.TopBarTeacherStart.copy(alpha = 0.88f),
+                    WciColors.SuccessNeon.copy(alpha = 0.24f),
+                    WciColors.TopBarTeacherEnd.copy(alpha = 0.90f)
                 )
             )
             PortalRole.PARENT -> Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF2B183D).copy(alpha = 0.88f),
-                    Color(0xFFFF6B8B).copy(alpha = 0.28f),
-                    Color(0xFF1E122E).copy(alpha = 0.90f)
+                    WciColors.TopBarParentStart.copy(alpha = 0.88f),
+                    WciColors.NeonPinkCoral.copy(alpha = 0.28f),
+                    WciColors.TopBarParentEnd.copy(alpha = 0.90f)
                 )
             )
             PortalRole.ADMIN -> Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF141D4E).copy(alpha = 0.88f),
+                    WciColors.TopBarAdminStart.copy(alpha = 0.88f),
                     palette.start.copy(alpha = 0.25f),
                     palette.end.copy(alpha = 0.20f),
-                    Color(0xFF101842).copy(alpha = 0.90f)
+                    WciColors.TopBarAdminEnd.copy(alpha = 0.90f)
                 )
             )
         }
@@ -1050,7 +1054,7 @@ private fun WciTopBar(
                 width = if (isStudentClay) 2.dp else 1.2.dp,
                 brush = Brush.linearGradient(
                     listOf(
-                        if (isDark) Color.White.copy(alpha = 0.55f) else Color(0x260F172A),
+                        if (isDark) Color.White.copy(alpha = 0.55f) else WciColors.LightBorderSubtle,
                         palette.start.copy(alpha = 0.65f)
                     )
                 ),
@@ -1078,7 +1082,7 @@ private fun WciTopBar(
                 Icon(
                     imageVector = Icons.Default.Menu,
                     contentDescription = "Open Navigation Drawer",
-                    tint = Color(0xFF05060F),
+                    tint = WciColors.OnAccentDark,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -1115,7 +1119,7 @@ private fun WciTopBar(
                     .size(48.dp)
                     .clip(CircleShape)
                     .background(
-                        if (isDark) Color.White.copy(alpha = 0.12f) else Color(0xFFE2E8F0),
+                        if (isDark) Color.White.copy(alpha = 0.12f) else WciColors.SlateTrack,
                         CircleShape
                     )
                     .border(1.dp, WciColors.glassBorderSubtleColor, CircleShape)
@@ -1134,7 +1138,7 @@ private fun WciTopBar(
                             .align(Alignment.TopEnd)
                             .padding(8.dp)
                             .size(8.dp)
-                            .background(Color(0xFFFF4D79), CircleShape)
+                            .background(WciColors.Danger, CircleShape)
                     )
                 }
             }
@@ -1161,7 +1165,7 @@ private fun WciTopBar(
                     Text(
                         text = userInitial,
                         style = MaterialTheme.typography.labelLarge.copy(
-                            color = Color(0xFF05060F),
+                            color = WciColors.OnAccentDark,
                             fontWeight = FontWeight.ExtraBold
                         )
                     )
@@ -1185,7 +1189,7 @@ private fun WciNavigationRail(
             .fillMaxHeight()
             .statusBarsPadding()
             .navigationBarsPadding(),
-        containerColor = if (isDark) Color(0xE610173D) else Color(0xF5FFFFFF),
+        containerColor = if (isDark) WciColors.NavRailContainerDark else WciColors.NavRailContainerLight,
         contentColor = WciColors.textPrimary,
         header = {
             IconButton(
@@ -1199,7 +1203,7 @@ private fun WciNavigationRail(
                 Icon(
                     imageVector = Icons.Default.Apps,
                     contentDescription = "All Modules",
-                    tint = Color(0xFF05060F)
+                    tint = WciColors.OnAccentDark
                 )
             }
         }
@@ -1223,7 +1227,7 @@ private fun WciNavigationRail(
                     )
                 },
                 colors = NavigationRailItemDefaults.colors(
-                    selectedIconColor = Color(0xFF05060F),
+                    selectedIconColor = WciColors.OnAccentDark,
                     selectedTextColor = palette.start,
                     indicatorColor = palette.start,
                     unselectedIconColor = WciColors.textSecondary,
@@ -1253,7 +1257,7 @@ private fun WciBottomBar(
             .shadow(
                 elevation = if (isClayPortal) 18.dp else 12.dp,
                 shape = barShape,
-                ambientColor = Color(0xFFA855F7).copy(alpha = 0.45f)
+                ambientColor = WciColors.PurpleVibrant.copy(alpha = 0.45f)
             )
             .clip(barShape)
             .background(
@@ -1261,16 +1265,16 @@ private fun WciBottomBar(
                     colors = when {
                         !isDark -> listOf(
                             Color.White.copy(alpha = 0.96f),
-                            Color(0xFFF1F5F9).copy(alpha = 0.96f)
+                            WciColors.BgPrimaryLight.copy(alpha = 0.96f)
                         )
                         isClayPortal -> listOf(
-                            Color(0xFF25347A).copy(alpha = 0.96f),
-                            Color(0xFF1F2B68).copy(alpha = 0.96f)
+                            WciColors.BottomBarClayStart.copy(alpha = 0.96f),
+                            WciColors.TopBarStudentEnd.copy(alpha = 0.96f)
                         )
                         else -> listOf(
-                            Color(0xFF131C4E).copy(alpha = 0.92f),
-                            Color(0xFF1D2869).copy(alpha = 0.88f),
-                            Color(0xFF111844).copy(alpha = 0.92f)
+                            WciColors.BottomBarDarkStart.copy(alpha = 0.92f),
+                            WciColors.BottomBarDarkMid.copy(alpha = 0.88f),
+                            WciColors.BottomBarDarkEnd.copy(alpha = 0.92f)
                         )
                     }
                 ),
@@ -1280,9 +1284,9 @@ private fun WciBottomBar(
                 width = if (isClayPortal) 2.dp else 1.3.dp,
                 brush = Brush.linearGradient(
                     listOf(
-                        if (isDark) Color.White.copy(alpha = 0.52f) else Color(0x260F172A),
-                        Color(0xFF00E5FF).copy(alpha = 0.55f),
-                        Color(0xFFA855F7).copy(alpha = 0.55f)
+                        if (isDark) Color.White.copy(alpha = 0.52f) else WciColors.LightBorderSubtle,
+                        WciColors.Info.copy(alpha = 0.55f),
+                        WciColors.PurpleVibrant.copy(alpha = 0.55f)
                     )
                 ),
                 shape = barShape
@@ -1375,7 +1379,7 @@ private fun WciBottomBar(
                     Icon(
                         imageVector = tab.icon,
                         contentDescription = tab.shortLabel,
-                        tint = if (selected) Color(0xFF05060F) else tab.accentStart,
+                        tint = if (selected) WciColors.OnAccentDark else tab.accentStart,
                         modifier = Modifier.size(17.dp)
                     )
                 }

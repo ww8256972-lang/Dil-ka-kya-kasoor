@@ -33,17 +33,18 @@ object EnterpriseRaspShield {
     )
 
     fun evaluateAndEnforceTamperTrap(context: Context): RaspTamperVerdict {
+        if (!nativeLoaded) {
+            triggerSelfDestructKeyWipe(context)
+            return RaspTamperVerdict(
+                isMemoryClean = false,
+                runtimeMask = -1,
+                tamperTrapTriggered = true,
+                statusSummary = "CRITICAL: Native C++20 security library (libwaqar_native_security.so) unavailable — Fail-Closed Tamper Trap Triggered"
+            )
+        }
         val minuteNonce = System.currentTimeMillis() / 60_000L
-        val memoryClean = if (nativeLoaded) {
-            runCatching { nativeVerifyMemoryIntegrity() }.getOrDefault(false)
-        } else {
-            evaluateJvmProcIntegrity()
-        }
-        val mask = if (nativeLoaded) {
-            runCatching { nativeComputeRuntimeSignatureMask(minuteNonce) }.getOrDefault(-1)
-        } else {
-            if (memoryClean) computeJvmRuntimeMask(minuteNonce) else -1
-        }
+        val memoryClean = runCatching { nativeVerifyMemoryIntegrity() }.getOrDefault(false)
+        val mask = runCatching { nativeComputeRuntimeSignatureMask(minuteNonce) }.getOrDefault(-1)
 
         val isHooked = runCatching { !AntiHookManager.runComprehensiveHookScan().isClean }.getOrDefault(true)
         val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)

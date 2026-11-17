@@ -8,7 +8,6 @@ import com.example.data.firestore.InstituteRepository
 import com.example.data.model.PortalRole
 import com.waqar.institute.security.MemoryScrubberManager
 import com.waqar.institute.security.NetworkSecurityGuard
-import com.waqar.institute.security.RecaptchaInvisibleManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,15 +17,13 @@ import kotlin.math.min
 import kotlin.math.pow
 
 /**
- * Enterprise Portal Login ViewModel with Silent Invisible reCAPTCHA Enterprise Validation,
- * Exponential Backoff Rate Limiting (5-Attempt Brute-Force Lockout), MITM Proxy Verification,
- * and Automatic Sensitive RAM Scrubbing after Authentication.
+ * Enterprise Portal Login ViewModel with Exponential Backoff Rate Limiting (5-Attempt Brute-Force Lockout),
+ * MITM Proxy Verification, and Automatic Sensitive RAM Scrubbing after Authentication.
  */
 data class PortalLoginSecurityState(
     val isAuthenticating: Boolean = false,
     val failedAttemptCount: Int = 0,
     val lockoutUntilEpochMillis: Long = 0L,
-    val lastRecaptchaTokenPrefix: String = "",
     val statusMessage: String? = null,
     val isAuthenticated: Boolean = false
 ) {
@@ -41,21 +38,19 @@ class PortalLoginViewModel : ViewModel() {
 
     companion object {
         private const val MAX_FREE_ATTEMPTS = 5
-        private const val BASE_LOCKOUT_MS = 15_000L
-        private const val MAX_LOCKOUT_MS = 300_000L // 5 minutes cap
+        private const val BASE_LOCKOUT_MS = 300_000L // 5-minute block on 6th request in 60s window
+        private const val MAX_LOCKOUT_MS = 300_000L  // 5 minutes cap
     }
 
     private val _securityState = MutableStateFlow(PortalLoginSecurityState())
     val securityState: StateFlow<PortalLoginSecurityState> = _securityState.asStateFlow()
 
     /**
-     * Computes exponential backoff lockout duration once failed attempts reach [MAX_FREE_ATTEMPTS].
+     * Computes 5-minute (300,000 ms) lockout duration once attempts exceed [MAX_FREE_ATTEMPTS].
      */
     fun computeBackoffLockoutMs(failedAttempts: Int): Long {
-        if (failedAttempts < MAX_FREE_ATTEMPTS) return 0L
-        val exponent = (failedAttempts - MAX_FREE_ATTEMPTS).coerceAtMost(5)
-        val backoff = (BASE_LOCKOUT_MS * 2.0.pow(exponent.toDouble())).toLong()
-        return min(backoff, MAX_LOCKOUT_MS)
+        if (failedAttempts <= MAX_FREE_ATTEMPTS) return 0L
+        return MAX_LOCKOUT_MS
     }
 
     fun authenticatePortalUser(
@@ -67,11 +62,23 @@ class PortalLoginViewModel : ViewModel() {
         onError: (String) -> Unit
     ) {
         val now = System.currentTimeMillis()
+        val identityKey = "${role.key}:${usernameInput.trim().lowercase()}"
+        val rateStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
+            context = context,
+            scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
+            identityKey = identityKey,
+            nowEpochMs = now
+        )
         val current = _securityState.value
-        if (current.isCurrentlyLockedOut(now)) {
-            val secs = current.remainingLockoutSeconds(now)
-            val msg = "Too many failed login attempts. Please wait ${secs}s before retrying."
-            _securityState.update { state -> state.copy(statusMessage = msg) }
+        if (!rateStatus.allowed || current.isCurrentlyLockedOut(now)) {
+            val secs = if (!rateStatus.allowed) rateStatus.retryAfterSeconds else current.remainingLockoutSeconds(now)
+            val msg = "HTTP 429 Too Many Requests: Rate limit exceeded (max 5 requests per 60s). Please wait ${secs}s before retrying."
+            _securityState.update { state ->
+                state.copy(
+                    lockoutUntilEpochMillis = maxOf(state.lockoutUntilEpochMillis, rateStatus.blockedUntilEpochMs),
+                    statusMessage = msg
+                )
+            }
             MemoryScrubberManager.scrubCharArray(passwordChars)
             onError(msg)
             return
@@ -89,12 +96,7 @@ class PortalLoginViewModel : ViewModel() {
                     return@launch
                 }
 
-                // 2. Silently generate Invisible reCAPTCHA Enterprise token
-                val recaptchaToken = RecaptchaInvisibleManager
-                    .executeInvisibleLoginToken(context, "login_${role.name.lowercase()}")
-                    .getOrDefault("")
-
-                // 3. Authenticate against Cloud Firestore / PBKDF2-HMAC-SHA256 credential store
+                // 2. Authenticate against Cloud Firestore / PBKDF2-HMAC-SHA256 / Encrypted Keystore credential store
                 val passwordString = String(passwordChars)
                 val repository = InstituteRepository.create(context.applicationContext)
                 val authProvider = FirebaseAuthServiceProvider(repository = repository, context = context)
@@ -113,7 +115,6 @@ class PortalLoginViewModel : ViewModel() {
                                 isAuthenticating = false,
                                 failedAttemptCount = 0,
                                 lockoutUntilEpochMillis = 0L,
-                                lastRecaptchaTokenPrefix = recaptchaToken.take(16),
                                 isAuthenticated = true,
                                 statusMessage = null
                             )
@@ -121,14 +122,19 @@ class PortalLoginViewModel : ViewModel() {
                         onAuthenticated(session)
                     },
                     onFailure = { throwable: Throwable ->
-                        val updatedFailures = _securityState.value.failedAttemptCount + 1
-                        val lockoutDuration = computeBackoffLockoutMs(updatedFailures)
-                        val lockoutUntil = if (lockoutDuration > 0L) System.currentTimeMillis() + lockoutDuration else 0L
-                        val message = if (lockoutDuration > 0L) {
-                            "5 failed attempts detected. Account locked for ${lockoutDuration / 1000}s."
+                        val postStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
+                            context = context,
+                            scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
+                            identityKey = identityKey
+                        )
+                        val updatedFailures = maxOf(_securityState.value.failedAttemptCount + 1, postStatus.attemptCountInWindow)
+                        val lockoutUntil = if (!postStatus.allowed) {
+                            postStatus.blockedUntilEpochMs
                         } else {
-                            throwable.localizedMessage ?: "Invalid username or password."
+                            val d = computeBackoffLockoutMs(updatedFailures)
+                            if (d > 0L) System.currentTimeMillis() + d else 0L
                         }
+                        val message = throwable.localizedMessage ?: "Invalid username or password."
                         _securityState.update { state ->
                             state.copy(
                                 isAuthenticating = false,

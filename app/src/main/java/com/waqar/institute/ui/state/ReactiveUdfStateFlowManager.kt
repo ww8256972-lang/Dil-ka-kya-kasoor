@@ -22,7 +22,7 @@ data class EnterprisePortalUdfState(
     val isSyncingBackground: Boolean = false,
     val pendingOfflineMutationsCount: Int = 0,
     val lastSyncedEpochMs: Long = System.currentTimeMillis(),
-    val integrityVerdictBadge: String = "MEETS_STRONG_INTEGRITY",
+    val integrityVerdictBadge: String = "LOCAL_POSTURE_CLEAN",
     val activeSessionTokenHash: String = ""
 )
 

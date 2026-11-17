@@ -2,30 +2,33 @@ package com.waqar.institute.updater
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * Standalone GitHub Releases Update Checker & Play-Policy-Compliant Updater (`GitHubOtaUpdater.kt`).
- *
- * Capabilities:
- * 1. Queries the GitHub Releases API (`https://api.github.com/repos/{owner}/{repo}/releases/latest`)
- *    asynchronously on `Dispatchers.IO` using `OkHttpClient`.
- * 2. Normalizes and compares semantic version tags (e.g. `"v1.2.0"` vs `BuildConfig.VERSION_NAME` `"1.0"`).
- * 3. Extracts release metadata (`tagName`, `releaseTitle`, `releaseNotes`, `htmlUrl`, `downloadUrl`).
- * 4. Launches the official GitHub Release update page via standard `Intent.ACTION_VIEW` without
- *    requiring restricted `REQUEST_INSTALL_PACKAGES` manifest permissions.
+ * Standalone GitHub Releases Update Checker & Play-Policy-Compliant Updater (`GitHubOtaUpdater.kt`)
+ * hardened with Maha Brahmastra #5:
+ * 1. Env-driven `GITHUB_OTA_OWNER` / `GITHUB_OTA_REPO` with safe defaults.
+ * 2. Strict official GitHub HTTPS URL enforcement (`https://github.com`, `https://api.github.com`).
+ * 3. Release APK Signing Certificate SHA-256 Pinning & Anti-Downgrade (`targetVersionCode >= currentVersionCode`).
+ * 4. Launches official GitHub Release page via `Intent.ACTION_VIEW` (zero restricted permissions).
  */
 object GitHubOtaUpdater {
 
-    const val DEFAULT_GITHUB_OWNER: String = "waqar-institute"
-    const val DEFAULT_GITHUB_REPO: String = "waqar-computer-institute-erp"
+    const val DEFAULT_GITHUB_OWNER: String = "ww8256972"
+    const val DEFAULT_GITHUB_REPO: String = "Waqar-first-project-"
+
+    private val sha256NoteRegex = Regex("SHA256\\s*[:=]\\s*([a-fA-F0-9]{64})")
 
     data class GitHubReleaseInfo(
         val tagName: String,
@@ -34,7 +37,16 @@ object GitHubOtaUpdater {
         val releaseTitle: String,
         val releaseNotes: String,
         val htmlUrl: String,
-        val assetUrl: String
+        val assetUrl: String,
+        val expectedApkSha256: String? = null
+    )
+
+    data class OtaSecurityVerificationResult(
+        val isAllowedToInstall: Boolean,
+        val antiDowngradePassed: Boolean,
+        val certificatePinMatched: Boolean,
+        val extractedCertSha256: String?,
+        val reason: String
     )
 
     private val httpClient: OkHttpClient by lazy {
@@ -49,12 +61,13 @@ object GitHubOtaUpdater {
      * a newer semantic version than `currentVersionName` is published.
      */
     suspend fun checkForUpdate(
-        owner: String = DEFAULT_GITHUB_OWNER,
-        repo: String = DEFAULT_GITHUB_REPO,
+        owner: String = BuildConfig.GITHUB_OTA_OWNER.trim().ifBlank { DEFAULT_GITHUB_OWNER },
+        repo: String = BuildConfig.GITHUB_OTA_REPO.trim().ifBlank { DEFAULT_GITHUB_REPO },
         currentVersionName: String = BuildConfig.VERSION_NAME
     ): GitHubReleaseInfo? = withContext(Dispatchers.IO) {
         if (owner.isBlank() || repo.isBlank()) return@withContext null
         val apiUrl = "https://api.github.com/repos/${owner.trim()}/${repo.trim()}/releases/latest"
+        if (!isTrustedGitHubHttpsUrl(apiUrl)) return@withContext null
 
         runCatching {
             val request = Request.Builder()
@@ -98,6 +111,7 @@ object GitHubOtaUpdater {
             val notes = json.optString("body").trim().ifBlank {
                 "New stability, security, and academic portal enhancements are available."
             }
+            val expectedApkSha256 = sha256NoteRegex.find(notes)?.groupValues?.getOrNull(1)?.lowercase()
 
             var detectedAssetUrl = htmlUrl
             val assets = json.optJSONArray("assets")
@@ -119,9 +133,111 @@ object GitHubOtaUpdater {
                 releaseTitle = title,
                 releaseNotes = notes,
                 htmlUrl = htmlUrl.ifBlank { detectedAssetUrl },
-                assetUrl = detectedAssetUrl.ifBlank { htmlUrl }
+                assetUrl = detectedAssetUrl.ifBlank { htmlUrl },
+                expectedApkSha256 = expectedApkSha256
             )
         }.getOrNull()
+    }
+
+    fun isTrustedGitHubHttpsUrl(url: String): Boolean {
+        val parsed = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return false
+        val schemeOk = parsed.scheme.equals("https", ignoreCase = true)
+        val host = parsed.host?.lowercase().orEmpty()
+        val hostOk = host == "github.com" ||
+            host == "api.github.com" ||
+            host.endsWith(".github.com") ||
+            host.endsWith(".githubusercontent.com")
+        return schemeOk && hostOk
+    }
+
+    /**
+     * Enforces Anti-Downgrade (`targetVersionCode >= currentVersionCode`) AND APK Release Certificate
+     * SHA-256 Pinning before an OTA APK file can be trusted.
+     */
+    fun verifyApkSignatureAndAntiDowngrade(
+        context: Context,
+        apkFile: File,
+        targetVersionCode: Long,
+        expectedCertSha256Hex: String = BuildConfig.EXPECTED_RELEASE_CERT_SHA256
+    ): OtaSecurityVerificationResult {
+        val currentVersionCode = runCatching {
+            val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pkgInfo.longVersionCode else @Suppress("DEPRECATION") pkgInfo.versionCode.toLong()
+        }.getOrDefault(1L)
+
+        if (targetVersionCode < currentVersionCode) {
+            return OtaSecurityVerificationResult(
+                isAllowedToInstall = false,
+                antiDowngradePassed = false,
+                certificatePinMatched = false,
+                extractedCertSha256 = null,
+                reason = "Blocked OTA Downgrade: target vCode $targetVersionCode < installed $currentVersionCode"
+            )
+        }
+
+        if (!apkFile.exists() || !apkFile.isFile) {
+            return OtaSecurityVerificationResult(
+                isAllowedToInstall = false,
+                antiDowngradePassed = true,
+                certificatePinMatched = false,
+                extractedCertSha256 = null,
+                reason = "OTA APK artifact missing: ${apkFile.name}"
+            )
+        }
+
+        val normalizedPin = expectedCertSha256Hex.replace(":", "").trim().lowercase()
+        val archiveInfo = runCatching {
+            @Suppress("DEPRECATION")
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES
+            } else {
+                PackageManager.GET_SIGNATURES
+            }
+            context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, flags)
+        }.getOrNull()
+
+        val sigBytesList: List<ByteArray> = if (archiveInfo != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val signingInfo = archiveInfo.signingInfo
+                if (signingInfo != null) {
+                    val sigs = if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners else signingInfo.signingCertificateHistory
+                    sigs?.map { it.toByteArray() } ?: emptyList()
+                } else emptyList()
+            } else {
+                @Suppress("DEPRECATION")
+                archiveInfo.signatures?.map { it.toByteArray() } ?: emptyList()
+            }
+        } else emptyList()
+
+        if (sigBytesList.isEmpty()) {
+            return OtaSecurityVerificationResult(
+                isAllowedToInstall = false,
+                antiDowngradePassed = true,
+                certificatePinMatched = false,
+                extractedCertSha256 = null,
+                reason = "No signing certificates found inside OTA APK"
+            )
+        }
+
+        val extractedHexes = sigBytesList.map { certBytes ->
+            MessageDigest.getInstance("SHA-256").digest(certBytes).joinToString("") { "%02x".format(it) }
+        }
+        val firstHex = extractedHexes.firstOrNull()
+        val matched = normalizedPin.length == 64 && extractedHexes.any { candidate ->
+            MessageDigest.isEqual(candidate.toByteArray(Charsets.UTF_8), normalizedPin.toByteArray(Charsets.UTF_8))
+        }
+
+        return OtaSecurityVerificationResult(
+            isAllowedToInstall = matched,
+            antiDowngradePassed = true,
+            certificatePinMatched = matched,
+            extractedCertSha256 = firstHex,
+            reason = if (matched) {
+                "OTA APK verified: anti-downgrade & SHA-256 certificate pin matched"
+            } else {
+                "Blocked unverified OTA APK: signing certificate SHA-256 mismatch"
+            }
+        )
     }
 
     /**
@@ -161,11 +277,11 @@ object GitHubOtaUpdater {
     }
 
     /**
-     * Launches the official release update URL via `Intent.ACTION_VIEW`.
+     * Launches the official release update URL via `Intent.ACTION_VIEW` after verifying HTTPS GitHub host.
      */
     fun launchOfficialReleaseUpdate(context: Context, releaseInfo: GitHubReleaseInfo): Boolean {
         val targetUrl = releaseInfo.htmlUrl.ifBlank { releaseInfo.assetUrl }
-        if (targetUrl.isBlank()) return false
+        if (targetUrl.isBlank() || !isTrustedGitHubHttpsUrl(targetUrl)) return false
         return runCatching {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

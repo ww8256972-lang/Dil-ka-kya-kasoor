@@ -96,7 +96,6 @@ robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
 firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
-firebase-appcheck-recaptcha = { group = "com.google.firebase", name = "firebase-appcheck-recaptcha" }
 firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore" }
 firebase-auth = { group = "com.google.firebase", name = "firebase-auth" }
@@ -126,7 +125,6 @@ androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version = 
 mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version = "16.1.7" }
 play-integrity = { group = "com.google.android.play", name = "integrity", version.ref = "playIntegrity" }
 google-play-integrity = { group = "com.google.android.play", name = "integrity", version.ref = "playIntegrity" }
-google-recaptcha = { group = "com.google.android.recaptcha", name = "recaptcha", version = "18.5.1" }
 google-tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
 talsec-freerasp = { group = "com.aheaditec.talsec.security", name = "TalsecSecurity-Community", version.ref = "freerasp" }
 appmattus-ct = { group = "com.appmattus.certificatetransparency", name = "certificatetransparency-android", version.ref = "certTransparency" }

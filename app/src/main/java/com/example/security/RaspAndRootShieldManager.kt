@@ -5,6 +5,7 @@ import com.aheaditec.talsec_security.security.api.SuspiciousAppInfo
 import com.aheaditec.talsec_security.security.api.Talsec
 import com.aheaditec.talsec_security.security.api.TalsecConfig
 import com.aheaditec.talsec_security.security.api.ThreatListener
+import com.example.BuildConfig
 import com.scottyab.rootbeer.RootBeer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,7 +54,7 @@ object RaspAndRootShieldManager : ThreatListener.ThreatDetected {
                 )
                     .watcherMail("samdkhan8256972@gmail.com")
                     .supportedAlternativeStores(packageInstallers)
-                    .prod(false)
+                    .prod(!BuildConfig.DEBUG)
                     .build()
                 ThreatListener(this).registerListener(appContext)
                 Talsec.start(appContext, config)

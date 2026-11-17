@@ -77,12 +77,22 @@ object NetworkSecurityGuard {
         }
     }
 
+    @Volatile
+    private var cachedCaScanTimestampMs: Long = 0L
+
+    @Volatile
+    private var cachedCaScanResult: String? = null
+
     /**
      * Scans the AndroidCAStore for user-installed root certificates (`user:` alias prefix)
-     * matching known packet-interception tools.
+     * matching known packet-interception tools (cached for 60s for sub-millisecond login checks).
      */
     fun scanForSuspiciousUserInstalledCAs(): String? {
-        return runCatching {
+        val now = System.currentTimeMillis()
+        if (now - cachedCaScanTimestampMs < 60_000L && cachedCaScanTimestampMs > 0L) {
+            return cachedCaScanResult
+        }
+        val detected = runCatching {
             val keyStore = KeyStore.getInstance("AndroidCAStore")
             keyStore.load(null, null)
             val aliases = keyStore.aliases()
@@ -102,6 +112,9 @@ object NetworkSecurityGuard {
             }
             null
         }.getOrNull()
+        cachedCaScanResult = detected
+        cachedCaScanTimestampMs = now
+        return detected
     }
 
     /**

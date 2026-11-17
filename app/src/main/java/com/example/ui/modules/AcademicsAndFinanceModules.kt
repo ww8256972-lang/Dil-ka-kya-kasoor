@@ -236,7 +236,7 @@ fun CoursesAndBatchesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddCourse = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddCourse = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -297,7 +297,7 @@ fun CoursesAndBatchesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddBatch = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddBatch = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 }
@@ -475,11 +475,14 @@ fun AttendanceModuleScreen(
                 if (gpsAlertDialogText != null) {
                     androidx.compose.material3.AlertDialog(
                         onDismissRequest = { gpsAlertDialogText = null },
-                        title = { Text("Teacher Biometric Attendance Gate", fontWeight = FontWeight.Bold) },
-                        text = { Text(gpsAlertDialogText ?: com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE) },
+                        containerColor = WciColors.elevatedSurface,
+                        titleContentColor = WciColors.textPrimary,
+                        textContentColor = WciColors.textSecondary,
+                        title = { Text("Teacher Biometric Attendance Gate", fontWeight = FontWeight.Bold, color = WciColors.textPrimary) },
+                        text = { Text(gpsAlertDialogText ?: com.waqar.institute.biometric.TeacherGpsGeofenceVerifier.OUT_OF_RANGE_ALERT_MESSAGE, color = WciColors.textSecondary) },
                         confirmButton = {
                             androidx.compose.material3.TextButton(onClick = { gpsAlertDialogText = null }) {
-                                Text("OK", fontWeight = FontWeight.Bold)
+                                Text("OK", fontWeight = FontWeight.Bold, color = WciColors.infoColor)
                             }
                         }
                     )
@@ -936,7 +939,7 @@ fun AttendanceModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showMarkDialog = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showMarkDialog = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -954,18 +957,29 @@ fun AttendanceModuleScreen(
             mutableStateOf("")
         }
         var geofenceStatusText by remember {
-            mutableStateOf("Verify GPS Geofence (100m Campus Radius) before marking attendance")
+            mutableStateOf(
+                if (isAdmin) {
+                    "Admin QR Mode Active — Scan student QR or tap Verify Campus GPS"
+                } else {
+                    "Checking 50m Institute Campus GPS Geofence…"
+                }
+            )
         }
-        var geofenceVerified by remember { mutableStateOf(false) }
+        var geofenceVerified by remember { mutableStateOf(isAdmin) }
+        var isVerifyingGeofence by remember { mutableStateOf(false) }
         var showAdminManualPicker by remember { mutableStateOf(false) }
         var showLiveCameraScanner by remember { mutableStateOf(false) }
 
-        val runGeofenceVerification: () -> Unit = {
+        fun runCampusGeofenceVerification() {
+            isVerifyingGeofence = true
+            geofenceStatusText = "Acquiring high-accuracy GPS fix against Institute campus…"
             scope.launch {
-                when (val res = AntiProxyAttendanceManager.verifyStudentCampusGeofence(context)) {
+                val res = AntiProxyAttendanceManager.verifyStudentCampusGeofence(context)
+                isVerifyingGeofence = false
+                when (res) {
                     is GeofenceVerificationResult.VerifiedInsideCampus -> {
                         geofenceVerified = true
-                        geofenceStatusText = "Verified Inside Campus (${res.distanceMeters.toInt()}m from Institute)"
+                        geofenceStatusText = "✓ Campus Geofence Verified (${res.distanceMeters.toInt()}m from Institute) • Ready"
                     }
                     is GeofenceVerificationResult.BlockedMockLocation -> {
                         geofenceVerified = false
@@ -976,35 +990,34 @@ fun AttendanceModuleScreen(
                         geofenceStatusText = res.message
                     }
                     is GeofenceVerificationResult.LocationUnavailable -> {
-                        geofenceVerified = isAdmin
-                        geofenceStatusText = if (isAdmin) {
-                            "GPS Fix Unavailable — Admin Indoor Override Enabled"
-                        } else {
-                            "GPS Signal Required — Move near window or enable High Accuracy GPS"
-                        }
+                        geofenceVerified = isAdmin && showAdminManualPicker
+                        geofenceStatusText = res.message
                     }
                 }
             }
         }
 
-        LaunchedEffect(Unit) {
-            val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            if (hasFine || hasCoarse) {
-                runGeofenceVerification()
-            }
-        }
-
-        val locationPermissionLauncher = rememberLauncherForActivityResult(
+        val qrGpsPermLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestMultiplePermissions()
         ) { perms ->
             val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
             if (granted) {
-                runGeofenceVerification()
+                runCampusGeofenceVerification()
             } else {
+                geofenceVerified = isAdmin && showAdminManualPicker
+                geofenceStatusText = "Location permission denied — Campus GPS verification required for anti-proxy QR."
+            }
+        }
+
+        LaunchedEffect(showQrScanDialog) {
+            val hasLoc = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (hasLoc) {
+                runCampusGeofenceVerification()
+            } else if (!isAdmin) {
                 geofenceVerified = false
-                geofenceStatusText = "Location permission denied — 100m campus geofence cannot be verified"
+                geofenceStatusText = "Tap 'Verify Campus GPS' to grant location & unlock 50m institute geofence."
             }
         }
 
@@ -1075,21 +1088,29 @@ fun AttendanceModuleScreen(
                     Text(
                         text = geofenceStatusText,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            color = if (geofenceVerified) WciColors.infoColor else WciColors.dangerColor
+                            color = if (geofenceVerified) WciColors.successColor else WciColors.warningColor,
+                            fontWeight = FontWeight.SemiBold
                         )
                     )
                     LiquidPill(
-                        text = if (geofenceVerified) "GPS Geofence Verified ✓" else "Verify 100m Campus GPS Geofence",
+                        text = if (isVerifyingGeofence) "Checking GPS Geofence…" else "Verify Campus GPS (50m)",
                         selected = geofenceVerified,
-                        icon = Icons.Default.MyLocation,
+                        icon = Icons.Default.LocationOn,
                         onClick = {
-                            locationPermissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                            val hasLoc = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                            if (hasLoc) {
+                                runCampusGeofenceVerification()
+                            } else {
+                                qrGpsPermLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
                                 )
-                            )
-                        }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
                     ShimmerButton(
                         text = "Open Live CameraX QR Scanner",
@@ -1102,7 +1123,10 @@ fun AttendanceModuleScreen(
                             text = if (showAdminManualPicker) "Hide Admin Manual ID Picker" else "Admin Manual ID Override",
                             selected = showAdminManualPicker,
                             icon = Icons.Default.AdminPanelSettings,
-                            onClick = { showAdminManualPicker = !showAdminManualPicker },
+                            onClick = {
+                                showAdminManualPicker = !showAdminManualPicker
+                                if (showAdminManualPicker) geofenceVerified = true
+                            },
                             modifier = Modifier.fillMaxWidth()
                         )
                         if (showAdminManualPicker) {
@@ -1126,34 +1150,42 @@ fun AttendanceModuleScreen(
                     OutlinedTextField(
                         value = qrCodeInput,
                         onValueChange = { qrCodeInput = it },
-                        label = { Text("Scanned Student Enrollment No / Name") },
-                        singleLine = true
+                        label = { Text("Scanned Student Enrollment No / ID / Name") },
+                        singleLine = true,
+                        colors = wciOutlinedTextFieldColors()
                     )
                 }
             },
             confirmButton = {
+                val canSubmit = (geofenceVerified || (isAdmin && showAdminManualPicker)) && qrCodeInput.isNotBlank()
                 ShimmerButton(
                     text = "Verify & Mark Present",
-                    enabled = geofenceVerified && qrCodeInput.isNotBlank(),
+                    enabled = canSubmit,
                     onClick = {
+                        val query = qrCodeInput.trim()
                         val matchedStudent = state.students.firstOrNull {
-                            it.enrollmentNo.equals(qrCodeInput.trim(), ignoreCase = true) ||
-                                it.fullName.contains(qrCodeInput.trim(), ignoreCase = true)
+                            it.id.equals(query, ignoreCase = true) ||
+                                it.enrollmentNo.equals(query, ignoreCase = true) ||
+                                it.fullName.contains(query, ignoreCase = true)
                         }
                         viewModel.markAttendance(
                             targetType = "STUDENT",
-                            targetId = matchedStudent?.id ?: qrCodeInput.trim(),
-                            targetName = matchedStudent?.fullName ?: qrCodeInput.trim(),
-                            batchName = matchedStudent?.batchName ?: activeBatchName,
+                            targetId = matchedStudent?.id ?: query,
+                            targetName = matchedStudent?.fullName ?: query,
+                            batchName = matchedStudent?.batchName?.ifBlank { activeBatchName } ?: activeBatchName,
                             status = "PRESENT",
                             method = "QR_SCAN",
-                            remarks = "Verified via 15s Rolling HMAC QR & 100m Geofence"
+                            remarks = if (isAdmin && showAdminManualPicker) {
+                                "Verified via QR / Admin Manual ID Override"
+                            } else {
+                                "Verified via 15s Rolling HMAC QR & 50m GPS Geofence"
+                            }
                         )
                         showQrScanDialog = false
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showQrScanDialog = false }) { Text("Close") } }
+            dismissButton = { TextButton(onClick = { showQrScanDialog = false }) { Text("Close", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
 
         if (showLiveCameraScanner) {
@@ -1163,17 +1195,61 @@ fun AttendanceModuleScreen(
                     val verifiedBatchResult = AntiProxyAttendanceManager.verifyScannedQrPayload(rawScanned)
                     val verifiedBatchId = verifiedBatchResult.getOrNull()
                     if (verifiedBatchId != null) {
-                        val selfStudent = state.students.firstOrNull()
-                        viewModel.markAttendance(
-                            targetType = "STUDENT",
-                            targetId = selfStudent?.id ?: state.userProfile?.uid ?: "stu_qr",
-                            targetName = selfStudent?.fullName ?: state.userProfile?.displayName ?: "Verified Student",
-                            batchName = activeBatchName,
-                            status = "PRESENT",
-                            method = "QR_SCAN",
-                            remarks = "CameraX ML Kit Verified Rolling HMAC QR ($verifiedBatchId)"
-                        )
-                        showQrScanDialog = false
+                        val targetStudent = when (state.activePortalRole) {
+                            PortalRole.STUDENT -> state.students.firstOrNull {
+                                it.id == state.userProfile?.linkedEntityId ||
+                                    it.fullName.equals(state.userProfile?.displayName.orEmpty(), ignoreCase = true)
+                            } ?: state.students.singleOrNull()
+                            else -> {
+                                val query = qrCodeInput.trim()
+                                if (query.isNotBlank()) {
+                                    state.students.firstOrNull {
+                                        it.id.equals(query, ignoreCase = true) ||
+                                            it.enrollmentNo.equals(query, ignoreCase = true) ||
+                                            it.fullName.contains(query, ignoreCase = true)
+                                    }
+                                } else null
+                            }
+                        }
+                        if (targetStudent != null) {
+                            scope.launch {
+                                val geoOk = if (geofenceVerified || isAdmin) true else {
+                                    when (val geo = AntiProxyAttendanceManager.verifyStudentCampusGeofence(context)) {
+                                        is GeofenceVerificationResult.VerifiedInsideCampus -> {
+                                            geofenceVerified = true
+                                            geofenceStatusText = "✓ Campus Geofence Verified (${geo.distanceMeters.toInt()}m)"
+                                            true
+                                        }
+                                        is GeofenceVerificationResult.BlockedMockLocation -> {
+                                            geofenceStatusText = geo.message
+                                            false
+                                        }
+                                        is GeofenceVerificationResult.BlockedOutsideGeofence -> {
+                                            geofenceStatusText = geo.message
+                                            false
+                                        }
+                                        is GeofenceVerificationResult.LocationUnavailable -> {
+                                            geofenceStatusText = geo.message
+                                            false
+                                        }
+                                    }
+                                }
+                                if (geoOk) {
+                                    viewModel.markAttendance(
+                                        targetType = "STUDENT",
+                                        targetId = targetStudent.id,
+                                        targetName = targetStudent.fullName,
+                                        batchName = targetStudent.batchName.ifBlank { activeBatchName },
+                                        status = "PRESENT",
+                                        method = "QR_SCAN",
+                                        remarks = "CameraX ML Kit Verified Rolling HMAC QR ($verifiedBatchId)"
+                                    )
+                                    showQrScanDialog = false
+                                }
+                            }
+                        } else {
+                            geofenceStatusText = "Batch QR verified ($verifiedBatchId) — Enter or select Student Roll No below to mark present."
+                        }
                     } else {
                         qrCodeInput = rawScanned.substringAfterLast(":")
                     }
@@ -1207,6 +1283,7 @@ fun FinanceAndPayrollModuleScreen(
         )
     }
     var showCollectFee by remember { mutableStateOf(false) }
+    var editingFeeInvoice by remember { mutableStateOf<com.example.data.model.FeeInvoice?>(null) }
     var showAddLedger by remember { mutableStateOf(false) }
     var showRunPayroll by remember { mutableStateOf(false) }
 
@@ -1312,19 +1389,29 @@ fun FinanceAndPayrollModuleScreen(
                                 Column(horizontalAlignment = Alignment.End) {
                                     MoneyTicker(amountPaise = fee.paidAmountPaise, color = WciColors.Success, fontSizeSp = 18)
                                     Spacer(modifier = Modifier.height(6.dp))
-                                    LiquidPill(
-                                        text = "PDF Receipt",
-                                        selected = false,
-                                        icon = Icons.Default.PictureAsPdf,
-                                        onClick = {
-                                            DocumentExportHelper.exportAndShareFeeReceiptPdf(
-                                                context = context,
-                                                instituteName = state.preferences.instituteName,
-                                                gstNumber = state.preferences.gstNumber,
-                                                invoice = fee
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        if (isAdmin) {
+                                            LiquidPill(
+                                                text = "Update Fee",
+                                                selected = true,
+                                                icon = Icons.Default.CurrencyRupee,
+                                                onClick = { editingFeeInvoice = fee }
                                             )
                                         }
-                                    )
+                                        LiquidPill(
+                                            text = "PDF Receipt",
+                                            selected = false,
+                                            icon = Icons.Default.PictureAsPdf,
+                                            onClick = {
+                                                DocumentExportHelper.exportAndShareFeeReceiptPdf(
+                                                    context = context,
+                                                    instituteName = state.preferences.instituteName,
+                                                    gstNumber = state.preferences.gstNumber,
+                                                    invoice = fee
+                                                )
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1464,7 +1551,62 @@ fun FinanceAndPayrollModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showCollectFee = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showCollectFee = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
+        )
+    }
+
+    editingFeeInvoice?.let { feeToUpdate ->
+        var additionalPaidInr by remember(feeToUpdate.id) {
+            mutableStateOf(((feeToUpdate.balancePaise / 100L).coerceAtLeast(1000L)).toString())
+        }
+        var mode by remember(feeToUpdate.id) { mutableStateOf(feeToUpdate.paymentMode.ifBlank { "UPI" }) }
+
+        AlertDialog(
+            onDismissRequest = { editingFeeInvoice = null },
+            containerColor = WciColors.elevatedSurface,
+            title = { Text("Update Fee • ${feeToUpdate.receiptNo}", color = WciColors.textPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "${feeToUpdate.studentName} • ${feeToUpdate.courseName}",
+                        style = MaterialTheme.typography.titleSmall.copy(color = WciColors.textPrimary)
+                    )
+                    Text(
+                        text = "Paid: ${formatInrPaise(feeToUpdate.paidAmountPaise)} • Balance Due: ${formatInrPaise(feeToUpdate.balancePaise)}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Info)
+                    )
+                    OutlinedTextField(
+                        value = additionalPaidInr,
+                        onValueChange = { additionalPaidInr = it.filter(Char::isDigit) },
+                        label = { Text("Additional Payment Amount (₹) *") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("UPI", "CASH", "CARD", "NEFT").forEach { m ->
+                            LiquidPill(text = m, selected = mode == m, onClick = { mode = m })
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                ShimmerButton(
+                    text = "Update Fee",
+                    enabled = (additionalPaidInr.toLongOrNull() ?: 0L) > 0L,
+                    onClick = {
+                        viewModel.updateFeeInvoice(
+                            invoiceId = feeToUpdate.id,
+                            additionalPaidInr = additionalPaidInr.toLongOrNull() ?: 0L,
+                            paymentMode = mode
+                        )
+                        editingFeeInvoice = null
+                    }
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { editingFeeInvoice = null }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) }
+            }
         )
     }
 
@@ -1506,7 +1648,7 @@ fun FinanceAndPayrollModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddLedger = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddLedger = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -1554,7 +1696,7 @@ fun FinanceAndPayrollModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showRunPayroll = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showRunPayroll = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 }

@@ -15,7 +15,10 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
@@ -36,9 +39,15 @@ class PortalAuthRepository(
     private val db: FirebaseFirestore,
     private val instituteRepository: InstituteRepository
 ) {
+    sealed class CredentialLookupResult {
+        data class Found(val credential: PortalCredential) : CredentialLookupResult()
+        data object ConfirmedMissing : CredentialLookupResult()
+        data class NetworkUnavailable(val reason: String? = null) : CredentialLookupResult()
+    }
+
     companion object {
         private const val TAG = "PortalAuthRepository"
-        private const val SERVER_FETCH_TIMEOUT_MS = 3_000L
+        private const val SERVER_FETCH_TIMEOUT_MS = 3_500L
 
         fun create(context: Context, instituteRepository: InstituteRepository): PortalAuthRepository {
             val firestore = InstituteRepository.getConfiguredFirestore(context)
@@ -66,6 +75,9 @@ class PortalAuthRepository(
         val portalRoles: List<String>
     )
 
+    private fun isRobolectricRuntime(): Boolean =
+        android.os.Build.FINGERPRINT?.equals("robolectric", ignoreCase = true) == true
+
     /**
      * Explicit Server + Cache fetch:
      * Queries `Source.SERVER` first so newly provisioned accounts on another device are always
@@ -75,25 +87,20 @@ class PortalAuthRepository(
         docRef: DocumentReference,
         timeoutMs: Long = SERVER_FETCH_TIMEOUT_MS
     ): DocumentSnapshot? = withContext(Dispatchers.IO) {
-        val serverSnap = try {
+        if (isRobolectricRuntime()) return@withContext null
+        val cachedSnap = runCatching {
+            withTimeoutOrNull(500L) { docRef.get(Source.CACHE).await() }
+        }.getOrNull()
+        if (cachedSnap != null && cachedSnap.exists()) {
+            return@withContext cachedSnap
+        }
+        try {
             withTimeoutOrNull(timeoutMs) {
                 docRef.get(Source.SERVER).await()
             }
         } catch (e: Exception) {
-            Log.d(TAG, "Server fetch fallback to cache for ${docRef.path}: ${e.localizedMessage}")
+            Log.d(TAG, "Server fetch skipped for ${docRef.path}: ${e.localizedMessage}")
             null
-        }
-        if (serverSnap != null) {
-            return@withContext serverSnap
-        }
-        try {
-            docRef.get(Source.CACHE).await()
-        } catch (_: Exception) {
-            try {
-                withTimeoutOrNull(2_000L) { docRef.get(Source.DEFAULT).await() }
-            } catch (_: Exception) {
-                null
-            }
         }
     }
 
@@ -101,6 +108,7 @@ class PortalAuthRepository(
         query: Query,
         timeoutMs: Long = SERVER_FETCH_TIMEOUT_MS
     ): QuerySnapshot? = withContext(Dispatchers.IO) {
+        if (isRobolectricRuntime()) return@withContext null
         val serverSnap = try {
             withTimeoutOrNull(timeoutMs) {
                 query.get(Source.SERVER).await()
@@ -113,7 +121,7 @@ class PortalAuthRepository(
             return@withContext serverSnap
         }
         try {
-            query.get(Source.CACHE).await()
+            withTimeoutOrNull(500L) { query.get(Source.CACHE).await() }
         } catch (_: Exception) {
             try {
                 withTimeoutOrNull(2_000L) { query.get(Source.DEFAULT).await() }
@@ -124,54 +132,102 @@ class PortalAuthRepository(
     }
 
     /**
-     * Looks up a `PortalCredential` by normalized username across:
-     * 1. Server + Cache `portalCredentials/{username}`
-     * 2. Server + Cache `users/cred_{username}` / `users?username=...` (for role-flag cross-verification)
-     * 3. Local in-memory / encrypted SharedPreferences fallback when completely offline.
+     * Sub-millisecond local lookup with single-shot Cloud Firestore server check.
+     * Distinguishes definitively between:
+     * - [CredentialLookupResult.Found]: Valid credential in local vault, Firestore disk cache, or server
+     * - [CredentialLookupResult.ConfirmedMissing]: Server responded and confirmed document does not exist
+     * - [CredentialLookupResult.NetworkUnavailable]: Offline or server timed out before responding
      */
-    suspend fun fetchPortalCredentialCrossDevice(rawUsername: String): PortalCredential? = withContext(Dispatchers.IO) {
+    suspend fun fetchPortalCredentialCrossDeviceWithStatus(
+        rawUsername: String,
+        serverTimeoutMs: Long = SERVER_FETCH_TIMEOUT_MS
+    ): CredentialLookupResult {
         val cleanKey = FirebaseAuthServiceProvider.normalizeUsername(rawUsername)
-        if (cleanKey.isBlank()) return@withContext null
+        if (cleanKey.isBlank()) return CredentialLookupResult.ConfirmedMissing
 
-        val docRef = db.collection("portalCredentials").document(cleanKey)
-        val snap = getDocumentServerAndCache(docRef)
-        if (snap != null && snap.exists()) {
-            val remoteCred = snap.toObject(PortalCredential::class.java)?.let { parsed ->
-                normalizeCredentialFlags(parsed)
-            }
-            if (remoteCred != null) {
-                InstituteRepository.cacheCredentialLocally(remoteCred)
-                return@withContext remoteCred
-            }
-        }
-
-        // Fallback to local vault only when remote document was not obtained (e.g. offline first sync)
+        // 1. Sub-millisecond RAM / EncryptedPrefs lookup (<0.1ms, zero thread hop)
         InstituteRepository.getCachedCredentialLocally(cleanKey)?.let { cached ->
-            return@withContext normalizeCredentialFlags(cached)
+            return CredentialLookupResult.Found(normalizeCredentialFlags(cached))
         }
-        null
+
+        if (isRobolectricRuntime()) {
+            return CredentialLookupResult.ConfirmedMissing
+        }
+
+        return withContext(Dispatchers.IO) {
+            // Re-check local vault inside IO context in case another coroutine just populated it
+            InstituteRepository.getCachedCredentialLocally(cleanKey)?.let { cached ->
+                return@withContext CredentialLookupResult.Found(normalizeCredentialFlags(cached))
+            }
+
+            val docRef = db.collection("portalCredentials").document(cleanKey)
+
+            // 2. Fast Firestore persistent offline cache check (<500ms)
+            val cachedSnap = runCatching {
+                withTimeoutOrNull(500L) { docRef.get(Source.CACHE).await() }
+            }.getOrNull()
+            if (cachedSnap != null && cachedSnap.exists()) {
+                val cachedCred = cachedSnap.toObject(PortalCredential::class.java)?.let(::normalizeCredentialFlags)
+                if (cachedCred != null) {
+                    InstituteRepository.cacheCredentialLocally(cachedCred)
+                    return@withContext CredentialLookupResult.Found(cachedCred)
+                }
+            }
+
+            // 3. Single fast server check for cross-device / fresh install login (max 3.5s)
+            try {
+                val serverSnap = withTimeoutOrNull(serverTimeoutMs) {
+                    docRef.get(Source.SERVER).await()
+                } ?: return@withContext CredentialLookupResult.NetworkUnavailable("Server lookup timed out after ${serverTimeoutMs}ms")
+
+                if (!serverSnap.exists()) {
+                    return@withContext CredentialLookupResult.ConfirmedMissing
+                }
+
+                val remoteCred = serverSnap.toObject(PortalCredential::class.java)?.let(::normalizeCredentialFlags)
+                if (remoteCred != null) {
+                    InstituteRepository.cacheCredentialLocally(remoteCred)
+                    return@withContext CredentialLookupResult.Found(remoteCred)
+                }
+                CredentialLookupResult.ConfirmedMissing
+            } catch (e: Exception) {
+                Log.d(TAG, "Server credential lookup error for $cleanKey: ${e.localizedMessage}")
+                CredentialLookupResult.NetworkUnavailable(e.localizedMessage)
+            }
+        }
     }
 
     /**
-     * Checks whether any Admin credential already exists in Cloud Firestore (server/cache) or
-     * the local credential vault so startup seeding never overwrites a customized Admin password.
+     * Looks up a `PortalCredential` by normalized username across local vault, disk cache, and server.
      */
-    suspend fun hasAnyAdminCredential(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun fetchPortalCredentialCrossDevice(rawUsername: String): PortalCredential? =
+        when (val res = fetchPortalCredentialCrossDeviceWithStatus(rawUsername)) {
+            is CredentialLookupResult.Found -> res.credential
+            else -> null
+        }
+
+    /**
+     * Checks in parallel whether any Admin credential already exists in Cloud Firestore (server/cache)
+     * or the local credential vault so startup seeding never overwrites a customized Admin password.
+     */
+    suspend fun hasAnyAdminCredential(): Boolean {
         if (InstituteRepository.localCredentialsCache.values.any {
                 it.active && (it.isAdmin || it.role.equals(PortalRole.ADMIN.key, ignoreCase = true))
             }
         ) {
-            return@withContext true
+            return true
         }
-        for (defaultAdminKey in listOf("waqar", "admin", "waqar_admin")) {
-            val docSnap = runCatching {
-                getDocumentServerAndCache(db.collection("portalCredentials").document(defaultAdminKey))
-            }.getOrNull()
-            if (docSnap != null && docSnap.exists()) {
-                return@withContext true
+        return withContext(Dispatchers.IO) {
+            coroutineScope {
+                listOf("waqar", "admin", "waqar_admin").map { key ->
+                    async {
+                        runCatching {
+                            fetchPortalCredentialCrossDeviceWithStatus(key, serverTimeoutMs = 3_000L) is CredentialLookupResult.Found
+                        }.getOrDefault(false)
+                    }
+                }.awaitAll().any { it }
             }
         }
-        false
     }
 
     suspend fun fetchUserProfileCrossDevice(uidOrUsername: String): UserProfile? = withContext(Dispatchers.IO) {

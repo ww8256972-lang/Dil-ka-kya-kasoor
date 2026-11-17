@@ -75,6 +75,20 @@ object SecurityIncidentLogger {
             runCatching {
                 repository.logAuditEvent(log)
             }
+            runCatching {
+                com.waqar.institute.ledger.ImmutableEventSourcedLedger.appendImmutableEvent(
+                    nodeDeviceId = safeActorUid.take(12),
+                    eventType = "SECURITY_${violationType.uppercase().take(40)}",
+                    actorId = username.ifBlank { safeActorUid },
+                    payloadSummary = formattedDetails
+                )
+            }
+            runCatching {
+                com.waqar.institute.ipc.ZeroCopyIpcRingManager.publishPortalEventZeroCopy(
+                    portalTag = "M22_SECURITY",
+                    eventSummary = "${violationType.uppercase()}:$username"
+                )
+            }
         }
     }
 

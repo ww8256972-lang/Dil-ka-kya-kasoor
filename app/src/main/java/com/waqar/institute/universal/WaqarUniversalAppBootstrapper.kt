@@ -46,9 +46,15 @@ class WaqarUniversalAppBootstrapper : Application() {
 
         bootstrapScope.launch {
             runCatching {
-                InstituteRepository.getConfiguredFirestore(appCtx)
+                val firestore = InstituteRepository.getConfiguredFirestore(appCtx)
+                com.waqar.institute.database.InstituteDatabaseModule.configureOptimizedFirestoreCache(firestore)
             }.onFailure { err ->
                 Log.w(TAG, "Deferred Firestore warm-up notice: ${err.localizedMessage}")
+            }
+            runCatching {
+                com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ensureMasterAdminPhotoEnrolled(appCtx)
+            }.onFailure { err ->
+                Log.w(TAG, "Master admin face seed notice: ${err.localizedMessage}")
             }
         }
     }

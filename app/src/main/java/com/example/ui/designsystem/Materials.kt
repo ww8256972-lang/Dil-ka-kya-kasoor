@@ -38,7 +38,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -1117,11 +1119,29 @@ fun HoldToConfirmButton(
         Text(
             text = if (isHolding) "Hold ${(holdProgress * 100).toInt()}%..." else "$label (Hold)",
             style = MaterialTheme.typography.labelLarge.copy(
-                color = WciColors.Danger,
-                fontWeight = FontWeight.Bold
+                color = if (LocalIsDarkTheme.current) Color(0xFFFFE4EC) else WciColors.DangerLight,
+                fontWeight = FontWeight.ExtraBold
             )
         )
     }
+}
+
+@Composable
+fun wciOutlinedTextFieldColors(
+    palette: RolePalette = LocalRolePalette.current
+): TextFieldColors {
+    val isDark = LocalIsDarkTheme.current
+    return OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = palette.start,
+        unfocusedBorderColor = if (isDark) WciColors.GlassBorderLight else WciColors.GlassBorderLightMode,
+        focusedTextColor = WciColors.textPrimary,
+        unfocusedTextColor = WciColors.textPrimary,
+        focusedLabelColor = palette.start,
+        unfocusedLabelColor = WciColors.textSecondary,
+        focusedPlaceholderColor = WciColors.textMuted,
+        unfocusedPlaceholderColor = WciColors.textMuted,
+        cursorColor = palette.start
+    )
 }
 
 @Composable

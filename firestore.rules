@@ -748,5 +748,16 @@ service cloud.firestore {
       allow create: if isValidImmutableLedgerEntry(request.resource.data);
       allow update, delete: if false;
     }
+
+    match /rateLimits/{bucketId} {
+      allow read: if isAdmin();
+      allow create, update: if bucketId.size() >= 3 && bucketId.size() <= 140 &&
+        request.resource.data.keys().hasAll(['count', 'windowStartMs', 'blockedUntilMs']) &&
+        request.resource.data.count is int && request.resource.data.count >= 1 &&
+        request.resource.data.windowStartMs is int && request.resource.data.windowStartMs >= 0 &&
+        request.resource.data.blockedUntilMs is int && request.resource.data.blockedUntilMs >= 0 &&
+        (resource == null || request.resource.data.blockedUntilMs >= resource.data.blockedUntilMs);
+      allow delete: if isAdmin();
+    }
   }
 }

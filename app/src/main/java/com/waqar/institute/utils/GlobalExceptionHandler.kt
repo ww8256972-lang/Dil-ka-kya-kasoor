@@ -121,7 +121,7 @@ object GlobalExceptionHandler : Thread.UncaughtExceptionHandler {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .background(Color(0xFF1E1B4B), RoundedCornerShape(14.dp))
+                        .background(WciColors.CrashCardBg, RoundedCornerShape(14.dp))
                         .border(1.dp, WciColors.Warning.copy(alpha = 0.65f), RoundedCornerShape(14.dp))
                         .padding(12.dp)
                 ) {

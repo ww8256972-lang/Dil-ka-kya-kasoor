@@ -25,63 +25,18 @@ import java.util.concurrent.ConcurrentHashMap
  * 2. Role-Based Rate Limiter & Academic Prompt Guardrails (`AiRateLimiterManager`):
  *    - Admin & Teacher portals have ZERO rate limits or token restrictions.
  *    - Student & Parent portals have sliding-window rate limits (12 queries/hr) and academic scope guardrails.
- * 3. Primary Cloud AI: Firebase AI Logic (`gemini-2.5-flash` with `gemini-3.8-flash` fallback) protected by App Check.
+ * 3. Primary Cloud AI: Firebase AI Logic (`gemini-3.8-flash` with `gemini-3.5-flash-lite` fallback) protected by App Check.
  */
 @Obfuscate
 class GeminiInstituteService {
 
     companion object {
         const val BRAND_NAME = "Waqar Computer Institute AI"
-        const val MODEL_NAME = "gemini-2.5-flash"
-        const val FALLBACK_MODEL_NAME = "gemini-2.0-flash"
+        const val MODEL_NAME = "gemini-3.8-flash"
+        const val FALLBACK_MODEL_NAME = "gemini-3.5-flash-lite"
         const val AI_TIMEOUT_MILLIS = 60_000L
 
         private val responseMemoryCache = ConcurrentHashMap<String, String>()
-
-        private val instantAcademicKnowledgeBase: Map<String, String> = mapOf(
-            "tally" to """
-                **Waqar Computer Institute AI — Tally Prime & GST Master Guide**
-                • **Create Company**: Press `Alt + K` -> Create -> Enter Company Name, State, and Financial Year.
-                • **Enable GST**: Press `F11` (Features) -> Enable Goods and Services Tax (GST) -> Yes -> Enter GSTIN.
-                • **Essential Voucher Shortcuts**:
-                  - `F4`: Contra Voucher (Bank <-> Cash transfer)
-                  - `F5`: Payment Voucher
-                  - `F6`: Receipt Voucher
-                  - `F7`: Journal Voucher
-                  - `F8`: Sales Invoice
-                  - `F9`: Purchase Invoice
-                • **Trial Balance & Balance Sheet**: Gateway of Tally -> `Display More Reports` -> `Trial Balance` or press `B` for Balance Sheet.
-            """.trimIndent(),
-            "python" to """
-                **Waqar Computer Institute AI — Python Programming Quick Reference**
-                • **Lists vs Dictionaries**:
-                  - `List` is an ordered, mutable sequence indexed by integers: `marks = [85, 92, 78]`
-                  - `Dictionary` stores key-value pairs for instant O(1) lookup: `student = {"name": "Rahul", "course": "ADCA", "score": 92}`
-                • **Practical Lab Example**:
-                ```python
-                students = [
-                    {"roll": "WCI-01", "name": "Aisha", "marks": 94},
-                    {"roll": "WCI-02", "name": "Rahul", "marks": 88}
-                ]
-                for s in students:
-                    grade = "A+" if s["marks"] >= 90 else "A"
-                    print(f"{s['roll']} - {s['name']}: {s['marks']}% ({grade})")
-                ```
-            """.trimIndent(),
-            "excel" to """
-                **Waqar Computer Institute AI — MS Excel Practical Formulas**
-                • **Total Marks**: `=SUM(C2:G2)`
-                • **Percentage**: `=AVERAGE(C2:G2)` or `=(H2/500)*100`
-                • **Grade Calculation**: `=IF(I2>=85, "A+", IF(I2>=70, "A", IF(I2>=50, "B", "Pass")))`
-                • **VLOOKUP Student Record**: `=VLOOKUP(A2, StudentTable!A2:F100, 3, FALSE)`
-                • **Quick Shortcuts**: `Ctrl + T` (Create Table), `Alt + =` (AutoSum), `Ctrl + Shift + L` (Toggle Filters).
-            """.trimIndent(),
-            "adca" to """
-                **Waqar Computer Institute AI — ADCA (Advanced Diploma in Computer Applications) Syllabus**
-                • **Semester 1 (6 Months)**: Computer Fundamentals, Windows 11, MS Word, MS Excel, MS PowerPoint, Internet & Digital Banking, HTML5 & CSS3.
-                • **Semester 2 (6 Months)**: Tally Prime with GST & Payroll, Python Programming, MySQL Database Basics, Photoshop / CorelDraw & Final Project Lab.
-            """.trimIndent()
-        )
     }
 
     private val geminiModel by lazy {
@@ -129,7 +84,7 @@ class GeminiInstituteService {
             )
             text
         }.getOrElse {
-            "Offline AI Mode: Unable to reach Cloud Functions SSE Proxy or Firebase AI Logic service. Please verify network connectivity."
+            "Offline AI Mode: Unable to reach Cloud Functions SSE Proxy or Firebase AI Logic service. Please verify network connectivity and retry."
         }
     }
 
@@ -139,17 +94,6 @@ class GeminiInstituteService {
         val normalizedKey = "${featureType.uppercase()}|${prompt.trim().lowercase()}"
         responseMemoryCache[normalizedKey]?.let { return it }
         AiLocalCacheRepository.getInstantL1CacheHit(featureType, "EN", prompt)?.let { return it }
-        AiLocalCacheRepository.getInstantL1CacheHit(featureType, "HI", prompt)?.let { return it }
-
-        if (featureType == "TUTOR_CHAT" && prompt.length < 90) {
-            val lower = prompt.lowercase()
-            for ((keyword, instantReply) in instantAcademicKnowledgeBase) {
-                if (lower.contains(keyword) && (lower.contains("explain") || lower.contains("shortcut") || lower.contains("formula") || lower.contains("syllabus") || lower.contains("vs"))) {
-                    responseMemoryCache[normalizedKey] = instantReply
-                    return instantReply
-                }
-            }
-        }
         return null
     }
 
@@ -181,7 +125,7 @@ class GeminiInstituteService {
 
         val cacheKey = "${featureType.uppercase()}|${userPrompt.trim().lowercase()}"
 
-        // 2A. Sub-Millisecond (<0.1ms) Instant Knowledge Base / L1 Memory Cache Hit
+        // 2A. Sub-Millisecond (<0.1ms) L1 Memory Cache Hit (Previously verified live responses only)
         val cachedInstant = lookupSubMillisecondAnswer(featureType, userPrompt)
         if (cachedInstant != null) {
             emit(cachedInstant)
@@ -192,7 +136,7 @@ class GeminiInstituteService {
         val cachedRoom = AiLocalCacheRepository.getCachedResponse(
             context = null,
             featureType = featureType,
-            languageCode = languageCode,
+            languageCode = "EN",
             prompt = userPrompt
         )
         if (!cachedRoom.isNullOrBlank()) {
@@ -201,14 +145,10 @@ class GeminiInstituteService {
             return@flow
         }
 
-        val langInstruction = if (languageCode == "HI") {
-            "Respond clearly in Hindi / Hinglish with easy technical terms suitable for Waqar Computer Institute students and faculty."
-        } else {
-            "Respond clearly in professional, encouraging English with practical step-by-step computer lab examples."
-        }
+        val langInstruction = "Respond clearly in professional, encouraging English with practical step-by-step computer lab examples."
 
         val systemFraming = buildString {
-            appendLine(AiRateLimiterManager.buildInstituteGuardrailSystemPrompt(role, languageCode, featureType))
+            appendLine(AiRateLimiterManager.buildInstituteGuardrailSystemPrompt(role, "EN", featureType))
             appendLine("You are $BRAND_NAME, the official AI Academic & Operations Assistant of Waqar Computer Institute (Grow Up Computer Skill).")
             appendLine("Current User Role: $role | Mode: $featureType.")
             appendLine(langInstruction)
@@ -227,7 +167,7 @@ class GeminiInstituteService {
         }
 
         // 3. Primary Stream: Firebase Cloud Functions SSE Proxy (OpenAI/ChatGPT with App Check attestation)
-        //    Fallback Stream: Firebase AI Logic (gemini-2.5-flash -> gemini-2.0-flash)
+        //    Fallback Stream: Firebase AI Logic (gemini-3.8-flash -> gemini-3.5-flash-lite)
         val accumulated = StringBuilder()
         var modelUsed = OpenAiCloudFunctionSseClient.PROXY_MODEL_NAME
 
@@ -288,7 +228,7 @@ class GeminiInstituteService {
             AiLocalCacheRepository.putCachedResponse(
                 context = null,
                 featureType = featureType,
-                languageCode = languageCode,
+                languageCode = "EN",
                 prompt = userPrompt,
                 responseText = finalOutput,
                 modelName = modelUsed
@@ -318,8 +258,7 @@ class GeminiInstituteService {
             image(bitmap)
             text(
                 "You are $BRAND_NAME's Lab & Doubt Tutor. " +
-                    "Examine this image/screenshot/notes and answer: $question " +
-                    if (languageCode == "HI") "(Explain in easy Hindi/English)" else "(Explain clearly step-by-step)"
+                    "Examine this image/screenshot/notes and answer clearly step-by-step in English: $question"
             )
         }
         val response = withTimeout(AI_TIMEOUT_MILLIS) {

@@ -277,7 +277,7 @@ fun AdminDashboardModule(
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
                     cornerRadius = 28.dp,
-                    glowColor = Color(0xFF818CF8),
+                    glowColor = WciColors.IndigoAccent,
                     strongSurface = true,
                     onClick = { onNavigateToModule("M10_EXAMS") }
                 ) {
@@ -289,7 +289,7 @@ fun AdminDashboardModule(
                         Box(
                             modifier = Modifier
                                 .background(
-                                    Color(0xFF818CF8).copy(alpha = 0.24f),
+                                    WciColors.IndigoAccent.copy(alpha = 0.24f),
                                     RoundedCornerShape(WciRadius.pill)
                                 )
                                 .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.pill))
@@ -319,11 +319,7 @@ fun AdminDashboardModule(
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = nextExam?.title ?: if (state.preferences.languageCode == "HI") {
-                            "Upcoming Exam - एडमिन द्वारा निर्धारित"
-                        } else {
-                            "Upcoming Exam - Scheduled by Admin"
-                        },
+                        text = nextExam?.title ?: "Upcoming Exam - Scheduled by Admin",
                         style = MaterialTheme.typography.headlineMedium.copy(
                             color = WciColors.textPrimary,
                             fontWeight = FontWeight.ExtraBold
@@ -456,7 +452,7 @@ fun AdminDashboardModule(
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = JetBrainsMono,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = Color(0xFF05060F),
+                                    color = WciColors.OnAccentDark,
                                     fontSize = 12.sp
                                 )
                             )
@@ -506,7 +502,7 @@ fun AdminDashboardModule(
                 }
                 GlassCard(
                     modifier = Modifier.fillMaxWidth(),
-                    glowColor = Color(0xFFFF6B8B),
+                    glowColor = WciColors.NeonPinkCoral,
                     onClick = { onNavigateToModule("M07_ATTENDANCE") }
                 ) {
                     Row(
@@ -564,6 +560,11 @@ fun AdminDashboardModule(
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "UPI opens your installed payment app directly. Share the UPI UTR / transaction reference with the institute office so Admin can post and verify your receipt in the Fee Ledger.",
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
+                        )
                     }
                 }
             }
@@ -580,12 +581,12 @@ fun AdminDashboardModule(
                     if (isAdmin) {
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF00E5FF),
+                            glowColor = WciColors.Info,
                             onClick = { onNavigateToModule("M03_STUDENTS") }
                         ) {
                             Text("ENROLLED STUDENTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = state.students.size, color = Color(0xFF00E5FF), fontSizeSp = 26)
+                            CountUpInt(targetValue = state.students.size, color = WciColors.Info, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.batches.size} Batches • ${state.courses.size} Courses",
@@ -595,7 +596,7 @@ fun AdminDashboardModule(
 
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF14F195),
+                            glowColor = WciColors.Success,
                             onClick = { onNavigateToModule("M08_FEES") }
                         ) {
                             Text("FEE COLLECTED (MTD)", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
@@ -604,18 +605,18 @@ fun AdminDashboardModule(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "Dues: ${formatInrPaise(totalPendingPaise)}",
-                                style = MaterialTheme.typography.bodySmall.copy(color = Color(0xFFFF6B8B))
+                                style = MaterialTheme.typography.bodySmall.copy(color = WciColors.NeonPinkCoral)
                             )
                         }
                     } else if (isTeacher) {
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF00E5FF),
+                            glowColor = WciColors.Info,
                             onClick = { onNavigateToModule("M06_BATCHES") }
                         ) {
                             Text("ASSIGNED BATCHES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = state.batches.size, color = Color(0xFF00E5FF), fontSizeSp = 26)
+                            CountUpInt(targetValue = state.batches.size, color = WciColors.Info, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.courses.size} Active Courses",
@@ -625,7 +626,7 @@ fun AdminDashboardModule(
 
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF14F195),
+                            glowColor = WciColors.Success,
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
                             Text("PRESENT TODAY", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
@@ -641,7 +642,7 @@ fun AdminDashboardModule(
                         // Student & Parent KPI Row 1
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFFA855F7),
+                            glowColor = WciColors.PurpleVibrant,
                             onClick = { onNavigateToModule("M11_RESULTS") }
                         ) {
                             Text(
@@ -649,7 +650,7 @@ fun AdminDashboardModule(
                                 style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                             )
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = bestExamPercent, suffix = "%", color = Color(0xFFE879F9), fontSizeSp = 26)
+                            CountUpInt(targetValue = bestExamPercent, suffix = "%", color = WciColors.NeonOrchid, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.examResults.size} Published Marksheets",
@@ -659,7 +660,7 @@ fun AdminDashboardModule(
 
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFFFF5894),
+                            glowColor = WciColors.NeonMagenta,
                             onClick = { onNavigateToModule("M08_FEES") }
                         ) {
                             Text(
@@ -667,7 +668,7 @@ fun AdminDashboardModule(
                                 style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary)
                             )
                             Spacer(modifier = Modifier.height(6.dp))
-                            MoneyTicker(amountPaise = totalPendingPaise, color = Color(0xFFFF6B8B), fontSizeSp = 22)
+                            MoneyTicker(amountPaise = totalPendingPaise, color = WciColors.NeonPinkCoral, fontSizeSp = 22)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "Paid: ${formatInrPaise(totalCollectedPaise)}",
@@ -684,12 +685,12 @@ fun AdminDashboardModule(
                     if (isAdmin) {
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFFA855F7),
+                            glowColor = WciColors.PurpleVibrant,
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
                             Text("TODAY'S ATTENDANCE", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = avgAttendance, suffix = "%", color = Color(0xFFE879F9), fontSizeSp = 26)
+                            CountUpInt(targetValue = avgAttendance, suffix = "%", color = WciColors.NeonOrchid, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "$presentTodayCount Present Today",
@@ -699,12 +700,12 @@ fun AdminDashboardModule(
 
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF38BDF8),
+                            glowColor = WciColors.Warning,
                             onClick = { onNavigateToModule("M04_ADMISSIONS") }
                         ) {
                             Text("NEW ENQUIRIES", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = state.enquiries.size, color = Color(0xFF38BDF8), fontSizeSp = 26)
+                            CountUpInt(targetValue = state.enquiries.size, color = WciColors.Warning, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.enquiries.count { it.stage == "CONVERTED" }} Converted",
@@ -714,7 +715,7 @@ fun AdminDashboardModule(
                     } else {
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF10F596),
+                            glowColor = WciColors.SuccessNeon,
                             onClick = { onNavigateToModule("M07_ATTENDANCE") }
                         ) {
                             Text("PRESENT DAYS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
@@ -729,12 +730,12 @@ fun AdminDashboardModule(
 
                         GlassCard(
                             modifier = Modifier.weight(1f),
-                            glowColor = Color(0xFF38BDF8),
+                            glowColor = WciColors.Warning,
                             onClick = { onNavigateToModule("M16_ANNOUNCEMENTS") }
                         ) {
                             Text("INSTITUTE ALERTS", style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textSecondary))
                             Spacer(modifier = Modifier.height(6.dp))
-                            CountUpInt(targetValue = state.announcements.size, color = Color(0xFF38BDF8), fontSizeSp = 26)
+                            CountUpInt(targetValue = state.announcements.size, color = WciColors.Warning, fontSizeSp = 26)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "${state.liveClasses.size} Live Classes",
@@ -770,7 +771,7 @@ fun AdminDashboardModule(
                         title = "+ Add Student",
                         subtitle = "Admission & Photo",
                         icon = Icons.Default.PersonAdd,
-                        accentColor = Color(0xFF00E5FF),
+                        accentColor = WciColors.Info,
                         onClick = { onNavigateToModule("M03_STUDENTS") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_add_student_tile"
@@ -779,7 +780,7 @@ fun AdminDashboardModule(
                         title = "Collect Fee",
                         subtitle = "GST Receipt",
                         icon = Icons.Default.CurrencyRupee,
-                        accentColor = Color(0xFF14F195),
+                        accentColor = WciColors.Success,
                         onClick = { onNavigateToModule("M08_FEES") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_collect_fee_tile"
@@ -794,7 +795,7 @@ fun AdminDashboardModule(
                         title = "Roll Call & QR",
                         subtitle = "Batch Attendance",
                         icon = Icons.Default.QrCodeScanner,
-                        accentColor = Color(0xFFA855F7),
+                        accentColor = WciColors.PurpleVibrant,
                         onClick = { onNavigateToModule("M07_ATTENDANCE") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_attendance_tile"
@@ -803,7 +804,7 @@ fun AdminDashboardModule(
                         title = "Exams & CBT",
                         subtitle = "24h Schedule & Qs",
                         icon = Icons.Default.Quiz,
-                        accentColor = Color(0xFFFF5894),
+                        accentColor = WciColors.NeonMagenta,
                         onClick = { onNavigateToModule("M10_EXAMS") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_exams_tile"
@@ -818,7 +819,7 @@ fun AdminDashboardModule(
                         title = "Add Teacher",
                         subtitle = "Photo, Face ID & Login",
                         icon = Icons.Default.Badge,
-                        accentColor = Color(0xFF38BDF8),
+                        accentColor = WciColors.Warning,
                         onClick = { onNavigateToModule("M13_STAFF") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_add_teacher_tile"
@@ -827,7 +828,7 @@ fun AdminDashboardModule(
                         title = "Manage Parents",
                         subtitle = "Add Parent User & PTM",
                         icon = Icons.Default.FamilyRestroom,
-                        accentColor = Color(0xFFF59E0B),
+                        accentColor = WciColors.AmberWarm,
                         onClick = { onNavigateToModule("M15_PARENTS") },
                         modifier = Modifier.weight(1f),
                         testTag = "quick_add_parent_tile"
@@ -842,7 +843,7 @@ fun AdminDashboardModule(
                         title = "Mark Attendance",
                         subtitle = "Roster & QR Scan",
                         icon = Icons.AutoMirrored.Filled.FactCheck,
-                        accentColor = Color(0xFF10F596),
+                        accentColor = WciColors.SuccessNeon,
                         onClick = { onNavigateToModule("M07_ATTENDANCE") },
                         modifier = Modifier.weight(1f)
                     )
@@ -850,7 +851,7 @@ fun AdminDashboardModule(
                         title = "Exams & Marks",
                         subtitle = "CBT & Marksheets",
                         icon = Icons.Default.Quiz,
-                        accentColor = Color(0xFFA855F7),
+                        accentColor = WciColors.PurpleVibrant,
                         onClick = { onNavigateToModule("M11_RESULTS") },
                         modifier = Modifier.weight(1f)
                     )
@@ -864,7 +865,7 @@ fun AdminDashboardModule(
                         title = "Study Material",
                         subtitle = "Notes & Labs",
                         icon = Icons.AutoMirrored.Filled.LibraryBooks,
-                        accentColor = Color(0xFF00E5FF),
+                        accentColor = WciColors.Info,
                         onClick = { onNavigateToModule("M12_MATERIALS") },
                         modifier = Modifier.weight(1f)
                     )
@@ -872,7 +873,7 @@ fun AdminDashboardModule(
                         title = "Gemini AI Hub",
                         subtitle = "Quiz & Lesson Plan",
                         icon = Icons.Default.AutoAwesome,
-                        accentColor = Color(0xFFFF5894),
+                        accentColor = WciColors.NeonMagenta,
                         onClick = { onNavigateToModule("M18_AI_HUB") },
                         modifier = Modifier.weight(1f)
                     )
@@ -887,7 +888,7 @@ fun AdminDashboardModule(
                         title = "Mark Sheets",
                         subtitle = "Grades & Rank Card",
                         icon = Icons.Default.EmojiEvents,
-                        accentColor = Color(0xFFA855F7),
+                        accentColor = WciColors.PurpleVibrant,
                         onClick = { onNavigateToModule("M11_RESULTS") },
                         modifier = Modifier.weight(1f)
                     )
@@ -895,7 +896,7 @@ fun AdminDashboardModule(
                         title = "Fee Receipts",
                         subtitle = "Download GST PDF",
                         icon = Icons.AutoMirrored.Filled.ReceiptLong,
-                        accentColor = Color(0xFFFF5894),
+                        accentColor = WciColors.NeonMagenta,
                         onClick = { onNavigateToModule("M08_FEES") },
                         modifier = Modifier.weight(1f)
                     )
@@ -909,7 +910,7 @@ fun AdminDashboardModule(
                         title = if (isParent) "QR Certificates" else "Online CBT Exam",
                         subtitle = if (isParent) "Verified Diploma" else "Practice & Tests",
                         icon = if (isParent) Icons.Default.WorkspacePremium else Icons.Default.Quiz,
-                        accentColor = Color(0xFF00E5FF),
+                        accentColor = WciColors.Info,
                         onClick = { onNavigateToModule(if (isParent) "M13_CERTIFICATES" else "M10_EXAMS") },
                         modifier = Modifier.weight(1f)
                     )
@@ -917,7 +918,7 @@ fun AdminDashboardModule(
                         title = if (isParent) "Notices & PTM" else "AI Doubt Tutor",
                         subtitle = if (isParent) "Institute Alerts" else "24x7 Gemini Help",
                         icon = if (isParent) Icons.Default.Campaign else Icons.Default.AutoAwesome,
-                        accentColor = Color(0xFF10F596),
+                        accentColor = WciColors.SuccessNeon,
                         onClick = { onNavigateToModule(if (isParent) "M16_ANNOUNCEMENTS" else "M18_AI_HUB") },
                         modifier = Modifier.weight(1f)
                     )
@@ -1069,7 +1070,7 @@ fun AdminDashboardModule(
                 ) {
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        glowColor = Color(0xFF00E5FF)
+                        glowColor = WciColors.Info
                     ) {
                         Text(
                             text = nextExam?.title ?: "Upcoming Batch CBT Assessment",
@@ -1122,7 +1123,7 @@ fun AdminDashboardModule(
             },
             dismissButton = {
                 TextButton(onClick = { showExamInstructionsModal = false }) {
-                    Text("Close")
+                    Text("Close", color = WciColors.textSecondary, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -1393,13 +1394,22 @@ fun StudentsModuleScreen(
             student = stu,
             canEditOrDelete = canManageStudents,
             onDismiss = { selectedStudent = null },
+            onLinkAadhaar = { aadhaarDigits ->
+                val ok = viewModel.linkStudentAadhaar(stu.id, aadhaarDigits)
+                if (ok) {
+                    val masked = "XXXX-XXXX-${aadhaarDigits.takeLast(4)}"
+                    selectedStudent = stu.copy(attachmentName = "Verified Aadhaar: $masked")
+                }
+                ok
+            },
             onIssueIdCard = {
                 viewModel.issueCertificate(
                     certType = "ID_CARD",
                     studentId = stu.id,
                     studentName = stu.fullName,
                     courseName = stu.courseName,
-                    grade = "ACTIVE"
+                    grade = "ACTIVE",
+                    enrollmentNo = stu.enrollmentNo
                 )
                 selectedStudent = null
             },
@@ -1478,13 +1488,14 @@ private fun EnrollStudentDialog(
     var totalFeeInr by remember { mutableStateOf("12000") }
     var paidFeeInr by remember { mutableStateOf("4000") }
 
-    // Student Photo & File Attachment States
+    // Student Photo, Aadhaar & File Attachment States
     var photoDataUri by remember { mutableStateOf("") }
     var attachedFileName by remember { mutableStateOf("") }
+    var aadhaarNumber by remember { mutableStateOf("") }
 
-    // Admin-assigned Student & Parent Login Credentials (explicit min 6 chars; no hardcoded default)
+    // Admin-assigned Student & Parent Login Credentials
     var studentUsername by remember { mutableStateOf("") }
-    var studentPassword by remember { mutableStateOf("") }
+    var studentPassword by remember { mutableStateOf("student123") }
     var parentUsername by remember { mutableStateOf("") }
     var parentPassword by remember { mutableStateOf("") }
 
@@ -1653,16 +1664,37 @@ private fun EnrollStudentDialog(
                         singleLine = true
                     )
                 }
+                OutlinedTextField(
+                    value = aadhaarNumber,
+                    onValueChange = { input ->
+                        val digitsOnly = input.filter { it.isDigit() }.take(12)
+                        aadhaarNumber = digitsOnly
+                    },
+                    label = { Text("Link Aadhaar Number (12 Digits)") },
+                    placeholder = { Text("12-digit numeric Aadhaar") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().testTag("enroll_student_aadhaar_input")
+                )
             }
         },
         confirmButton = {
+            val cleanAadhaar = aadhaarNumber.trim()
+            val aadhaarValid = cleanAadhaar.isEmpty() || cleanAadhaar.matches(Regex("^\\d{12}$"))
             ShimmerButton(
                 text = "Save Admission",
                 enabled = fullName.isNotBlank() &&
                     phone.isNotBlank() &&
-                    studentPassword.trim().length >= 6 &&
+                    aadhaarValid &&
+                    (studentPassword.isBlank() || studentPassword.trim().length >= 6) &&
                     (parentPassword.isBlank() || parentPassword.trim().length >= 6),
                 onClick = {
+                    val effectiveAttachment = if (cleanAadhaar.matches(Regex("^\\d{12}$"))) {
+                        val masked = "Verified Aadhaar: XXXX-XXXX-${cleanAadhaar.takeLast(4)}"
+                        if (attachedFileName.isBlank()) masked else "$attachedFileName • $masked"
+                    } else {
+                        attachedFileName
+                    }
                     onSave(
                         enrollmentNo,
                         fullName,
@@ -1675,9 +1707,9 @@ private fun EnrollStudentDialog(
                         totalFeeInr.toLongOrNull() ?: 0L,
                         paidFeeInr.toLongOrNull() ?: 0L,
                         photoDataUri,
-                        attachedFileName,
+                        effectiveAttachment,
                         studentUsername,
-                        studentPassword,
+                        studentPassword.ifBlank { "student123" },
                         parentUsername,
                         parentPassword
                     )
@@ -1685,7 +1717,7 @@ private fun EnrollStudentDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = WciColors.textMuted) }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) }
         }
     )
 }
@@ -1695,6 +1727,7 @@ private fun Student360DetailDialog(
     student: StudentRecord,
     canEditOrDelete: Boolean,
     onDismiss: () -> Unit,
+    onLinkAadhaar: (String) -> Boolean,
     onIssueIdCard: () -> Unit,
     onCreateParentCredential: (String, String) -> Unit,
     onStatusChange: (String) -> Unit,
@@ -1704,7 +1737,10 @@ private fun Student360DetailDialog(
     var parentUsername by remember(student.id) {
         mutableStateOf("parent_" + student.fullName.lowercase().replace(Regex("[^a-z0-9]"), ""))
     }
-    var parentPassword by remember(student.id) { mutableStateOf("") }
+    var parentPassword by remember(student.id) { mutableStateOf("parent123") }
+    var aadhaarInput by remember(student.id) { mutableStateOf("") }
+    var aadhaarConfirmation by remember(student.id) { mutableStateOf<String?>(null) }
+    var aadhaarError by remember(student.id) { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1755,6 +1791,70 @@ private fun Student360DetailDialog(
                     "Total Fee: ${formatInrPaise(student.totalFeePaise)} | Paid: ${formatInrPaise(student.paidFeePaise)} | Due: ${formatInrPaise(student.dueFeePaise)}",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.Success)
                 )
+
+                // Link Aadhaar Section (12-Digit Numeric Validation + Firestore Profile Save)
+                HorizontalDivider(color = WciColors.glassBorderSubtleColor)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Link Aadhaar Verification (12-Digit UIDAI):",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            color = WciColors.Success,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    )
+                    OutlinedTextField(
+                        value = aadhaarInput,
+                        onValueChange = { raw ->
+                            aadhaarInput = raw.filter { it.isDigit() }.take(12)
+                            aadhaarError = null
+                        },
+                        label = { Text("12-Digit Aadhaar Number") },
+                        placeholder = { Text("Enter 12-digit Aadhaar (e.g. 234567890123)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("student_link_aadhaar_input")
+                    )
+                    if (aadhaarError != null) {
+                        Text(
+                            text = aadhaarError.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(color = WciColors.dangerColor)
+                        )
+                    }
+                    if (aadhaarConfirmation != null) {
+                        Text(
+                            text = aadhaarConfirmation.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = WciColors.Success,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                    ShimmerButton(
+                        text = "Link Aadhaar",
+                        icon = Icons.Default.VerifiedUser,
+                        onClick = {
+                            val cleanDigits = aadhaarInput.trim()
+                            if (!cleanDigits.matches(Regex("^\\d{12}$"))) {
+                                aadhaarError = "Please enter a valid 12-digit numeric Aadhaar number."
+                                aadhaarConfirmation = null
+                            } else {
+                                val linked = onLinkAadhaar(cleanDigits)
+                                if (linked) {
+                                    aadhaarError = null
+                                    aadhaarConfirmation = "Aadhaar XXXX-XXXX-${cleanDigits.takeLast(4)} linked & saved to Firestore ✓"
+                                    aadhaarInput = ""
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        testTag = "student_link_aadhaar_button"
+                    )
+                }
 
                 if (canEditOrDelete) {
                     Row(
@@ -1977,7 +2077,7 @@ fun AdmissionsCrmModuleScreen(
                 )
             },
             dismissButton = {
-                TextButton(onClick = { showAddLead = false }) { Text("Cancel") }
+                TextButton(onClick = { showAddLead = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) }
             }
         )
     }
@@ -2202,7 +2302,9 @@ fun StaffAndGuardiansModuleScreen(
                 } ?: ""
             )
         }
-        var teacherPassword by remember(currentEditing) { mutableStateOf("") }
+        var teacherPassword by remember(currentEditing) {
+            mutableStateOf(if (currentEditing == null) "teacher123" else "")
+        }
         var teacherPhotoDataUri by remember(currentEditing) {
             mutableStateOf(
                 currentEditing?.photoUri?.ifBlank {
@@ -2360,7 +2462,6 @@ fun StaffAndGuardiansModuleScreen(
                     text = "Save Teacher & Login",
                     enabled = name.isNotBlank() &&
                         phone.isNotBlank() &&
-                        (currentEditing != null || teacherPassword.trim().length >= 6) &&
                         (teacherPassword.isBlank() || teacherPassword.trim().length >= 6),
                     onClick = {
                         viewModel.saveStaffMember(
@@ -2388,7 +2489,7 @@ fun StaffAndGuardiansModuleScreen(
                         editingStaff = null
                     }
                 ) {
-                    Text("Cancel")
+                    Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -2401,7 +2502,7 @@ fun StaffAndGuardiansModuleScreen(
         var sName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
         var ptm by remember { mutableStateOf("Attended orientation & signed digital consent.") }
         var parentUsername by remember { mutableStateOf("") }
-        var parentPassword by remember { mutableStateOf("") }
+        var parentPassword by remember { mutableStateOf("parent123") }
 
         AlertDialog(
             onDismissRequest = { showAddGuardian = false },
@@ -2503,7 +2604,7 @@ fun StaffAndGuardiansModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddGuardian = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddGuardian = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 }

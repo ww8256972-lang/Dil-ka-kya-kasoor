@@ -69,9 +69,9 @@ object AntiProxyAttendanceManager {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 128
         }
     )
-    const val DEFAULT_INSTITUTE_LAT = 28.6139
-    const val DEFAULT_INSTITUTE_LNG = 77.2090
-    const val DEFAULT_GEOFENCE_RADIUS_METERS = 100.0f
+    const val DEFAULT_INSTITUTE_LAT = 26.538162
+    const val DEFAULT_INSTITUTE_LNG = 80.484187
+    const val DEFAULT_GEOFENCE_RADIUS_METERS = 50.0f
 
     /**
      * Enables or disables `FLAG_SECURE` on the active Activity window to block screenshots,

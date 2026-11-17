@@ -38,7 +38,6 @@ import com.example.biometric.StudentFaceEnrollmentManager
 import com.example.data.model.ExamRecord
 import com.example.data.model.PortalRole
 import com.example.exam.ExamQuestionItem
-import com.example.exam.QuestionBank
 import com.example.media.AgoraLiveVideoClassroomRoom
 import com.example.media.BindScreenCapturePolicy
 import com.example.media.ExoPlayerHdLecturePlayer
@@ -61,6 +60,24 @@ import java.util.Locale
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.DisableSelection
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalTextToolbar
+import androidx.compose.ui.platform.TextToolbar
+import androidx.compose.ui.platform.TextToolbarStatus
+
+private object NoOpExamTextToolbar : TextToolbar {
+    override val status: TextToolbarStatus = TextToolbarStatus.Hidden
+    override fun showMenu(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        // Blocked by exam lockdown: copy/cut/paste/select-all toolbar disabled.
+    }
+    override fun hide() = Unit
+}
 
 private data class DraftCustomMcq(
     val question: String,
@@ -264,7 +281,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
                         cornerRadius = 28.dp,
-                        glowColor = Color(0xFF818CF8),
+                        glowColor = WciColors.IndigoAccent,
                         strongSurface = true
                     ) {
                         Row(
@@ -275,7 +292,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             Box(
                                 modifier = Modifier
                                     .background(
-                                        Color(0xFF818CF8).copy(alpha = 0.24f),
+                                        WciColors.IndigoAccent.copy(alpha = 0.24f),
                                         RoundedCornerShape(WciRadius.pill)
                                     )
                                     .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(WciRadius.pill))
@@ -429,14 +446,18 @@ fun ExamsMaterialsCertificatesModuleScreen(
                 }
 
                 if (evaluatedExams.isEmpty()) {
-                    if (state.activePortalRole != PortalRole.STUDENT && !canManageAssessments) {
-                        item {
-                            EmptyStateCard(
-                                icon = Icons.Default.Quiz,
-                                title = "Upcoming Exam - Scheduled by Admin",
-                                subtitle = "No examination schedule has been published yet."
-                            )
-                        }
+                    item {
+                        EmptyStateCard(
+                            icon = Icons.Default.Quiz,
+                            title = "No exams available",
+                            subtitle = if (canManageAssessments) {
+                                "No examination schedule has been published yet. Click '+ Schedule Exam' to create a real online exam."
+                            } else {
+                                "No exams available for your batch right now. Scheduled exams will appear here automatically."
+                            },
+                            ctaLabel = if (canManageAssessments) "+ Schedule Exam" else null,
+                            onCtaClick = if (canManageAssessments) ({ showCreateExam = true }) else null
+                        )
                     }
                 } else {
                     items(evaluatedExams, key = { it.first.id }) { (exam, eval) ->
@@ -456,7 +477,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            glowColor = Color(0xFF818CF8)
+                            glowColor = WciColors.IndigoAccent
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -471,10 +492,10 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         Box(
                                             modifier = Modifier
                                                 .background(
-                                                    Color(0xFF818CF8).copy(alpha = 0.25f),
+                                                    WciColors.IndigoAccent.copy(alpha = 0.25f),
                                                     RoundedCornerShape(WciRadius.pill)
                                                 )
-                                                .border(1.dp, Color(0xFF818CF8), RoundedCornerShape(WciRadius.pill))
+                                                .border(1.dp, WciColors.IndigoAccent, RoundedCornerShape(WciRadius.pill))
                                                 .padding(horizontal = 8.dp, vertical = 2.dp)
                                         ) {
                                             Text(
@@ -511,7 +532,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         text = if (customQCount > 0) {
                                             "Max Marks: ${exam.totalMarks} • Pool: $customQCount Qs (${parsedBank.perStudentCount}/Student • Anti-Cheat 1 Q/Screen)"
                                         } else {
-                                            "Max Marks: ${exam.totalMarks} • Passing: ${exam.passingMarks} • 50 Unique Pool MCQs (1 Q/Screen)"
+                                            "Max Marks: ${exam.totalMarks} • Passing: ${exam.passingMarks} • Pending Question Paper Upload (1 Q/Screen)"
                                         },
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             fontFamily = JetBrainsMono,
@@ -621,7 +642,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         // Rich Multi-Section Institute Marksheet Card
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
-                            glowColor = if (isPassed) Color(0xFFA855F7) else WciColors.Danger,
+                            glowColor = if (isPassed) WciColors.PurpleVibrant else WciColors.Danger,
                             strongSurface = true
                         ) {
                             // 1. Header Banner: Official Crest + Grade & Rank Badges
@@ -637,7 +658,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     Icon(
                                         imageVector = Icons.Default.Verified,
                                         contentDescription = "Verified Marksheet",
-                                        tint = Color(0xFF00E5FF),
+                                        tint = WciColors.Info,
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Text(
@@ -655,7 +676,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         modifier = Modifier
                                             .background(
                                                 brush = Brush.linearGradient(
-                                                    listOf(Color(0xFFA855F7), Color(0xFFEC4899))
+                                                    listOf(WciColors.PurpleVibrant, WciColors.ScannerPink)
                                                 ),
                                                 shape = RoundedCornerShape(WciRadius.pill)
                                             )
@@ -1005,7 +1026,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
         var duration by remember { mutableStateOf("45") }
         var totalMarks by remember { mutableStateOf("100") }
         var passMarks by remember { mutableStateOf("40") }
-        var questionsPerStudentStr by remember { mutableStateOf("4") }
+        var questionsPerStudentStr by remember { mutableStateOf("1") }
         var uploadedPdfName by remember { mutableStateOf("") }
         var pdfExtractStatus by remember { mutableStateOf("") }
         var isParsingPdf by remember { mutableStateOf(false) }
@@ -1015,35 +1036,11 @@ fun ExamsMaterialsCertificatesModuleScreen(
             mutableStateOf(
                 listOf(
                     DraftCustomMcq(
-                        question = "Which shortcut key is used in Tally Prime to post a Payment Voucher?",
-                        optA = "F4",
-                        optB = "F5",
-                        optC = "F6",
-                        optD = "F8",
-                        correctIndex = 1
-                    ),
-                    DraftCustomMcq(
-                        question = "In MS Excel, every formula or function must begin with which symbol?",
-                        optA = "= (Equal sign)",
-                        optB = "# (Hash)",
-                        optC = "@ (At symbol)",
-                        optD = "$ (Dollar)",
-                        correctIndex = 0
-                    ),
-                    DraftCustomMcq(
-                        question = "Which data type in Python stores key-value pairs?",
-                        optA = "list",
-                        optB = "tuple",
-                        optC = "dict",
-                        optD = "set",
-                        correctIndex = 2
-                    ),
-                    DraftCustomMcq(
-                        question = "What does HTML stand for in Web Development?",
-                        optA = "HyperText Markup Language",
-                        optB = "HighText Machine Language",
-                        optC = "HyperLoop Tool Language",
-                        optD = "Home Tool Markup Language",
+                        question = "",
+                        optA = "",
+                        optB = "",
+                        optC = "",
+                        optD = "",
                         correctIndex = 0
                     )
                 )
@@ -1214,7 +1211,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 170.dp)
-                            .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                            .background(WciColors.SurfaceDeepNavy, RoundedCornerShape(10.dp))
                             .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(10.dp))
                             .verticalScroll(rememberScrollState())
                             .padding(8.dp),
@@ -1228,7 +1225,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) Color(0xFF1E293B) else Color.Transparent)
+                                    .background(if (isSelected) WciColors.SurfaceSlateDark else Color.Transparent)
                                     .border(
                                         1.dp,
                                         if (isSelected) WciColors.Info else WciColors.glassBorderSubtleColor.copy(alpha = 0.4f),
@@ -1381,11 +1378,25 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         }
                         val perStudent = (questionsPerStudentStr.toIntOrNull() ?: validItems.size)
                             .coerceIn(1, validItems.size.coerceAtLeast(1))
-                        val serializedJson = com.example.exam.PdfMcqBankParser.serializeCustomExamBankJson(
-                            questions = validItems,
-                            questionsPerStudent = perStudent
-                        )
                         val formattedSchedule = "${examDateIso.trim()} ${examTime24h.trim()}-${examEndTime24h.trim()}".take(30)
+                        val serializedJson = if (validItems.isNotEmpty()) {
+                            com.waqar.institute.admin.AdminPdfQuestionBankService.transformQuestionsToFirestoreSchema(
+                                rawQuestions = validItems,
+                                examTitle = title,
+                                courseName = course,
+                                batchName = batch,
+                                durationMinutes = duration.toIntOrNull() ?: 45,
+                                requestedPerStudentCount = perStudent,
+                                scheduledDateIso = formattedSchedule,
+                                ownerUid = state.userProfile?.uid ?: "admin_root",
+                                extractionMethod = if (uploadedPdfName.isNotBlank()) "PDF_TEXT_STREAM" else "MANUAL_ADMIN_BANK"
+                            ).questionsJson
+                        } else {
+                            com.example.exam.PdfMcqBankParser.serializeCustomExamBankJson(
+                                questions = emptyList(),
+                                questionsPerStudent = perStudent
+                            )
+                        }
                         viewModel.createExam(
                             title = title,
                             courseName = course,
@@ -1401,7 +1412,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showCreateExam = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showCreateExam = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -1438,7 +1449,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(Color(0xFF0F172A), RoundedCornerShape(10.dp))
+                                .background(WciColors.SurfaceDeepNavy, RoundedCornerShape(10.dp))
                                 .border(1.dp, WciColors.glassBorderSubtleColor, RoundedCornerShape(10.dp))
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -1521,7 +1532,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddResult = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddResult = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -1600,7 +1611,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showAddMaterial = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddMaterial = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -1608,6 +1619,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
         var certType by remember { mutableStateOf("DIPLOMA") }
         var selectedStudentId by remember { mutableStateOf(state.students.firstOrNull()?.id ?: "") }
         var studentName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
+        var rollNumber by remember { mutableStateOf(state.students.firstOrNull()?.enrollmentNo ?: "WCI-2026-1001") }
         var courseName by remember { mutableStateOf(state.students.firstOrNull()?.courseName ?: "ADCA") }
         var grade by remember { mutableStateOf("A+") }
 
@@ -1638,6 +1650,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     onClick = {
                                         selectedStudentId = stu.id
                                         studentName = stu.fullName
+                                        rollNumber = stu.enrollmentNo
                                         courseName = stu.courseName
                                         val bestGrade = state.examResults
                                             .filter { it.studentId == stu.id || it.studentName.equals(stu.fullName, ignoreCase = true) }
@@ -1657,6 +1670,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         }
                     }
                     OutlinedTextField(value = studentName, onValueChange = { studentName = it }, label = { Text("Student Name *") }, singleLine = true)
+                    OutlinedTextField(value = rollNumber, onValueChange = { rollNumber = it }, label = { Text("Student Roll Number *") }, singleLine = true)
                     OutlinedTextField(value = courseName, onValueChange = { courseName = it }, label = { Text("Course Completed *") }, singleLine = true)
                     OutlinedTextField(value = grade, onValueChange = { grade = it }, label = { Text("Grade Awarded (e.g. A+, Distinction)") }, singleLine = true)
                 }
@@ -1664,17 +1678,26 @@ fun ExamsMaterialsCertificatesModuleScreen(
             confirmButton = {
                 ShimmerButton(
                     text = "Issue Certificate",
-                    enabled = studentName.isNotBlank() && courseName.isNotBlank(),
+                    enabled = studentName.isNotBlank() && rollNumber.isNotBlank() && courseName.isNotBlank(),
                     onClick = {
-                        val matchedId = state.students.firstOrNull {
-                            it.id == selectedStudentId || it.fullName.equals(studentName.trim(), ignoreCase = true)
-                        }?.id ?: selectedStudentId.ifBlank { "stu_verified" }
-                        viewModel.issueCertificate(certType, matchedId, studentName, courseName, grade)
+                        val matchedStu = state.students.firstOrNull {
+                            it.id == selectedStudentId || it.enrollmentNo.equals(rollNumber.trim(), ignoreCase = true) ||
+                                it.fullName.equals(studentName.trim(), ignoreCase = true)
+                        }
+                        val matchedId = matchedStu?.id ?: selectedStudentId.ifBlank { rollNumber.trim() }
+                        viewModel.issueCertificate(
+                            certType = certType,
+                            studentId = matchedId,
+                            studentName = studentName.trim(),
+                            courseName = courseName.trim(),
+                            grade = grade.trim(),
+                            enrollmentNo = rollNumber.trim()
+                        )
                         showIssueCertificate = false
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showIssueCertificate = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showIssueCertificate = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -1700,39 +1723,95 @@ fun ExamsMaterialsCertificatesModuleScreen(
         val proctoredState by proctoredExamViewModel.examState.collectAsState()
         val faceGateStatus by faceAuthViewModel.status.collectAsState()
 
-        val shuffledQuestions = remember(exam.id, exam.questionsJson, studentId, proctoredState.questions) {
-            if (proctoredState.questions.isNotEmpty()) {
-                proctoredState.questions
-            } else {
-                examRepo.generateShuffledPaperForExam(
-                    studentId = studentId,
-                    exam = exam,
-                    fallbackQuestionCount = 50
-                )
-            }
+        var sanitizationReport by remember(exam.id) {
+            mutableStateOf(PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context))
         }
-        val sanitizationReport = remember(exam.id) {
-            PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+        val isDeviceSecurityBlocked = !isAdminPreview && !sanitizationReport.isClearedToStartExam
+
+        val livenessChallenge = remember(exam.id, studentId) {
+            com.waqar.institute.biometric.HardwareBiometricAttestor.nextRandomChallenge()
+        }
+        val frontCameraCheck = remember(exam.id) {
+            com.waqar.institute.biometric.HardwareBiometricAttestor.verifyPhysicalFrontCameraPresent(context)
+        }
+        val paperWatermark = remember(exam.id, studentId) {
+            examRepo.computeStudentPaperWatermark(exam.id, studentId)
+        }
+
+        val sanitizedQuestions = remember(exam.id, studentId, proctoredState.sanitizedQuestions) {
+            proctoredState.sanitizedQuestions
         }
         var currentIdx by remember { mutableIntStateOf(0) }
         var selectedAnswers by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
         var faceVerified by remember { mutableStateOf(false) }
         var faceStatusText by remember {
-            mutableStateOf("Facial Biometric Gate: Verify Registered Student Identity")
+            mutableStateOf("Facial Biometric Gate: Verify Registered Student Identity (${livenessChallenge.instruction})")
         }
         var remainingSeconds by remember(exam.id) {
             mutableIntStateOf((exam.durationMinutes.coerceAtLeast(5)) * 60)
         }
+        var secondaryDisplayAlert by remember(exam.id) { mutableStateOf<String?>(null) }
 
-        LaunchedEffect(exam.id) {
-            val activity = com.example.media.SecureWindowController.tailrecFindActivity(context)
-            proctoredExamViewModel.beginProctoredExamSession(
-                activity = activity,
-                exam = exam,
-                studentId = studentId,
-                studentName = studentName,
-                questionCount = 50
-            )
+        LaunchedEffect(exam.id, isDeviceSecurityBlocked) {
+            if (!isDeviceSecurityBlocked) {
+                runCatching {
+                    com.waqar.institute.sandbox.MicroVmExamSandboxManager.activateIsolatedExamMicroVm()
+                    com.waqar.institute.ipc.ZeroCopyIpcRingManager.publishPortalEventZeroCopy(
+                        portalTag = "M10_CBT_EXAM",
+                        eventSummary = "START:${exam.id}:$studentId:$paperWatermark"
+                    )
+                }
+                val activity = com.example.media.SecureWindowController.tailrecFindActivity(context)
+                proctoredExamViewModel.beginProctoredExamSession(
+                    activity = activity,
+                    exam = exam,
+                    studentId = studentId,
+                    studentName = studentName,
+                    questionCount = 50
+                )
+            }
+        }
+
+        // Maha Brahmastra #4: Continuous 2-Second Native C++ Anti-Frida / ptrace / /proc/self/maps Watchdog
+        LaunchedEffect(exam.id, faceVerified, isDeviceSecurityBlocked, isAdminPreview) {
+            if (isAdminPreview || isDeviceSecurityBlocked) return@LaunchedEffect
+            com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(true)
+            try {
+                while (true) {
+                    val watchdogViolation = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.waqar.institute.security.NativeSecurityBridge.pollContinuousWatchdogViolation(context)
+                    }
+                    if (!watchdogViolation.isNullOrBlank()) {
+                        secondaryDisplayAlert = "Native Watchdog Violation: $watchdogViolation"
+                        com.waqar.institute.security.SecurityIncidentLogger.dispatchSecurityViolation(
+                            context = context,
+                            repository = com.example.data.firestore.InstituteRepository.create(context.applicationContext),
+                            actorUid = ownerUid,
+                            username = state.userProfile?.username ?: studentId,
+                            fullName = studentName,
+                            phoneNumber = studentRecord?.phone ?: "",
+                            studentIdOrEnrollment = studentRecord?.enrollmentNo ?: studentId,
+                            violationType = "NATIVE_WATCHDOG_TAMPER",
+                            violationDetails = "Exam=${exam.id} | $watchdogViolation"
+                        )
+                        if (faceVerified) {
+                            proctoredExamViewModel.submitExamNow(
+                                ownerUid = ownerUid,
+                                violationReason = "Anti-Cheat Rule 4 (C++ Watchdog): $watchdogViolation"
+                            )
+                        } else {
+                            sanitizationReport = PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+                        }
+                        break
+                    }
+                    delay(2_000L)
+                }
+            } finally {
+                com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(false)
+            }
+        }
+
+        LaunchedEffect(proctoredState.selectedAnswers) {
             if (proctoredState.selectedAnswers.isNotEmpty()) {
                 selectedAnswers = proctoredState.selectedAnswers
             }
@@ -1741,14 +1820,26 @@ fun ExamsMaterialsCertificatesModuleScreen(
         LaunchedEffect(faceGateStatus) {
             when (val st = faceGateStatus) {
                 is com.example.biometric.FaceVerificationGateStatus.Idle -> {
-                    faceStatusText = "Facial Biometric Gate: Verify Registered Student Identity"
+                    faceStatusText = "Facial Biometric Gate: ${livenessChallenge.instruction}"
                 }
                 is com.example.biometric.FaceVerificationGateStatus.ScanningFace -> {
-                    faceStatusText = "Scanning Front-Camera Face Biometrics & Anti-Spoofing Liveness..."
+                    faceStatusText = "Scanning Front-Camera Face Biometrics & Anti-Spoofing (${livenessChallenge.label})..."
                 }
                 is com.example.biometric.FaceVerificationGateStatus.VerifiedMatch -> {
                     faceVerified = true
-                    faceStatusText = "✓ Biometric Face Verified (${st.similarityPercent}% Cosine Match) • FLAG_SECURE Active"
+                    val receipt = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching {
+                            com.waqar.institute.biometric.HardwareBiometricAttestor.issueKeystoreAttestedPassReceipt(
+                                context = context,
+                                subjectId = studentId,
+                                portalRole = "STUDENT_EXAM",
+                                challenge = livenessChallenge,
+                                similarity = st.similarityPercent / 100f
+                            )
+                        }.getOrNull()
+                    }
+                    val attestTag = if (receipt?.hardwareBackedKey == true) " • TEE Attested" else ""
+                    faceStatusText = "✓ Biometric Face Verified (${st.similarityPercent}% Cosine Match$attestTag) • FLAG_SECURE Active"
                 }
                 is com.example.biometric.FaceVerificationGateStatus.BlockedMismatch -> {
                     faceVerified = false
@@ -1757,32 +1848,65 @@ fun ExamsMaterialsCertificatesModuleScreen(
             }
         }
 
-        // Enforce ExamViewModel 2-Strike Background Auto-Submit & Multi-Window Block
-        DisposableEffect(lifecycleOwner, exam.id, faceVerified) {
+        // Enforce 2-Strike ON_PAUSE/ON_STOP Auto-Submit, Multi-Window Block & Live DisplayManager Watcher
+        DisposableEffect(lifecycleOwner, exam.id, faceVerified, isDeviceSecurityBlocked) {
             val activity = com.example.media.SecureWindowController.tailrecFindActivity(context)
             AntiOverlayShield.applyWindowOverlayShield(activity, true)
+            var strikeCountedInPauseCycle = false
+
+            val unregisterDisplayWatcher = if (!isAdminPreview && !isDeviceSecurityBlocked) {
+                AntiOverlayShield.observeSecondaryDisplays(context) { externalNames ->
+                    secondaryDisplayAlert = "External/Virtual Display detected mid-exam (${externalNames.joinToString()})"
+                    if (faceVerified) {
+                        proctoredExamViewModel.onWindowFocusOrMultiWindowChanged(
+                            hasFocus = false,
+                            isMultiWindow = true,
+                            ownerUid = ownerUid
+                        )
+                    } else {
+                        sanitizationReport = PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+                    }
+                }
+            } else {
+                {}
+            }
+
             val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-                if (faceVerified && event == androidx.lifecycle.Lifecycle.Event.ON_STOP && !isAdminPreview) {
-                    proctoredExamViewModel.onAppBackgroundedOrSwitched(ownerUid)
-                } else if (faceVerified && event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && !isAdminPreview) {
-                    val inMultiWindow = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                        activity?.isInMultiWindowMode == true
-                    } else false
-                    proctoredExamViewModel.onWindowFocusOrMultiWindowChanged(
-                        hasFocus = true,
-                        isMultiWindow = inMultiWindow,
-                        ownerUid = ownerUid
-                    )
+                if (isAdminPreview) return@LifecycleEventObserver
+                when (event) {
+                    androidx.lifecycle.Lifecycle.Event.ON_PAUSE,
+                    androidx.lifecycle.Lifecycle.Event.ON_STOP -> {
+                        if (faceVerified && !strikeCountedInPauseCycle) {
+                            strikeCountedInPauseCycle = true
+                            proctoredExamViewModel.onAppBackgroundedOrSwitched(ownerUid)
+                        }
+                    }
+                    androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                        strikeCountedInPauseCycle = false
+                        if (faceVerified) {
+                            val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                activity?.isInMultiWindowMode == true
+                            } else false
+                            proctoredExamViewModel.onWindowFocusOrMultiWindowChanged(
+                                hasFocus = true,
+                                isMultiWindow = inMultiWindow,
+                                ownerUid = ownerUid
+                            )
+                        }
+                    }
+                    else -> Unit
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose {
+                unregisterDisplayWatcher()
                 lifecycleOwner.lifecycle.removeObserver(observer)
                 proctoredExamViewModel.releaseExamSecurityShield(activity)
                 AntiOverlayShield.applyWindowOverlayShield(activity, false)
             }
         }
 
+        // Preserve Face Biometric capture workflow cleanly
         val selfieCameraLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.TakePicturePreview()
         ) { capturedBitmap ->
@@ -1798,12 +1922,24 @@ fun ExamsMaterialsCertificatesModuleScreen(
             )
         }
 
-        LaunchedEffect(proctoredState.isSubmitted, proctoredState.submittedResult) {
-            if (proctoredState.isSubmitted && !isAdminPreview) {
+        LaunchedEffect(proctoredState.isSubmitted, proctoredState.submittedResult, proctoredState.lastGradingOutcome) {
+            if (proctoredState.isSubmitted) {
+                val outcome = proctoredState.lastGradingOutcome
                 val res = proctoredState.submittedResult
-                if (res != null) {
+                if (isAdminPreview) {
+                    val marks = outcome?.scaledMarks ?: 0
+                    val correct = outcome?.rawCorrectCount ?: 0
+                    val totalQs = outcome?.totalQuestions ?: sanitizedQuestions.size
+                    viewModel.postMessage(
+                        "Admin Preview Mode: Scored $marks / ${exam.totalMarks} ($correct/$totalQs Correct) — Not saved to Student Results."
+                    )
+                } else {
+                    val marks = res?.marksObtained ?: outcome?.scaledMarks ?: 0
+                    val grade = res?.grade ?: outcome?.grade ?: "B"
+                    val correct = outcome?.rawCorrectCount ?: 0
+                    val totalQs = outcome?.totalQuestions ?: sanitizedQuestions.size
                     resultCountdownSeconds = 300
-                    submittedResultSummary = "${exam.title}: Auto-Submitted (${res.marksObtained}/${res.totalMarks} • ${res.grade})"
+                    submittedResultSummary = "${exam.title}: Submitted ($marks/${exam.totalMarks} • $grade • $correct/$totalQs Correct)"
                 }
                 activeExamAttempt = null
             }
@@ -1812,39 +1948,31 @@ fun ExamsMaterialsCertificatesModuleScreen(
         // Hardware-enforce FLAG_SECURE & anti-screenshot during active CBT exams
         BindScreenCapturePolicy(ScreenCapturePolicy.LOCKED_SENSITIVE)
 
-        // Auto-submit countdown timer
-        LaunchedEffect(exam.id, faceVerified) {
-            if (!faceVerified) return@LaunchedEffect
-            while (remainingSeconds > 0) {
-                delay(1000L)
-                remainingSeconds--
-            }
-            // Auto-submit when timer hits 00:00
-            var rawCorrect = 0
-            shuffledQuestions.forEach { q ->
-                if (selectedAnswers[q.id] == q.correctOptionIndex) rawCorrect++
-            }
-            val score = ((rawCorrect.toDouble() / shuffledQuestions.size.coerceAtLeast(1)) * exam.totalMarks).toInt()
-            val computedRank = state.examResults.filter { it.examId == exam.id && it.studentId != studentId }.count { it.marksObtained > score } + 1
-            if (isAdminPreview) {
-                viewModel.postMessage("Admin Preview Mode: Score $score/${exam.totalMarks} — Not saved to Student Results.")
-            } else {
-                viewModel.recordExamResult(
-                    examId = exam.id,
-                    examTitle = exam.title,
-                    studentId = studentId,
-                    studentName = studentName,
-                    marksObtained = score,
-                    totalMarks = exam.totalMarks,
-                    rank = computedRank,
-                    remarks = "Auto-Submitted on Timer Expiry ($rawCorrect/${shuffledQuestions.size} correct)",
-                    isOnlineCbtAttempt = true
+        // Tamper-proof monotonic elapsedRealtime countdown timer synced with server time
+        val examDeadlineElapsedMs = remember(exam.id, faceVerified) {
+            if (faceVerified) {
+                com.example.exam.TamperProofExamClock.elapsedDeadlineAfterDurationMinutes(
+                    exam.durationMinutes.coerceAtLeast(5)
                 )
+            } else 0L
+        }
+        LaunchedEffect(exam.id, faceVerified, isDeviceSecurityBlocked) {
+            if (!faceVerified || isDeviceSecurityBlocked || examDeadlineElapsedMs <= 0L) return@LaunchedEffect
+            launch { com.example.exam.TamperProofExamClock.syncServerTimeOffsetAsync() }
+            while (true) {
+                val left = com.example.exam.TamperProofExamClock.computeRemainingSeconds(examDeadlineElapsedMs)
+                remainingSeconds = left
+                if (left <= 0) break
+                delay(500L)
             }
-            activeExamAttempt = null
+            proctoredExamViewModel.submitExamNow(
+                ownerUid = ownerUid,
+                violationReason = if (isAdminPreview) null else "Timer Expired",
+                isPreviewOnly = isAdminPreview
+            )
         }
 
-        val currentQuestion = shuffledQuestions.getOrNull(currentIdx)
+        val currentQuestion = sanitizedQuestions.getOrNull(currentIdx)
         val minsLeft = remainingSeconds / 60
         val secsLeft = remainingSeconds % 60
 
@@ -1859,7 +1987,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                     )
                     Text(
-                        text = "Time Left: %02d:%02d • Strikes: ${proctoredState.backgroundStrikes}/${proctoredState.maxAllowedStrikes} • Pool: 50/${QuestionBank.fullQuestionPool.size} Qs".format(minsLeft, secsLeft),
+                        text = "Time Left: %02d:%02d • Strikes: ${proctoredState.backgroundStrikes}/${proctoredState.maxAllowedStrikes} • Paper: ${sanitizedQuestions.size} Qs • $paperWatermark".format(minsLeft, secsLeft),
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontFamily = JetBrainsMono,
                             color = WciColors.Success
@@ -1873,87 +2001,136 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFF0F172A), RoundedCornerShape(12.dp))
-                            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                            .background(WciColors.SurfaceDeepNavy, RoundedCornerShape(12.dp))
+                            .border(
+                                1.dp,
+                                (if (isDeviceSecurityBlocked) WciColors.Danger else WciColors.Warning).copy(alpha = 0.6f),
+                                RoundedCornerShape(12.dp)
+                            )
                             .padding(10.dp)
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
-                                text = if (sanitizationReport.isClearedToStartExam && !proctoredState.isMultiWindowBlocked) {
-                                    "✓ Pre-Exam Sanitizer: Clipboard Scrubbed • No Split-Screen/Root/VPN"
+                                text = if (sanitizationReport.isClearedToStartExam && !proctoredState.isMultiWindowBlocked && secondaryDisplayAlert == null) {
+                                    "✓ Pre-Exam Sanitizer: Clipboard Scrubbed • Watchdog 2s & FLAG_SECURE Ready"
                                 } else {
-                                    "⚠ Security Alert: ${proctoredState.securityAlertBanner ?: sanitizationReport.blockingReasons.firstOrNull().orEmpty()}"
+                                    "⚠ Security Alert: ${secondaryDisplayAlert ?: proctoredState.securityAlertBanner ?: sanitizationReport.blockingReasons.firstOrNull().orEmpty()}"
                                 },
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    color = if (sanitizationReport.isClearedToStartExam && !proctoredState.isMultiWindowBlocked) WciColors.Success else WciColors.Warning
+                                    color = if (sanitizationReport.isClearedToStartExam && !proctoredState.isMultiWindowBlocked && secondaryDisplayAlert == null) {
+                                        WciColors.Success
+                                    } else {
+                                        WciColors.Danger
+                                    }
                                 )
                             )
                             Text(
                                 text = faceStatusText,
-                                style = MaterialTheme.typography.labelSmall.copy(color = Color(0xFF38BDF8))
+                                style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Warning)
                             )
                         }
                     }
 
-                    if (!faceVerified) {
+                    if (isDeviceSecurityBlocked) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Exam Access Blocked Until Security Issues Are Resolved:",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = WciColors.Danger,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            )
+                            sanitizationReport.blockingReasons.forEach { reason ->
+                                Text(
+                                    text = "• $reason",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textPrimary)
+                                )
+                            }
+                            ShimmerButton(
+                                text = "Re-Check Device Security",
+                                onClick = {
+                                    sanitizationReport = PreExamSecurityGate.sanitizeAndAuditExamEnvironment(context)
+                                    secondaryDisplayAlert = null
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("recheck_exam_security_button")
+                            )
+                        }
+                    } else if (!faceVerified) {
+                        if (!frontCameraCheck.hasPhysicalFrontCamera && !isAdminPreview) {
+                            Text(
+                                text = "Hardware Camera Warning: ${frontCameraCheck.reason}",
+                                style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Danger)
+                            )
+                        }
                         ShimmerButton(
-                            text = "Verify Student Face Biometrics (Front Camera)",
+                            text = "Verify Student Face (${livenessChallenge.label})",
                             icon = Icons.Default.FaceRetouchingNatural,
                             onClick = {
-                                runCatching {
-                                    selfieCameraLauncher.launch(null)
-                                }.onFailure {
-                                    faceStatusText = "Front camera unavailable on this device. Proctored CBT requires a working camera."
+                                if (!frontCameraCheck.hasPhysicalFrontCamera && !isAdminPreview) {
+                                    faceStatusText = "Physical front camera missing: ${frontCameraCheck.reason}"
                                     viewModel.postMessage(faceStatusText)
+                                } else {
+                                    runCatching {
+                                        selfieCameraLauncher.launch(null)
+                                    }.onFailure {
+                                        faceStatusText = "Front camera unavailable on this device. Proctored CBT requires a working camera."
+                                        viewModel.postMessage(faceStatusText)
+                                    }
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("verify_exam_face_biometric_button")
                         )
                     } else if (proctoredState.isMultiWindowBlocked) {
                         Text(
                             text = proctoredState.securityAlertBanner
-                                ?: "Split-Screen / Multi-Window mode is blocked during proctored CBT exams.",
+                                ?: "Split-Screen / Floating Window mode is blocked during proctored CBT exams.",
                             style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.Danger)
                         )
                     } else if (currentQuestion != null) {
-                        // Strict 1-Question-Per-Screen Anti-Cheat Focus View (Copy/Select Disabled)
-                        DisableSelection {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    text = "1 Question/Screen • Unique Student Set • Anti-Cheat Copy/AI Locked",
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = WciColors.Warning,
-                                        fontWeight = FontWeight.Bold
+                        // Strict 1-Question-Per-Screen Anti-Cheat Focus View (Copy/Cut/Paste/Toolbar Disabled)
+                        CompositionLocalProvider(LocalTextToolbar provides NoOpExamTextToolbar) {
+                            DisableSelection {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "1 Question/Screen • Unique Student Set • Anti-Cheat Copy/Toolbar Locked",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = WciColors.Warning,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     )
-                                )
-                                Text(
-                                    text = "Question ${currentIdx + 1} of ${shuffledQuestions.size} (${currentQuestion.category}) • Answered: ${selectedAnswers.size}/${shuffledQuestions.size}",
-                                    style = MaterialTheme.typography.labelMedium.copy(
-                                        fontFamily = JetBrainsMono,
-                                        color = WciColors.Info
+                                    Text(
+                                        text = "Question ${currentIdx + 1} of ${sanitizedQuestions.size} (${currentQuestion.category}) • Answered: ${selectedAnswers.size}/${sanitizedQuestions.size}",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontFamily = JetBrainsMono,
+                                            color = WciColors.Info
+                                        )
                                     )
-                                )
-                                Text(
-                                    text = currentQuestion.questionText,
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = WciColors.textPrimary
+                                    Text(
+                                        text = currentQuestion.questionText,
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = WciColors.textPrimary
+                                        )
                                     )
-                                )
-                                val chosenIdx = selectedAnswers[currentQuestion.id] ?: -1
-                                currentQuestion.options.forEachIndexed { idx, opt ->
-                                    val prefix = listOf("A", "B", "C", "D").getOrElse(idx) { "${idx + 1}" }
-                                    LiquidPill(
-                                        text = "$prefix) $opt",
-                                        selected = chosenIdx == idx,
-                                        onClick = {
-                                            proctoredExamViewModel.selectOption(currentQuestion.id, idx)
-                                            selectedAnswers = selectedAnswers.toMutableMap().apply {
-                                                put(currentQuestion.id, idx)
-                                            }
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
+                                    val chosenIdx = selectedAnswers[currentQuestion.id] ?: -1
+                                    currentQuestion.options.forEachIndexed { idx, opt ->
+                                        val prefix = listOf("A", "B", "C", "D").getOrElse(idx) { "${idx + 1}" }
+                                        LiquidPill(
+                                            text = "$prefix) $opt",
+                                            selected = chosenIdx == idx,
+                                            onClick = {
+                                                proctoredExamViewModel.selectOption(currentQuestion.id, idx)
+                                                selectedAnswers = selectedAnswers.toMutableMap().apply {
+                                                    put(currentQuestion.id, idx)
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1975,59 +2152,40 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 text = "Next Question ▶",
                                 selected = true,
                                 onClick = {
-                                    if (currentIdx < shuffledQuestions.lastIndex) {
+                                    if (currentIdx < sanitizedQuestions.lastIndex) {
                                         currentIdx++
                                         proctoredExamViewModel.navigateToQuestion(currentIdx)
                                     }
                                 }
                             )
                         }
+                    } else {
+                        Text(
+                            text = "No questions uploaded for this exam yet. Contact your Admin or Teacher to attach an MCQ question paper.",
+                            style = MaterialTheme.typography.bodyMedium.copy(color = WciColors.Warning)
+                        )
                     }
                 }
             },
             confirmButton = {
                 ShimmerButton(
                     text = if (isAdminPreview) {
-                        "Finish Preview (${selectedAnswers.size}/${shuffledQuestions.size})"
+                        "Finish Preview (${selectedAnswers.size}/${sanitizedQuestions.size})"
                     } else {
-                        "Submit CBT (${selectedAnswers.size}/${shuffledQuestions.size})"
+                        "Submit CBT (${selectedAnswers.size}/${sanitizedQuestions.size})"
                     },
-                    enabled = faceVerified && !proctoredState.isMultiWindowBlocked,
+                    enabled = !isDeviceSecurityBlocked && faceVerified && !proctoredState.isMultiWindowBlocked && sanitizedQuestions.isNotEmpty(),
                     onClick = {
-                        var rawCorrect = 0
-                        shuffledQuestions.forEach { q ->
-                            if (selectedAnswers[q.id] == q.correctOptionIndex) rawCorrect++
-                        }
-                        val score = if (selectedAnswers.isEmpty()) {
-                            0
-                        } else {
-                            ((rawCorrect.toDouble() / shuffledQuestions.size.coerceAtLeast(1)) * exam.totalMarks).toInt()
-                        }
-                        if (isAdminPreview) {
-                            viewModel.postMessage(
-                                "Admin Preview Mode: Scored $score / ${exam.totalMarks} ($rawCorrect/${shuffledQuestions.size} Correct) — Not saved to Student Results."
-                            )
-                        } else {
-                            val computedRank = state.examResults.filter { it.examId == exam.id && it.studentId != studentId }.count { it.marksObtained > score } + 1
-                            viewModel.recordExamResult(
-                                examId = exam.id,
-                                examTitle = exam.title,
-                                studentId = studentId,
-                                studentName = studentName,
-                                marksObtained = score,
-                                totalMarks = exam.totalMarks,
-                                rank = computedRank,
-                                remarks = "Proctored CBT: $rawCorrect/${shuffledQuestions.size} Correct (Schedule: ${exam.scheduledDateIso})",
-                                isOnlineCbtAttempt = true
-                            )
-                            resultCountdownSeconds = 300
-                            submittedResultSummary = "${exam.title}: Scored $score / ${exam.totalMarks} ($rawCorrect/${shuffledQuestions.size} Correct)"
-                        }
-                        activeExamAttempt = null
-                    }
+                        proctoredExamViewModel.submitExamNow(
+                            ownerUid = ownerUid,
+                            violationReason = null,
+                            isPreviewOnly = isAdminPreview
+                        )
+                    },
+                    modifier = Modifier.testTag("submit_cbt_exam_button")
                 )
             },
-            dismissButton = { TextButton(onClick = { activeExamAttempt = null }) { Text("Exit") } }
+            dismissButton = { TextButton(onClick = { activeExamAttempt = null }) { Text("Exit", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -2085,7 +2243,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
             },
             dismissButton = {
                 TextButton(onClick = { submittedResultSummary = null }) {
-                    Text("Close")
+                    Text("Close", color = WciColors.textSecondary, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -2166,7 +2324,7 @@ fun InboxAndLiveClassesModuleScreen(
                 items(state.announcements, key = { it.id }) { ann ->
                     val prioColor = when (ann.priority) {
                         "URGENT" -> WciColors.Danger
-                        "IMPORTANT" -> Color(0xFF00E5FF)
+                        "IMPORTANT" -> WciColors.Info
                         else -> WciColors.Success
                     }
                     GlassCard(
@@ -2211,7 +2369,8 @@ fun InboxAndLiveClassesModuleScreen(
                                 text = ann.channel,
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = JetBrainsMono,
-                                    color = Color(0xFFA855F7)
+                                    color = WciColors.infoColor,
+                                    fontWeight = FontWeight.Bold
                                 )
                             )
                         }
@@ -2238,7 +2397,7 @@ fun InboxAndLiveClassesModuleScreen(
                                 text = "From: ${ann.senderName}",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontFamily = JetBrainsMono,
-                                    color = Color(0xFF00E5FF)
+                                    color = WciColors.Info
                                 )
                             )
                             Icon(
@@ -2321,7 +2480,7 @@ fun InboxAndLiveClassesModuleScreen(
                     val isSelected = activeSession?.id == lc.id
                     GlassCard(
                         modifier = Modifier.fillMaxWidth(),
-                        glowColor = if (isSelected) Color(0xFFFF4D79) else WciColors.Success,
+                        glowColor = if (isSelected) WciColors.Danger else WciColors.Success,
                         onClick = { selectedLiveClassId = lc.id }
                     ) {
                         Row(
@@ -2340,7 +2499,7 @@ fun InboxAndLiveClassesModuleScreen(
                             Text(
                                 text = if (isSelected) "ACTIVE" else lc.status,
                                 style = MaterialTheme.typography.labelLarge.copy(
-                                    color = if (isSelected) Color(0xFFFF4D79) else WciColors.Success
+                                    color = if (isSelected) WciColors.Danger else WciColors.Success
                                 )
                             )
                         }
@@ -2387,7 +2546,7 @@ fun InboxAndLiveClassesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showBroadcastDialog = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showBroadcastDialog = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 
@@ -2419,7 +2578,7 @@ fun InboxAndLiveClassesModuleScreen(
                     }
                 )
             },
-            dismissButton = { TextButton(onClick = { showScheduleLive = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showScheduleLive = false }) { Text("Cancel", color = WciColors.textSecondary, fontWeight = FontWeight.Bold) } }
         )
     }
 }

@@ -306,6 +306,100 @@ class PostgresAuditLogger(private val ds: DataSource) : AuditLogger {
     }
 }
 
+data class GatewayRateLimitStatus(
+    val allowed: Boolean,
+    val countInWindow: Int,
+    val blockedUntilEpochMs: Long,
+    val retryAfterSeconds: Long,
+)
+
+interface GatewayRateLimiter {
+    fun checkAndConsume(bucketKey: String, nowMs: Long = System.currentTimeMillis()): GatewayRateLimitStatus
+}
+
+/**
+ * Atomic 5-Requests-per-60s + 5-Minute-Block Rate Limiter for Security Gateway.
+ *
+ * - Requests 1..5 in 60,000 ms window -> Allowed.
+ * - Request 6 in 60,000 ms window -> Throws Denied(429) and blocks key for 300,000 ms (5 minutes).
+ * - Any request while nowMs < blockedUntilMs -> Throws Denied(429).
+ * - After 5-minute block expires -> Resets and allows fresh 60s window.
+ */
+class InMemoryGatewayRateLimiter(
+    private val maxRequestsPerWindow: Int = 5,
+    private val windowMs: Long = 60_000L,
+    private val blockDurationMs: Long = 300_000L,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
+) : GatewayRateLimiter {
+    private data class Bucket(val count: Int, val windowStartMs: Long, val blockedUntilMs: Long)
+    private val buckets = ConcurrentHashMap<String, Bucket>()
+    private val locks = ConcurrentHashMap<String, Any>()
+
+    override fun checkAndConsume(bucketKey: String, nowMs: Long): GatewayRateLimitStatus {
+        val now = if (nowMs > 0L) nowMs else clockMs()
+        val lock = locks.computeIfAbsent(bucketKey) { Any() }
+        return synchronized(lock) {
+            val current = buckets[bucketKey]
+            if (current != null && now < current.blockedUntilMs) {
+                val retryAfterSec = ((current.blockedUntilMs - now + 999L) / 1000L).coerceAtLeast(1L)
+                throw Denied(429, "HTTP 429 Too Many Requests: Rate limit exceeded. Blocked for ${retryAfterSec}s.")
+            }
+            val isNewWindow = current == null ||
+                (current.blockedUntilMs > 0L && now >= current.blockedUntilMs) ||
+                (now - current.windowStartMs >= windowMs)
+            val windowStart = if (isNewWindow) now else current!!.windowStartMs
+            val nextCount = if (isNewWindow) 1 else (current!!.count + 1)
+            if (nextCount > maxRequestsPerWindow) {
+                val blockedUntil = now + blockDurationMs
+                buckets[bucketKey] = Bucket(nextCount, windowStart, blockedUntil)
+                val retryAfterSec = blockDurationMs / 1000L
+                throw Denied(
+                    429,
+                    "HTTP 429 Too Many Requests: Rate limit exceeded (max $maxRequestsPerWindow requests per 60s). Blocked for ${retryAfterSec}s.",
+                )
+            }
+            buckets[bucketKey] = Bucket(nextCount, windowStart, 0L)
+            GatewayRateLimitStatus(
+                allowed = true,
+                countInWindow = nextCount,
+                blockedUntilEpochMs = 0L,
+                retryAfterSeconds = 0L,
+            )
+        }
+    }
+}
+
+class PostgresGatewayRateLimiter(
+    private val ds: DataSource,
+    private val fallback: InMemoryGatewayRateLimiter = InMemoryGatewayRateLimiter(),
+) : GatewayRateLimiter {
+    override fun checkAndConsume(bucketKey: String, nowMs: Long): GatewayRateLimitStatus {
+        return fallback.checkAndConsume(bucketKey, nowMs).also { status ->
+            runCatching {
+                ds.connection.use { conn ->
+                    conn.prepareStatement(
+                        """
+                        INSERT INTO rate_limit_buckets (bucket_key, request_count, window_start_ms, blocked_until_ms, updated_at)
+                        VALUES (?, ?, ?, ?, now())
+                        ON CONFLICT (bucket_key) DO UPDATE SET
+                            request_count = EXCLUDED.request_count,
+                            window_start_ms = EXCLUDED.window_start_ms,
+                            blocked_until_ms = EXCLUDED.blocked_until_ms,
+                            updated_at = now()
+                        """.trimIndent(),
+                    ).use { ps ->
+                        ps.setString(1, bucketKey)
+                        ps.setInt(2, status.countInWindow)
+                        ps.setLong(3, nowMs)
+                        ps.setLong(4, status.blockedUntilEpochMs)
+                        ps.executeUpdate()
+                    }
+                }
+            }
+        }
+    }
+}
+
 class Deps(
     val enforce: Boolean,
     val jwt: GatewayJwtService,
@@ -322,6 +416,7 @@ class Deps(
     val trustedAttestationRoots: Set<String> = AttestationVerifier.GOOGLE_ATTESTATION_ROOT_SPKI_SHA256,
     val pqc: PqcEnvelopeService? = null,
     val faceTemplates: FaceTemplateRepository = InMemoryFaceTemplateRepository(),
+    val rateLimiter: GatewayRateLimiter = InMemoryGatewayRateLimiter(),
 )
 
 suspend fun ApplicationCall.gate(d: Deps, p: Policy): Principal {

@@ -48,23 +48,21 @@ class StudentExamPortalViewModel : ViewModel() {
         val totalDurationSeconds = (exam.durationMinutes.coerceAtLeast(5)) * 60
 
         countdownJob = viewModelScope.launch {
+            launch { TamperProofExamClock.syncServerTimeOffsetAsync() }
             while (true) {
-                val nowMs = System.currentTimeMillis()
+                val nowMs = TamperProofExamClock.currentTrustedEpochMs()
                 val diffMs = scheduledStartEpochMs - nowMs
                 if (diffMs > 0L) {
-                    val totalSecs = diffMs / 1000L
-                    val hrs = totalSecs / 3600L
-                    val mins = (totalSecs % 3600L) / 60L
-                    val secs = totalSecs % 60L
+                    val totalSecs = (diffMs + 999L) / 1000L
                     _gatewayState.value = StudentExamGatewayState(
                         exam = exam,
                         isLockedWaitingForStart = true,
-                        countdownHhMmSs = "%02d:%02d:%02d".format(hrs, mins, secs),
+                        countdownHhMmSs = TamperProofExamClock.formatHhMmSs(totalSecs),
                         isExamUnlocked = false,
                         remainingExamSeconds = totalDurationSeconds,
-                        remainingFormattedMmSs = "%02d:%02d".format(totalDurationSeconds / 60, totalDurationSeconds % 60)
+                        remainingFormattedMmSs = TamperProofExamClock.formatMmSs(totalDurationSeconds)
                     )
-                    delay(1000L)
+                    delay(500L)
                 } else {
                     _gatewayState.value = _gatewayState.value.copy(
                         exam = exam,
@@ -81,24 +79,24 @@ class StudentExamPortalViewModel : ViewModel() {
     }
 
     /**
-     * Starts the active exam countdown timer (e.g., 60 minutes -> `00:00`) and invokes
-     * `onTimeExpiredAutoSubmit()` the instant the clock reaches zero.
+     * Starts the active exam countdown timer using monotonic `SystemClock.elapsedRealtime()` so
+     * manual clock changes or coroutine sleep cannot extend exam duration.
      */
     fun startActiveExamClock(durationMinutes: Int, onTimeExpiredAutoSubmit: () -> Unit) {
         examTimerJob?.cancel()
-        val initialSeconds = (durationMinutes.coerceIn(1, 360)) * 60
+        val deadlineElapsedMs = TamperProofExamClock.elapsedDeadlineAfterDurationMinutes(durationMinutes)
         examTimerJob = viewModelScope.launch {
-            var secsLeft = initialSeconds
-            while (secsLeft > 0) {
-                val m = secsLeft / 60
-                val s = secsLeft % 60
+            while (true) {
+                val secsLeft = TamperProofExamClock.computeRemainingSeconds(deadlineElapsedMs)
+                if (secsLeft <= 0) {
+                    break
+                }
                 _gatewayState.value = _gatewayState.value.copy(
                     remainingExamSeconds = secsLeft,
-                    remainingFormattedMmSs = "%02d:%02d".format(m, s),
+                    remainingFormattedMmSs = TamperProofExamClock.formatMmSs(secsLeft),
                     hasTimerExpiredAutoSubmit = false
                 )
-                delay(1000L)
-                secsLeft--
+                delay(500L)
             }
             _gatewayState.value = _gatewayState.value.copy(
                 remainingExamSeconds = 0,
@@ -116,15 +114,16 @@ class StudentExamPortalViewModel : ViewModel() {
 
     private fun parseExamStartEpochMs(dateIso: String): Long {
         val clean = dateIso.trim()
+        val trustedNow = TamperProofExamClock.currentTrustedEpochMs()
         // Supports "YYYY-MM-DD HH:mm" or "YYYY-MM-DD"; if date is today or past, unlocks immediately
         return runCatching {
             if (clean.length > 10 && clean.contains(":")) {
                 val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-                fmt.parse(clean.take(16))?.time ?: (System.currentTimeMillis() - 1000L)
+                fmt.parse(clean.take(16))?.time ?: (trustedNow - 1000L)
             } else {
-                System.currentTimeMillis() - 1000L
+                trustedNow - 1000L
             }
-        }.getOrDefault(System.currentTimeMillis() - 1000L)
+        }.getOrDefault(trustedNow - 1000L)
     }
 
     override fun onCleared() {

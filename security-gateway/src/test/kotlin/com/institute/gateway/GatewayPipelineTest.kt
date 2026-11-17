@@ -489,4 +489,40 @@ class GatewayPipelineTest {
         assertEquals(HttpStatusCode.OK, faceResp.status)
         assertEquals("k-2026-11", faceTemplates.find("anita")?.first)
     }
+
+    @Test
+    fun `GatewayRateLimiter allows 5 requests in 60s, blocks 6th with 429 for 5 minutes, and resets after 5m`() {
+        val limiter = InMemoryGatewayRateLimiter()
+        val t0 = 1_780_000_000_000L
+        val key = "session_exchange:dev_01"
+
+        for (i in 1..5) {
+            val status = limiter.checkAndConsume(key, t0 + i * 1_000L)
+            assertTrue(status.allowed)
+            assertEquals(i, status.countInWindow)
+        }
+
+        // 6th request within 60s -> Denied(429)
+        var denied6: Denied? = null
+        try {
+            limiter.checkAndConsume(key, t0 + 10_000L)
+        } catch (d: Denied) {
+            denied6 = d
+        }
+        assertEquals(429, denied6?.status)
+
+        // Request 2 minutes into the 5-minute block -> Denied(429)
+        var deniedDuringBlock: Denied? = null
+        try {
+            limiter.checkAndConsume(key, t0 + 130_000L)
+        } catch (d: Denied) {
+            deniedDuringBlock = d
+        }
+        assertEquals(429, deniedDuringBlock?.status)
+
+        // Request after 5-minute block expires (t0 + 10_000 + 300_001) -> Allowed
+        val afterExpiry = limiter.checkAndConsume(key, t0 + 310_001L)
+        assertTrue(afterExpiry.allowed)
+        assertEquals(1, afterExpiry.countInWindow)
+    }
 }
