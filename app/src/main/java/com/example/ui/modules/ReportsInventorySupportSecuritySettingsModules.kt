@@ -1,6 +1,8 @@
 package com.example.ui.modules
 
 import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -780,15 +782,74 @@ fun SecurityBackupSettingsModuleScreen(
             }
             1 -> {
                 item {
+                    var backupPassphrase by remember { mutableStateOf("") }
+                    val restoreWciPicker = rememberLauncherForActivityResult(
+                        contract = ActivityResultContracts.OpenDocument()
+                    ) { uri ->
+                        if (uri != null) {
+                            val rawBytes = runCatching {
+                                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            }.getOrNull()
+                            if (rawBytes != null && rawBytes.isNotEmpty()) {
+                                viewModel.restoreEncryptedWciBackup(
+                                    encryptedBytes = rawBytes,
+                                    passphrase = backupPassphrase
+                                )
+                            } else {
+                                viewModel.postMessage("Unable to read selected .wci backup file.")
+                            }
+                        }
+                    }
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
                         Text("Cloud Backup, Export & Data Portability", style = MaterialTheme.typography.headlineMedium.copy(color = WciColors.textPrimary))
                         Text(
-                            "Create SHA-256 verified cloud backup manifests and export full JSON snapshots via Android Share Sheet.",
+                            "Create AES-256-GCM password-encrypted .wci institute vault archives (PBKDF2-HMAC-SHA256) or export JSON manifests via Android Share Sheet.",
                             style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                         )
                         Spacer(modifier = Modifier.height(12.dp))
-                        ShimmerButton(
-                            text = "Create & Export Snapshot Backup",
+                        OutlinedTextField(
+                            value = backupPassphrase,
+                            onValueChange = { backupPassphrase = it },
+                            label = { Text("Backup Vault Passphrase (min 6 chars)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("wci_backup_passphrase_input")
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ShimmerButton(
+                                text = "Export Encrypted .wci",
+                                icon = Icons.Default.Lock,
+                                enabled = backupPassphrase.trim().length >= 6,
+                                onClick = {
+                                    viewModel.exportEncryptedWciBackup(
+                                        context = context,
+                                        passphrase = backupPassphrase
+                                    )
+                                },
+                                modifier = Modifier.weight(1f).testTag("export_encrypted_wci_button")
+                            )
+                            LiquidPill(
+                                text = "Restore .wci",
+                                selected = false,
+                                icon = Icons.Default.Restore,
+                                onClick = {
+                                    if (backupPassphrase.trim().length < 6) {
+                                        viewModel.postMessage("Enter your .wci vault passphrase first (min 6 characters).")
+                                    } else {
+                                        restoreWciPicker.launch(arrayOf("*/*"))
+                                    }
+                                },
+                                modifier = Modifier.testTag("restore_encrypted_wci_button")
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        LiquidPill(
+                            text = "Export Plain JSON Manifest Snapshot",
+                            selected = false,
                             icon = Icons.Default.CloudUpload,
                             onClick = {
                                 val json = viewModel.createCloudBackupSnapshot("Manual Institute Snapshot")

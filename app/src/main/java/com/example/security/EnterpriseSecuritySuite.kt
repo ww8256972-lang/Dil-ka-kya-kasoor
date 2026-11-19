@@ -111,12 +111,20 @@ object EnterpriseRaspGuard {
             fingerprint, model, manufacturer, brand, device, hardware, board, product
         ).joinToString("|").lowercase()
 
-        val pcAndQemuTokens = listOf(
-            "generic", "google_sdk", "emulator", "android sdk built for", "sdk_gphone",
-            "goldfish", "ranchu", "qemu", "bluestacks", "bst", "ldplayer", "leidian",
-            "nox", "bignox", "genymotion", "vbox86", "vbox", "ttvm", "memu", "andy", "droid4x"
+        val unambiguousEmulatorSubstrings = listOf(
+            "google_sdk", "android sdk built for", "sdk_gphone",
+            "goldfish", "ranchu", "qemu", "bluestacks", "ldplayer", "leidian",
+            "bignox", "noxplayer", "genymotion", "vbox86", "droid4x", "andyroid", "memuplay"
         )
-        if (pcAndQemuTokens.any { combined.contains(it) }) {
+        if (unambiguousEmulatorSubstrings.any { combined.contains(it) }) {
+            return true
+        }
+
+        val delimitedTokens = combined.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }.toSet()
+        val exactEmulatorTokens = setOf(
+            "generic", "emulator", "bst", "nox", "vbox", "ttvm", "memu", "andy"
+        )
+        if (exactEmulatorTokens.any { it in delimitedTokens }) {
             return true
         }
 
@@ -144,13 +152,13 @@ object EnterpriseRaspGuard {
 
         val rootBeerResult = runCatching {
             val rb = RootBeer(context)
-            rb.isRootedWithBusyBoxCheck || rb.detectRootManagementApps()
+            rb.isRootedWithoutBusyBoxCheck || (rb.checkSuExists() && rb.detectRootManagementApps())
         }.getOrDefault(false)
 
         val nativeFlags = if (nativeLoaded) {
-            runCatching { evaluateNativeRaspFlags() }.getOrDefault(FLAG_NATIVE_LIB_MISSING)
+            runCatching { evaluateNativeRaspFlags() }.getOrDefault(evaluateJvmRaspFallbackFlags())
         } else {
-            evaluateJvmRaspFallbackFlags() or FLAG_NATIVE_LIB_MISSING
+            evaluateJvmRaspFallbackFlags()
         }
 
         val debuggerAttached = !BuildConfig.DEBUG && (Debug.isDebuggerConnected() || Debug.waitingForDebugger())
@@ -360,6 +368,7 @@ object HardwareKeystoreVault {
     }.getOrNull()
 
     fun encryptWithHardwareKey(context: Context, plaintext: ByteArray): String {
+        runCatching { com.waqar.institute.security.NativeSecurityBridge.armAntiMemoryDumpVault() }
         val secretKey = getOrCreateHardwareAesKey(context)
             ?: throw SecurityException("AndroidKeyStore AES-256-GCM key unavailable; refusing plaintext secret storage.")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -374,6 +383,7 @@ object HardwareKeystoreVault {
     }
 
     fun decryptWithHardwareKey(context: Context, encodedPayload: String): ByteArray {
+        runCatching { com.waqar.institute.security.NativeSecurityBridge.armAntiMemoryDumpVault() }
         val secretKey = getOrCreateHardwareAesKey(context)
             ?: throw SecurityException("AndroidKeyStore AES-256-GCM key unavailable for decryption.")
         if (encodedPayload.startsWith(GCM_V1_PREFIX)) {

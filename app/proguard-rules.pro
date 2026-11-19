@@ -1,6 +1,6 @@
 # ==============================================================================
 # Waqar Computer Institute ("Grow Up Computer Skill" ERP)
-# Enterprise R8 / ProGuard & DexGuard Obfuscation Configuration (Section 5.2)
+# Enterprise R8 / ProGuard Obfuscation Configuration
 # Protects DEX bytecode against reverse engineering via MT Manager / JADX-GUI
 # ==============================================================================
 
@@ -12,7 +12,7 @@
 -renamesourcefileattribute SourceFile
 -keepattributes !SourceFile,!LineNumberTable,!LocalVariableTable,!LocalVariableTypeTable,RuntimeVisibleAnnotations,Signature,InnerClasses,EnclosingMethod,*Annotation*,generic
 
-# 3. Strip All Android Log Calls from Release DEX Bytecode (Library #9 Rule)
+# 3. Strip All Android Log Calls from Release DEX Bytecode
 -assumenosideeffects class android.util.Log {
     public static boolean isLoggable(java.lang.String, int);
     public static int v(...);
@@ -22,19 +22,24 @@
     public static int e(...);
 }
 
-# 4. Keep All JNI Native Methods & Security Classes across both package namespaces
+# 4. Surgical JNI-Only & Manifest Component Keep Rules (Allow R8 Full Obfuscation of Security Logic)
 -keepclasseswithmembernames class * {
     native <methods>;
 }
--keep class com.example.security.** { *; }
--keep class com.waqar.institute.security.** { *; }
--keep class com.waqar.institute.biometric.** { *; }
--keep class com.waqar.institute.sandbox.** { *; }
--keep class com.waqar.institute.ipc.** { *; }
--keep class com.waqar.institute.certificate.** { *; }
--keep class com.waqar.institute.universal.** { *; }
--keep class com.waqar.institute.updater.** { *; }
--keep class com.waqar.institute.terminal.** { *; }
+-keepclassmembers class com.waqar.institute.security.NativeSecurityBridge {
+    native <methods>;
+}
+-keepclassmembers class com.waqar.institute.security.FridaShieldDetector {
+    native <methods>;
+}
+-keepclassmembers class com.waqar.institute.security.NativeMemoryVaultGuard {
+    native <methods>;
+}
+-keepclassmembers class com.waqar.institute.biometric.FaceBiometricVerificationEngine {
+    native <methods>;
+}
+-keep class com.waqar.institute.universal.WaqarUniversalAppBootstrapper { *; }
+-keep class com.waqar.institute.upi.WciUpiMerchantNotificationService { *; }
 -keep class io.agora.** { *; }
 -dontwarn io.agora.**
 
@@ -49,9 +54,9 @@
     @kotlinx.serialization.Serializable *;
 }
 
-# 6. SQLCipher & Room Database Rules
--keep class net.sqlcipher.** { *; }
--keep class net.sqlcipher.database.** { *; }
+# 6. SQLCipher 4.6.1 & Room Database Rules
+-keep class net.zetetic.** { *; }
+-keep class net.zetetic.database.sqlcipher.** { *; }
 -keep class * extends androidx.room.RoomDatabase { *; }
 -keep @androidx.room.Entity class * { *; }
 -keep @androidx.room.Dao interface * { *; }
@@ -59,19 +64,21 @@
     public <init>();
 }
 
-# 7. BouncyCastle, Tink, Talsec & RootBeer
+# 7. BouncyCastle, Tink, Talsec, RootBeer & TensorFlow Lite
 -keep class org.bouncycastle.** { *; }
 -keep class com.google.crypto.tink.** { *; }
 -keep class com.aheaditec.talsec.** { *; }
 -keep class com.aheaditec.talsec_security.** { *; }
 -keep class com.scottyab.rootbeer.** { *; }
+-keep class org.tensorflow.lite.** { *; }
 
 -dontwarn org.bouncycastle.**
 -dontwarn com.google.crypto.tink.**
 -dontwarn com.aheaditec.talsec.**
 -dontwarn com.aheaditec.talsec_security.**
 -dontwarn com.scottyab.rootbeer.**
--dontwarn net.sqlcipher.**
+-dontwarn net.zetetic.**
+-dontwarn org.tensorflow.lite.**
 
 # 8. Safe Rules for Jetpack Compose, Face Biometric ML Kit, CameraX, Serialization/Gson & Networking
 -keep class androidx.compose.runtime.** { *; }
@@ -103,4 +110,3 @@
 -dontwarn okio.**
 -keep class retrofit2.** { *; }
 -dontwarn retrofit2.**
-

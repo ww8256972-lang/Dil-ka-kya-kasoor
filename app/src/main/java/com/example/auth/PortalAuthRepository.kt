@@ -331,6 +331,42 @@ class PortalAuthRepository(
         return false
     }
 
+    /**
+     * Binds an authenticated Portal Credential session to `sessions/{sessionUid}` in Cloud Firestore
+     * so `sessionDocExists()` and `hasVerifiedBoundSession()` in `firestore.rules` can validate
+     * role-scoped access without anonymous authentication (FIX-05).
+     */
+    suspend fun bindAuthenticatedPortalSession(
+        sessionUid: String,
+        username: String,
+        role: String,
+        linkedEntityId: String
+    ): String = withContext(Dispatchers.IO) {
+        val cleanUid = sessionUid.trim().ifBlank { "cred_${FirebaseAuthServiceProvider.normalizeUsername(username)}" }
+        val nowMs = System.currentTimeMillis()
+        val sessionDoc = mapOf(
+            "sessionId" to cleanUid,
+            "uid" to cleanUid,
+            "actorId" to linkedEntityId.ifBlank { cleanUid },
+            "username" to FirebaseAuthServiceProvider.normalizeUsername(username),
+            "role" to role.lowercase(),
+            "linkedEntityId" to linkedEntityId,
+            "deviceName" to android.os.Build.MODEL.orEmpty().ifBlank { "Android" },
+            "platform" to "ANDROID",
+            "active" to true,
+            "createdAt" to Timestamp(Date(nowMs - 1000L)),
+            "expiresAt" to (nowMs + 86_400_000L)
+        )
+        if (!isRobolectricRuntime()) {
+            runCatching {
+                withTimeoutOrNull(SERVER_FETCH_TIMEOUT_MS) {
+                    db.collection("sessions").document(cleanUid).set(sessionDoc).await()
+                }
+            }
+        }
+        cleanUid
+    }
+
     private fun normalizeCredentialFlags(cred: PortalCredential): PortalCredential {
         val roleEnum = PortalRole.fromKey(cred.role)
         val flags = buildRoleFlags(

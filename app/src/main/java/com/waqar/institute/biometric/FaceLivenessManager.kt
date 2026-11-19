@@ -109,6 +109,10 @@ object FaceLivenessManager {
                     )
                 } else {
                     val primary = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() } ?: faces.first()
+                    val unifiedVec = FaceBiometricVerificationEngine
+                        .extractUnified128DFaceIdentityEmbedding(bitmap, primary)
+                        .takeIf { FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
+                        ?: extract128DEmbeddingFromMlKitFace(primary, bitmap.width, bitmap.height)
                     telemetries.add(
                         FrameTelemetry(
                             timestampMs = System.currentTimeMillis() + index * 100L,
@@ -118,7 +122,7 @@ object FaceLivenessManager {
                             headEulerYawY = primary.headEulerAngleY,
                             headEulerPitchX = primary.headEulerAngleX,
                             headEulerRollZ = primary.headEulerAngleZ,
-                            embedding128D = extract128DEmbeddingFromMlKitFace(primary, bitmap.width, bitmap.height)
+                            embedding128D = unifiedVec
                         )
                     )
                 }

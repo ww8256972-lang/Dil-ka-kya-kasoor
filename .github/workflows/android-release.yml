@@ -1,4 +1,4 @@
-name: Android Release APK & AAB — Waqar Computer Institute
+name: Android Release APK & GitHub OTA — Waqar Computer Institute
 
 on:
   workflow_dispatch:
@@ -7,14 +7,14 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8 -Djava.awt.headless=true"
 
 jobs:
   release:
-    name: Build Signed Release APK & Play Store AAB
+    name: Build Signed Release APK & Publish GitHub Release OTA
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -60,7 +60,7 @@ jobs:
           gradle-version: '9.3.1'
           cache-read-only: false
 
-      - name: Prepare Debug, Release Signing Keystores & Firebase Config
+      - name: Prepare Fail-Closed Release Signing Keystore & Firebase Config
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -71,95 +71,116 @@ jobs:
           CI_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID }}
           CI_EXAM_ANSWER_HMAC_PEPPER: ${{ secrets.EXAM_ANSWER_HMAC_PEPPER }}
           CI_EXAM_GRADING_ENDPOINT_URL: ${{ secrets.EXAM_GRADING_ENDPOINT_URL }}
-          CI_ADMIN_DEFAULT_PASSWORD_SHA256: ${{ secrets.ADMIN_DEFAULT_PASSWORD_SHA256 }}
+          CI_PORTAL_AUTH_TOKEN_ENDPOINT_URL: ${{ secrets.PORTAL_AUTH_TOKEN_ENDPOINT_URL }}
           AUTO_GITHUB_OTA_OWNER: ${{ github.repository_owner }}
           AUTO_GITHUB_OTA_REPO: ${{ github.event.repository.name }}
         run: |
-          if [ -f "gradlew" ]; then
-            chmod +x gradlew
+          set -euo pipefail
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$RELEASE_STORE_PASSWORD" ] || [ -z "$RELEASE_KEY_PASSWORD" ]; then
+            echo "::error::Missing required Release signing secrets (RELEASE_KEYSTORE_BASE64, STORE_PASSWORD, KEY_PASSWORD). Aborting fail-closed — ephemeral key generation is prohibited for production releases."
+            exit 1
           fi
+
           if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
             base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f debug.keystore ]; then
-            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
           if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
             echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
             touch .ci_decoded_google_services
           fi
-          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
-            echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
-            EFF_STORE_PASS="${RELEASE_STORE_PASSWORD:-waqar_release_pass}"
-            EFF_KEY_PASS="${RELEASE_KEY_PASSWORD:-waqar_release_pass}"
-          else
-            EFF_STORE_PASS="waqar_release_pass"
-            EFF_KEY_PASS="waqar_release_pass"
-            keytool -genkeypair -v -keystore my-upload-key.jks -storepass "$EFF_STORE_PASS" -alias upload -keypass "$EFF_KEY_PASS" -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Waqar Computer Institute,OU=ERP,O=WCI,L=Lucknow,S=UP,C=IN"
-          fi
+
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
+          EFF_STORE_PASS="$RELEASE_STORE_PASSWORD"
+          EFF_KEY_PASS="$RELEASE_KEY_PASSWORD"
+
           echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
           echo "STORE_PASSWORD=${EFF_STORE_PASS}" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=${EFF_KEY_PASS}" >> "$GITHUB_ENV"
 
-          if [ -n "$CI_EXPECTED_CERT_SHA256" ]; then
-            CERT_SHA256="$(echo "$CI_EXPECTED_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-          else
-            CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -alias upload -storepass "$EFF_STORE_PASS" 2>/dev/null | grep -i 'SHA256:' | head -n 1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -alias upload -storepass "$EFF_STORE_PASS" 2>/dev/null | sed -n 's/.*SHA256:[[:space:]]*//Ip' | head -n 1 | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$CERT_SHA256" ]; then
+            CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -storepass "$EFF_STORE_PASS" 2>/dev/null | sed -n 's/.*SHA256:[[:space:]]*//Ip' | head -n 1 | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
           fi
-          EFF_CERT_SHA256="${CERT_SHA256:-2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5}"
+          if [ -z "$CERT_SHA256" ] && [ -n "$CI_EXPECTED_CERT_SHA256" ]; then
+            CERT_SHA256="$(echo "$CI_EXPECTED_CERT_SHA256" | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
+          fi
+          if [ -z "$CERT_SHA256" ]; then
+            echo "::error::Failed to extract SHA-256 certificate pin from production keystore."
+            exit 1
+          fi
+
           EFF_DEX_CRC32="${CI_EXPECTED_DEX_CRC32:-AUTO_BASELINE}"
           EFF_HMAC_PEPPER="${CI_EXAM_ANSWER_HMAC_PEPPER:-WCI_EXAM_BLIND_PEPPER_2026_V1}"
-          EFF_GRADING_URL="${CI_EXAM_GRADING_ENDPOINT_URL:-https://us-central1-gen-lang-client-0309263247.cloudfunctions.net/gradeExamSubmission}"
+          EFF_GRADING_URL="${CI_EXAM_GRADING_ENDPOINT_URL:-https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/gradeExamSubmission}"
+          EFF_PORTAL_TOKEN_URL="${CI_PORTAL_AUTH_TOKEN_ENDPOINT_URL:-https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/issuePortalCustomToken}"
           EFF_OTA_OWNER="${AUTO_GITHUB_OTA_OWNER:-ww8256972}"
           EFF_OTA_REPO="${AUTO_GITHUB_OTA_REPO:-Waqar-first-project-}"
-          EFF_ADMIN_SHA256="${CI_ADMIN_DEFAULT_PASSWORD_SHA256:-8002e137d3ca041230837e5f5071f5d585e94ecb34a84c74a74606ff9ea17fed}"
           EFF_AGORA_ID="${CI_AGORA_APP_ID:-802667ef48b4460784c048aaf9bfe8e1}"
 
           {
-            echo "EXPECTED_CERT_SHA256=${EFF_CERT_SHA256}"
+            echo "EXPECTED_CERT_SHA256=${CERT_SHA256}"
             echo "EXPECTED_DEX_CRC32=${EFF_DEX_CRC32}"
             echo "EXAM_ANSWER_HMAC_PEPPER=${EFF_HMAC_PEPPER}"
             echo "EXAM_GRADING_ENDPOINT_URL=${EFF_GRADING_URL}"
+            echo "PORTAL_AUTH_TOKEN_ENDPOINT_URL=${EFF_PORTAL_TOKEN_URL}"
             echo "GITHUB_OTA_OWNER=${EFF_OTA_OWNER}"
             echo "GITHUB_OTA_REPO=${EFF_OTA_REPO}"
-            echo "ADMIN_DEFAULT_PASSWORD_SHA256=${EFF_ADMIN_SHA256}"
             echo "AGORA_APP_ID=${EFF_AGORA_ID}"
           } >> "$GITHUB_ENV"
 
           {
             printf "AGORA_APP_ID=%s\n" "${EFF_AGORA_ID}"
             printf "AGORA_TEMP_TOKEN=%s\n" "AGORA_TEMP_TOKEN_DEFAULT_VALUE"
-            printf "EXPECTED_CERT_SHA256=%s\n" "${EFF_CERT_SHA256}"
+            printf "EXPECTED_CERT_SHA256=%s\n" "${CERT_SHA256}"
             printf "EXPECTED_DEX_CRC32=%s\n" "${EFF_DEX_CRC32}"
             printf "EXAM_ANSWER_HMAC_PEPPER=%s\n" "${EFF_HMAC_PEPPER}"
             printf "EXAM_GRADING_ENDPOINT_URL=%s\n" "${EFF_GRADING_URL}"
+            printf "PORTAL_AUTH_TOKEN_ENDPOINT_URL=%s\n" "${EFF_PORTAL_TOKEN_URL}"
             printf "GITHUB_OTA_OWNER=%s\n" "${EFF_OTA_OWNER}"
             printf "GITHUB_OTA_REPO=%s\n" "${EFF_OTA_REPO}"
-            printf "ADMIN_DEFAULT_PASSWORD_SHA256=%s\n" "${EFF_ADMIN_SHA256}"
           } > .env
 
       - name: Validate Project Configuration
         run: |
           gradle help --stacktrace
 
-      - name: Build Signed Release APK & Play Store AAB
+      - name: Build Signed Release APK (WhatsApp / GitHub OTA)
         run: |
-          gradle :app:assembleRelease :app:bundleRelease -PenableNativeCxxBuild=true --stacktrace
+          gradle :app:assembleRelease -PenableNativeCxxBuild=true --stacktrace
 
-      - name: Verify Signed Release Artifacts Exist
+      - name: Verify Signed Release APK & Compute SHA-256 Checksum
+        id: apk_checksum
         run: |
-          ls -lh app/build/outputs/apk/release/*.apk
-          ls -lh app/build/outputs/bundle/release/*.aab
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::Expected signed release APK not found at $APK_PATH"
+            exit 1
+          fi
+          APK_SHA256="$(sha256sum "$APK_PATH" | awk '{print $1}')"
+          echo "apk_sha256=${APK_SHA256}" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK_PATH"
+          echo "SHA256: ${APK_SHA256}"
 
-      - name: Upload Signed Release APK & AAB Artifacts
+      - name: Upload Signed Release APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: waqar-institute-release-bundle
-          path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+          name: waqar-institute-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 90
+
+      - name: Publish GitHub Release for In-App OTA Updater
+        if: success() && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
+          body: |
+            Waqar Computer Institute ERP — Signed Release APK (WhatsApp & GitHub OTA)
+            SHA256: ${{ steps.apk_checksum.outputs.apk_sha256 }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup Decoded Keystores, Firebase Config & Secrets
         if: always()
@@ -214,7 +235,7 @@ jobs:
             echo "auth_mode=firebase_token" >> "$GITHUB_OUTPUT"
           else
             echo "auth_mode=none" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Firebase Hosting Secret Not Configured::Skipping live Firebase Hosting deployment because FIREBASE_SERVICE_ACCOUNT, FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247, or FIREBASE_TOKEN is not set in GitHub Repository Secrets (Settings -> Secrets and variables -> Actions)."
+            echo "::notice title=Firebase Hosting Secret Not Configured::Skipping live Firebase Hosting deployment because FIREBASE_SERVICE_ACCOUNT, FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247, or FIREBASE_TOKEN is not set in GitHub Repository Secrets."
           fi
 
       - name: Deploy to Firebase Hosting (Service Account)

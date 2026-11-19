@@ -291,41 +291,46 @@ class FirebaseCloudExamGradingGateway(
 
                 val idToken = withTimeoutOrNull(2_500L) {
                     FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
-                }?.takeIf { it.isNotBlank() }
+                }?.takeIf { it.isNotBlank() } ?: return@runCatching null
 
                 val answersJson = JSONObject()
                 request.selectedAnswers.forEach { (k, v) -> answersJson.put(k, v) }
 
                 val watermark = computeWatermarkForRemote(request.exam.id, request.studentId)
+                val telemetry = security_brahmastra.SecurityBridge.buildExamTelemetryMetadata()
                 val payload = JSONObject().apply {
                     put("examId", request.exam.id)
+                    put("examTitle", request.exam.title)
                     put("studentId", request.studentId)
+                    put("studentName", request.studentName)
                     put("totalMarks", request.exam.totalMarks)
                     put("passingMarks", request.exam.passingMarks)
                     put("paperWatermark", watermark)
+                    put("answersByMasterQId", answersJson)
                     put("answers", answersJson)
+                    put("hashChainHead", telemetry["hashChainHead"]?.toString().orEmpty())
+                    put("behavioralAnomalyCount", (telemetry["behavioralAnomalyCount"] as? Number)?.toInt() ?: 0)
                     if (!request.violationReason.isNullOrBlank()) {
                         put("violationReason", request.violationReason)
                     }
                 }.toString()
 
-                val httpReqBuilder = Request.Builder()
+                val httpReq = Request.Builder()
                     .url(gradingEndpointUrl)
+                    .header("Authorization", "Bearer $idToken")
                     .header("X-Firebase-AppCheck", appCheckToken)
                     .header("X-WCI-Paper-Watermark", watermark)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                if (idToken != null) {
-                    httpReqBuilder.header("Authorization", "Bearer $idToken")
-                }
+                    .build()
 
-                httpClient.newCall(httpReqBuilder.build()).execute().use { resp ->
+                httpClient.newCall(httpReq).execute().use { resp ->
                     if (!resp.isSuccessful) return@runCatching null
                     val bodyStr = resp.body?.string().orEmpty()
                     val json = JSONObject(bodyStr)
                     val baseRemarks = json.optString("remarks", "Verified Server-Graded Proctored CBT")
                     val stampedRemarks = if (baseRemarks.contains(watermark)) baseRemarks else "$baseRemarks [$watermark]"
                     ExamGradingOutcome(
-                        rawCorrectCount = json.optInt("rawCorrectCount", 0),
+                        rawCorrectCount = json.optInt("rawCorrectCount", json.optInt("correctCount", 0)),
                         totalQuestions = json.optInt("totalQuestions", request.questionIds.size),
                         scaledMarks = json.optInt("marksObtained", 0).coerceIn(0, request.exam.totalMarks),
                         grade = json.optString("grade", "B"),
@@ -459,19 +464,32 @@ class ExamRepository(
         durationMinutes: Int,
         totalMarks: Int,
         passingMarks: Int,
-        ownerUid: String
+        ownerUid: String,
+        batchId: String = "",
+        startTime24h: String = "10:00",
+        scheduledStartEpochMs: Long = 0L,
+        durationSeconds: Int = 0,
+        createdByRole: String = "admin"
     ): ExamRecord {
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
+        val effectiveSecs = if (durationSeconds > 0) durationSeconds.coerceAtLeast(10) else durationMinutes.coerceIn(1, 360) * 60
+        val effectiveMins = if (durationSeconds > 0) ((effectiveSecs + 59) / 60).coerceAtLeast(1) else durationMinutes.coerceIn(1, 360)
         val exam = ExamRecord(
             id = "exm_${UUID.randomUUID().toString().take(8)}",
             title = title.trim(),
             courseId = "crs_${courseName.lowercase().replace(Regex("[^a-z0-9]"), "").take(8)}",
             courseName = courseName.trim(),
+            batchId = batchId.trim(),
             batchName = batchName.trim().ifBlank { "All Batches" },
             examType = "MCQ_ONLINE",
-            durationMinutes = durationMinutes.coerceIn(5, 360),
-            totalMarks = totalMarks.coerceAtLeast(10),
-            passingMarks = passingMarks.coerceIn(1, totalMarks.coerceAtLeast(10)),
+            durationMinutes = effectiveMins,
+            durationSeconds = effectiveSecs,
+            startTime24h = startTime24h.trim().ifBlank { "10:00" },
+            scheduledStartEpochMs = scheduledStartEpochMs,
+            autoAssignLabPcSeats = true,
+            createdByRole = createdByRole.trim().ifBlank { "admin" },
+            totalMarks = totalMarks.coerceAtLeast(1),
+            passingMarks = passingMarks.coerceIn(1, totalMarks.coerceAtLeast(1)),
             scheduledDateIso = examDateIso.trim(),
             questionsJson = "[]",
             status = "SCHEDULED",
@@ -480,6 +498,30 @@ class ExamRepository(
         )
         instituteRepository.saveExam(exam)
         return exam
+    }
+
+    /**
+     * [A5 + B2] Persists canonical Master Answer Keys ONLY into Admin/Server-restricted
+     * `/examAnswerKeys/{examId}` so students never receive plaintext answer keys.
+     */
+    suspend fun saveMasterMcqBankAndAnswerKeyVault(
+        examId: String,
+        examTitle: String,
+        batchId: String,
+        masterQuestions: List<com.waqar.institute.exam.MasterMcqQuestion>,
+        ownerUid: String
+    ) {
+        if (masterQuestions.isEmpty()) return
+        val answerKeyMap = com.waqar.institute.exam.ChatGptBulkMcqFileParser.extractAnswerKeyMap(masterQuestions)
+        runCatching {
+            instituteRepository.saveExamAnswerKey(
+                examId = examId,
+                examTitle = examTitle,
+                batchId = batchId,
+                answersByMasterQId = answerKeyMap,
+                ownerUid = ownerUid
+            )
+        }
     }
 
     suspend fun submitStudentExamResult(
@@ -524,6 +566,9 @@ class ExamRepository(
             }
         }
 
+        val exactPct = if (exam.totalMarks > 0) (scaledMarks.toDouble() * 100.0) / exam.totalMarks.toDouble() else 0.0
+        val roundedPctLabel = "${(kotlin.math.round(exactPct * 100.0) / 100.0)}%"
+        val correctCount = questions.count { q -> selectedAnswers[q.id] == q.correctOptionIndex }
         val result = ExamResult(
             id = "res_${UUID.randomUUID().toString().take(8)}",
             examId = exam.id,
@@ -532,6 +577,10 @@ class ExamRepository(
             studentName = studentName.ifBlank { "WCI Student" },
             marksObtained = scaledMarks.coerceIn(0, exam.totalMarks),
             totalMarks = exam.totalMarks,
+            exactPercentage = exactPct,
+            formattedPercentage = roundedPctLabel,
+            correctCount = correctCount,
+            totalQuestions = questions.size,
             grade = grade,
             rank = 1,
             status = if (passed) "PASSED" else "FAILED",
@@ -581,29 +630,159 @@ class ExamRepository(
         }
 
         val safeNow = Timestamp(Date(TamperProofExamClock.currentTrustedEpochMs() - 1000L))
+        val exactPct = if (exam.totalMarks > 0) {
+            (outcome.scaledMarks.toDouble() * 100.0) / exam.totalMarks.toDouble()
+        } else 0.0
+        val roundedPctLabel = "${(kotlin.math.round(exactPct * 100.0) / 100.0)}%"
+        val hashHead = security_brahmastra.SecurityBridge.currentHashChainHead()
         val result = ExamResult(
-            id = "res_${UUID.randomUUID().toString().take(8)}",
+            id = if (outcome.gradedByRemoteServer) "${exam.id}_${studentId.ifBlank { ownerUid }}" else "res_${UUID.randomUUID().toString().take(8)}",
             examId = exam.id,
             examTitle = exam.title,
             studentId = studentId.ifBlank { "stu_online" },
             studentName = studentName.ifBlank { "WCI Student" },
             marksObtained = outcome.scaledMarks.coerceIn(0, exam.totalMarks),
             totalMarks = exam.totalMarks,
+            exactPercentage = exactPct,
+            formattedPercentage = roundedPctLabel,
+            correctCount = outcome.rawCorrectCount,
+            totalQuestions = sanitizedQuestions.size,
             grade = outcome.grade,
             rank = 1,
             status = if (outcome.passed) "PASSED" else "FAILED",
             remarks = outcome.remarks,
             ownerUid = ownerUid,
-            createdAt = safeNow
+            createdAt = safeNow,
+            hashChainHead = hashHead
         )
 
-        runCatching {
-            instituteRepository.saveExamResult(result)
+        if (outcome.gradedByRemoteServer) {
+            // Authoritative result already persisted server-side by gradeExamSubmission Admin SDK
             clearCachedAnswers(exam.id, studentId, questionIds)
-        }.onFailure {
-            enqueueOfflineResultSync(result)
+        } else {
+            runCatching {
+                instituteRepository.saveExamResult(result)
+                clearCachedAnswers(exam.id, studentId, questionIds)
+            }.onFailure {
+                enqueueOfflineResultSync(result)
+            }
         }
         return outcome.copy(savedResult = result)
+    }
+
+    /**
+     * [C3] Batch Ranker Leaderboard & Question-Wise Wrong-Answer Analytics for Teachers & Admins.
+     */
+    data class BatchLeaderboardEntry(
+        val rank: Int,
+        val podiumBadge: String, // "GOLD #1", "SILVER #2", "BRONZE #3", or "#N"
+        val result: ExamResult,
+        val exactPercentage: Double,
+        val formattedPercentage: String
+    )
+
+    data class MissedQuestionStat(
+        val questionId: String,
+        val questionText: String,
+        val wrongAttempts: Int,
+        val totalAttempts: Int,
+        val missRatePercent: Int
+    )
+
+    data class BatchExamAnalyticsReport(
+        val examId: String,
+        val leaderboard: List<BatchLeaderboardEntry>,
+        val topMissedQuestions: List<MissedQuestionStat>,
+        val passRatePercent: Int,
+        val averagePercentage: Double
+    )
+
+    companion object {
+        /**
+         * [C3] Ranks all students for `examId` by `marksObtained DESC` (assigning Top-3 podium badges)
+         * and computes the Top-5 most-missed questions from `submissions` (`studentId -> (qId -> isCorrect)`).
+         */
+        fun computeBatchLeaderboardAndWrongQuestionStats(
+            examId: String,
+            results: List<ExamResult>,
+            submissions: List<Map<String, Boolean>> = emptyList(),
+            questionTextById: Map<String, String> = emptyMap()
+        ): BatchExamAnalyticsReport {
+            val filtered = if (examId.isBlank()) results else results.filter { it.examId == examId }
+            val sorted = filtered.sortedWith(
+                compareByDescending<ExamResult> { it.marksObtained }
+                    .thenByDescending { it.exactPercentage }
+                    .thenBy { it.studentName.lowercase() }
+            )
+            val leaderboard = sorted.mapIndexed { idx, res ->
+                val rank = idx + 1
+                val pct = if (res.exactPercentage > 0.0 || res.marksObtained == 0) {
+                    res.exactPercentage
+                } else {
+                    (res.marksObtained.toDouble() * 100.0) / res.totalMarks.coerceAtLeast(1).toDouble()
+                }
+                val pctStr = res.formattedPercentage.ifBlank {
+                    "${(kotlin.math.round(pct * 100.0) / 100.0)}%"
+                }
+                val badge = when (rank) {
+                    1 -> "GOLD #1"
+                    2 -> "SILVER #2"
+                    3 -> "BRONZE #3"
+                    else -> "#$rank"
+                }
+                BatchLeaderboardEntry(
+                    rank = rank,
+                    podiumBadge = badge,
+                    result = res.copy(rank = rank, exactPercentage = pct, formattedPercentage = pctStr),
+                    exactPercentage = pct,
+                    formattedPercentage = pctStr
+                )
+            }
+
+            val totalMap = LinkedHashMap<String, Int>()
+            val wrongMap = LinkedHashMap<String, Int>()
+            for (submission in submissions) {
+                for ((qId, isCorrect) in submission) {
+                    totalMap[qId] = (totalMap[qId] ?: 0) + 1
+                    if (!isCorrect) {
+                        wrongMap[qId] = (wrongMap[qId] ?: 0) + 1
+                    }
+                }
+            }
+
+            val topMissed = totalMap.entries
+                .map { (qId, totalAttempts) ->
+                    val wrong = wrongMap[qId] ?: 0
+                    val missPct = if (totalAttempts > 0) ((wrong * 100) / totalAttempts) else 0
+                    MissedQuestionStat(
+                        questionId = qId,
+                        questionText = questionTextById[qId] ?: "Question $qId",
+                        wrongAttempts = wrong,
+                        totalAttempts = totalAttempts,
+                        missRatePercent = missPct
+                    )
+                }
+                .filter { it.wrongAttempts > 0 }
+                .sortedWith(
+                    compareByDescending<MissedQuestionStat> { it.wrongAttempts }
+                        .thenByDescending { it.missRatePercent }
+                )
+                .take(5)
+
+            val passedCount = leaderboard.count { it.result.status.equals("PASSED", ignoreCase = true) }
+            val passRate = if (leaderboard.isNotEmpty()) (passedCount * 100) / leaderboard.size else 0
+            val avgPct = if (leaderboard.isNotEmpty()) {
+                kotlin.math.round((leaderboard.sumOf { it.exactPercentage } / leaderboard.size) * 100.0) / 100.0
+            } else 0.0
+
+            return BatchExamAnalyticsReport(
+                examId = examId,
+                leaderboard = leaderboard,
+                topMissedQuestions = topMissed,
+                passRatePercent = passRate,
+                averagePercentage = avgPct
+            )
+        }
     }
 
     private fun enqueueOfflineResultSync(result: ExamResult) {

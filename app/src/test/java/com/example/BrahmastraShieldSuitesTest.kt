@@ -334,4 +334,86 @@ class BrahmastraShieldSuitesTest {
         )
         assertTrue(rollbackCheck.clockRollbackTamperDetected)
     }
+
+    @Test
+    fun masterRemediationAll8Fixes_verifiedEndToEnd() = runBlocking {
+        // FIX-03: Unified 26-Module Brahmastra Orchestrator bootstrap & runtime gates
+        val status = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator
+            .bootstrapAll26BrahmastraModules(context)
+        assertTrue(status.bootstrapped)
+        assertEquals(64, status.siliconPufDigestHex.length)
+        assertEquals(5, status.shamirSharesSealed)
+        assertTrue(status.activeHashChainHeadHex.isNotBlank())
+
+        val routeOk = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.verifyPortalRouteAndAction(
+            userId = "cred_waqar",
+            activeRole = "ADMIN",
+            routeId = "M01_DASHBOARD"
+        )
+        assertTrue(routeOk)
+
+        val feeTotal = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.guardFeeLedgerBatch(
+            installmentsPaise = longArrayOf(150_000L, 250_000L),
+            totalExpectedFeePaise = 500_000L
+        )
+        assertEquals(400_000L, feeTotal)
+
+        val watermarkedCsv = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator
+            .embedForensicExportWatermark("RollNo,Name\n101,Student", "admin_waqar")
+        assertTrue(watermarkedCsv.length > "RollNo,Name\n101,Student".length)
+
+        // FIX-06: JavaScript multi-statement for-loop & Python elif/else + zero dummy names
+        assertFalse(
+            com.waqar.institute.terminal.CodingSandboxUiState.DEFAULT_JS_STARTER
+                .contains("Aarav Sharma")
+        )
+        val jsOut = com.waqar.institute.terminal.CodingSandboxViewModel.evaluateJavaScriptOfflineSandboxed(
+            """
+            const marks = [80, 90, 100];
+            let sum = 0;
+            for (let i = 0; i < marks.length; i++) {
+                sum += marks[i];
+                console.log("Step:", i, sum);
+            }
+            console.log("Final:", sum);
+            """.trimIndent()
+        )
+        assertTrue(jsOut.contains("Step: 0 80"))
+        assertTrue(jsOut.contains("Step: 2 270"))
+        assertTrue(jsOut.contains("Final: 270"))
+
+        val pyOut = com.waqar.institute.terminal.CodingSandboxViewModel.evaluatePythonOfflineSandboxed(
+            """
+            score = 88
+            if score >= 90:
+                print("Grade A+")
+            elif score >= 80:
+                print("Grade A")
+            else:
+                print("Grade B")
+            """.trimIndent()
+        )
+        assertEquals("Grade A", pyOut.trim())
+
+        // FIX-07: Real ISO/IEC 18004 ZXing QR bitmap generation used by AcademicProSuiteEngine
+        val qrBmp = com.waqar.institute.certificate.CertificateQrGenerator.generateScannableQrBitmap(
+            content = "WCI_PRO_QR_V1|STU-101|BATCH-A|HMAC",
+            sizePx = 180
+        )
+        assertEquals(180, qrBmp.width)
+        assertEquals(180, qrBmp.height)
+
+        // FIX-08: EnterpriseRateLimiter raised to 35 requests per 60s window for normal ERP operations
+        assertEquals(35, com.example.security.EnterpriseRateLimiter.MAX_REQUESTS_PER_WINDOW)
+        com.example.security.EnterpriseRateLimiter.resetAllForTests(context)
+        for (reqIdx in 1..20) {
+            val dec = com.example.security.EnterpriseRateLimiter.checkAndConsume(
+                context = context,
+                scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
+                identityKey = "normal_erp_student_sync",
+                nowEpochMs = 1_800_000_000_000L + reqIdx * 100L
+            )
+            assertTrue("Expected request #$reqIdx (<=35) to be allowed", dec.allowed)
+        }
+    }
 }

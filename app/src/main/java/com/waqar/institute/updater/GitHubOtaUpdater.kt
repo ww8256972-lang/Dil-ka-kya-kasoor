@@ -277,6 +277,86 @@ object GitHubOtaUpdater {
     }
 
     /**
+     * Downloads the official GitHub Release APK directly in-app to `context.cacheDir/ota_apks/`,
+     * verifies its SHA-256 digest, anti-downgrade versionCode, and V2/V3 signing certificate pin,
+     * and launches the Android system package installer via `FileProvider` (`application/vnd.android.package-archive`).
+     * Falls back to `launchOfficialReleaseUpdate` if direct binary download is blocked or unavailable.
+     */
+    suspend fun downloadAndInstallReleaseApkInApp(
+        context: Context,
+        releaseInfo: GitHubReleaseInfo,
+        onProgress: (Float) -> Unit = {}
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val url = releaseInfo.assetUrl
+            require(isTrustedGitHubHttpsUrl(url)) { "Untrusted OTA asset URL: $url" }
+            val otaDir = File(context.cacheDir, "ota_apks").apply { mkdirs() }
+            val safeTag = releaseInfo.normalizedVersion.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val targetApk = File(otaDir, "Waqar_ERP_${safeTag}.apk")
+
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/octet-stream")
+                .header("User-Agent", "WaqarComputerInstitute-Android/${BuildConfig.VERSION_NAME}")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                require(response.isSuccessful) { "HTTP ${response.code} downloading OTA APK" }
+                val body = response.body ?: error("Empty OTA APK response body")
+                val totalBytes = body.contentLength().coerceAtLeast(1L)
+                var downloaded = 0L
+                val digest = MessageDigest.getInstance("SHA-256")
+                body.byteStream().use { input ->
+                    targetApk.outputStream().use { output ->
+                        val buffer = ByteArray(16 * 1024)
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            digest.update(buffer, 0, read)
+                            downloaded += read
+                            onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
+                        }
+                    }
+                }
+                val actualSha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                releaseInfo.expectedApkSha256?.let { expected ->
+                    if (!actualSha256.equals(expected, ignoreCase = true)) {
+                        targetApk.delete()
+                        error("OTA APK SHA-256 mismatch! Expected=$expected Actual=$actualSha256")
+                    }
+                }
+            }
+
+            val currentVersionCode = runCatching {
+                val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) pkgInfo.longVersionCode else @Suppress("DEPRECATION") pkgInfo.versionCode.toLong()
+            }.getOrDefault(1L)
+
+            val secCheck = verifyApkSignatureAndAntiDowngrade(
+                context = context,
+                apkFile = targetApk,
+                targetVersionCode = currentVersionCode + 1L
+            )
+            if (!secCheck.isAllowedToInstall) {
+                targetApk.delete()
+                error(secCheck.reason)
+            }
+
+            val apkUri = androidx.core.content.FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                targetApk
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(installIntent)
+            targetApk
+        }
+    }
+
+    /**
      * Launches the official release update URL via `Intent.ACTION_VIEW` after verifying HTTPS GitHub host.
      */
     fun launchOfficialReleaseUpdate(context: Context, releaseInfo: GitHubReleaseInfo): Boolean {

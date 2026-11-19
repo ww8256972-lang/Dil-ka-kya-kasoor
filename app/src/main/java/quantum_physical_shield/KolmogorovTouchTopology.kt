@@ -1,14 +1,16 @@
 package quantum_physical_shield
 
+import android.view.MotionEvent
 import kotlin.math.abs
+import kotlin.math.hypot
 
 /**
  * 5. `quantum_physical_shield/KolmogorovTouchTopology.kt`
- * Kolmogorov-Arnold Univariate B-Spline Superposition Touch & Micro-Tilt Authenticator:
- *   f(x_1, x_2, x_3) = sum_{q=0..2n} Phi_q( sum_{p=1..n} phi_{q,p}(x_p) )
+ * Real Android `MotionEvent` Overlay-Flag Inspector + Kolmogorov-Arnold Univariate B-Spline
+ * Touch & Micro-Tilt Authenticator.
  *
- * Continuously evaluates touch contact radius, pressure derivative `dP/dt`, and gyroscope
- * micro-tilt during exams to block synthetic ADB `input tap` and robotic macro injectors.
+ * Inspects `MotionEvent.FLAG_WINDOW_IS_OBSCURED` & `FLAG_WINDOW_IS_PARTIALLY_OBSCURED` alongside
+ * real touch contact radius, pressure derivative `dP/dt`, and gyroscope micro-tilt.
  */
 object KolmogorovTouchTopology {
 
@@ -17,16 +19,50 @@ object KolmogorovTouchTopology {
         val pressure: Float,
         val prevPressure: Float,
         val gyroMicroTiltRad: Float,
-        val deltaTimeMs: Long = 16L
+        val deltaTimeMs: Long = 16L,
+        val motionFlags: Int = 0
     )
 
     data class KolmogorovVerdict(
         val splineActivationScore: Double,
         val pressureDerivative: Double,
-        val isGenuineBiomechanicalTouch: Boolean
+        val isGenuineBiomechanicalTouch: Boolean,
+        val overlayFlagsDetected: Boolean = false
     )
 
+    fun evaluateMotionEvent(
+        ev: MotionEvent,
+        prevPressure: Float,
+        gyroMicroTiltRad: Float,
+        deltaTimeMs: Long = 16L
+    ): KolmogorovVerdict {
+        val radiusPx = hypot(ev.touchMajor.toDouble(), ev.touchMinor.toDouble())
+            .toFloat()
+            .coerceAtLeast(1f)
+        return evaluateTouchSample(
+            TouchKinematicSample(
+                contactRadiusPx = radiusPx,
+                pressure = ev.pressure,
+                prevPressure = prevPressure,
+                gyroMicroTiltRad = gyroMicroTiltRad,
+                deltaTimeMs = deltaTimeMs,
+                motionFlags = ev.flags
+            )
+        )
+    }
+
     fun evaluateTouchSample(sample: TouchKinematicSample): KolmogorovVerdict {
+        val obscured = (sample.motionFlags and MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0 ||
+            (sample.motionFlags and MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED) != 0
+        if (obscured) {
+            return KolmogorovVerdict(
+                splineActivationScore = 0.0,
+                pressureDerivative = 0.0,
+                isGenuineBiomechanicalTouch = false,
+                overlayFlagsDetected = true
+            )
+        }
+
         val dtSec = (sample.deltaTimeMs.coerceAtLeast(1L)) / 1000.0
         val dPdt = abs((sample.pressure - sample.prevPressure) / dtSec)
 
@@ -44,14 +80,14 @@ object KolmogorovTouchTopology {
             outerSum += cubicBSpline(inner.coerceIn(0.0, 1.0))
         }
 
-        // Synthetic ADB taps have constant pressure (dP/dt == 0), zero gyro micro-tilt, and fixed radius
         val hasOrganicVariation = sample.contactRadiusPx > 0.5f &&
             (dPdt > 1e-4 || abs(sample.gyroMicroTiltRad) > 1e-5f) &&
             outerSum > 0.1
         return KolmogorovVerdict(
             splineActivationScore = outerSum,
             pressureDerivative = dPdt,
-            isGenuineBiomechanicalTouch = hasOrganicVariation
+            isGenuineBiomechanicalTouch = hasOrganicVariation,
+            overlayFlagsDetected = false
         )
     }
 

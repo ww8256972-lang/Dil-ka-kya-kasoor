@@ -39,13 +39,13 @@ class StudentExamPortalViewModel : ViewModel() {
     private var examTimerJob: Job? = null
 
     /**
-     * Binds an `ExamRecord` and starts the live countdown if `examDateIso` is in the future,
-     * or unlocks immediately if the scheduled start time has arrived.
+     * Binds an `ExamRecord` and starts the live countdown if `scheduledStartEpochMs` / `scheduledDateIso` + `startTime24h`
+     * is in the future, or unlocks immediately if the scheduled start time has arrived.
      */
     fun attachExamSchedule(exam: ExamRecord, onAutoUnlock: () -> Unit = {}) {
         countdownJob?.cancel()
-        val scheduledStartEpochMs = parseExamStartEpochMs(exam.scheduledDateIso)
-        val totalDurationSeconds = (exam.durationMinutes.coerceAtLeast(5)) * 60
+        val scheduledStartEpochMs = resolveExamStartEpochMs(exam)
+        val totalDurationSeconds = exam.effectiveDurationSeconds.coerceAtLeast(10)
 
         countdownJob = viewModelScope.launch {
             launch { TamperProofExamClock.syncServerTimeOffsetAsync() }
@@ -69,7 +69,8 @@ class StudentExamPortalViewModel : ViewModel() {
                         isLockedWaitingForStart = false,
                         countdownHhMmSs = "00:00:00",
                         isExamUnlocked = true,
-                        remainingExamSeconds = totalDurationSeconds
+                        remainingExamSeconds = totalDurationSeconds,
+                        remainingFormattedMmSs = TamperProofExamClock.formatMmSs(totalDurationSeconds)
                     )
                     onAutoUnlock()
                     break
@@ -83,8 +84,15 @@ class StudentExamPortalViewModel : ViewModel() {
      * manual clock changes or coroutine sleep cannot extend exam duration.
      */
     fun startActiveExamClock(durationMinutes: Int, onTimeExpiredAutoSubmit: () -> Unit) {
+        startActiveExamClockSeconds(durationMinutes.coerceAtLeast(1) * 60, onTimeExpiredAutoSubmit)
+    }
+
+    /**
+     * [B1] Exact-second active exam timer supporting sub-minute exams (e.g. 30s) as well as multi-minute exams.
+     */
+    fun startActiveExamClockSeconds(durationSeconds: Int, onTimeExpiredAutoSubmit: () -> Unit) {
         examTimerJob?.cancel()
-        val deadlineElapsedMs = TamperProofExamClock.elapsedDeadlineAfterDurationMinutes(durationMinutes)
+        val deadlineElapsedMs = TamperProofExamClock.elapsedDeadlineAfterDurationSeconds(durationSeconds)
         examTimerJob = viewModelScope.launch {
             while (true) {
                 val secsLeft = TamperProofExamClock.computeRemainingSeconds(deadlineElapsedMs)
@@ -96,7 +104,7 @@ class StudentExamPortalViewModel : ViewModel() {
                     remainingFormattedMmSs = TamperProofExamClock.formatMmSs(secsLeft),
                     hasTimerExpiredAutoSubmit = false
                 )
-                delay(500L)
+                delay(250L)
             }
             _gatewayState.value = _gatewayState.value.copy(
                 remainingExamSeconds = 0,
@@ -107,15 +115,51 @@ class StudentExamPortalViewModel : ViewModel() {
         }
     }
 
+    /**
+     * [B3] Builds a unique deterministic per-student shuffled paper (`HMAC-SHA256(examId|studentId)`).
+     */
+    fun buildPerStudentShuffledPaper(
+        examId: String,
+        studentId: String,
+        masterQuestions: List<com.waqar.institute.exam.MasterMcqQuestion>
+    ): List<com.waqar.institute.exam.StudentSafeMcqQuestion> =
+        com.waqar.institute.exam.PerStudentExamShuffleEngine.buildStudentShuffledPaper(
+            examId = examId,
+            studentId = studentId,
+            masterQuestions = masterQuestions
+        )
+
+    /**
+     * [B3] Grades canonical student selections with exact percentage, grade, and pass/fail status.
+     */
+    fun gradeShuffledExamSubmission(
+        masterQuestions: List<com.waqar.institute.exam.MasterMcqQuestion>,
+        selectedOriginalOptionByMasterQId: Map<String, Int>,
+        marksPerQuestion: Int = 1,
+        passingPercentage: Double = 40.0
+    ): com.waqar.institute.exam.ExactExamGradingSummary =
+        com.waqar.institute.exam.PerStudentExamShuffleEngine.gradeSubmissionWithExactPercentage(
+            masterQuestions = masterQuestions,
+            selectedOriginalOptionByMasterQId = selectedOriginalOptionByMasterQId,
+            marksPerQuestion = marksPerQuestion,
+            passingPercentage = passingPercentage
+        )
+
     fun stopTimers() {
         countdownJob?.cancel()
         examTimerJob?.cancel()
     }
 
+    private fun resolveExamStartEpochMs(exam: ExamRecord): Long {
+        if (exam.scheduledStartEpochMs > 0L) return exam.scheduledStartEpochMs
+        val parsed24h = TamperProofExamClock.parse24HourScheduleEpochMs(exam.scheduledDateIso, exam.startTime24h)
+        if (parsed24h > 0L) return parsed24h
+        return parseExamStartEpochMs(exam.scheduledDateIso)
+    }
+
     private fun parseExamStartEpochMs(dateIso: String): Long {
         val clean = dateIso.trim()
         val trustedNow = TamperProofExamClock.currentTrustedEpochMs()
-        // Supports "YYYY-MM-DD HH:mm" or "YYYY-MM-DD"; if date is today or past, unlocks immediately
         return runCatching {
             if (clean.length > 10 && clean.contains(":")) {
                 val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)

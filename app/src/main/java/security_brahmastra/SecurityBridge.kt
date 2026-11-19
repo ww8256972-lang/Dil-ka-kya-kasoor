@@ -3,7 +3,8 @@ package security_brahmastra
 /**
  * 6. `security_brahmastra/SecurityBridge.kt`
  * Single Safe Integration Point connecting `HoneypotSentinel`, `CanaryWatermark`,
- * `BehavioralBiometrics`, `HashChainState`, and `PowChallenge`.
+ * `BehavioralBiometrics`, `HashChainState`, and `PowChallenge`, and persisting
+ * `hashChainHead` + behavioral telemetry into `/examResults` and `gradeExamSubmission`.
  */
 object SecurityBridge {
 
@@ -49,6 +50,22 @@ object SecurityBridge {
 
     fun recordAnsweredQuestionInChain(questionId: String, selectedOption: Int): HashChainState.ChainStep =
         activeHashChain.recordQuestionStep(questionId, selectedOption)
+
+    fun currentHashChainHead(): String = activeHashChain.getCurrentHeadHash()
+
+    /**
+     * Builds telemetry metadata persisted to `/examResults` and transmitted to `gradeExamSubmission`.
+     */
+    fun buildExamTelemetryMetadata(): Map<String, Any> {
+        val ctx = activeContext
+        return mapOf(
+            "hashChainHead" to activeHashChain.getCurrentHeadHash(),
+            "hashChainStepCount" to activeHashChain.getRecordedSteps().size,
+            "behavioralAnomalyCount" to behavioralProfiler.getAnomalyEvents().size,
+            "shadowModeActive" to HoneypotSentinel.isShadowSession,
+            "sessionId" to (ctx?.sessionId ?: "uninitialized")
+        )
+    }
 
     fun wrapExamSubmission(
         payloadJson: String,

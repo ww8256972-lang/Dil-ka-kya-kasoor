@@ -70,7 +70,7 @@ jobs:
           CI_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID }}
           CI_EXAM_ANSWER_HMAC_PEPPER: ${{ secrets.EXAM_ANSWER_HMAC_PEPPER }}
           CI_EXAM_GRADING_ENDPOINT_URL: ${{ secrets.EXAM_GRADING_ENDPOINT_URL }}
-          CI_ADMIN_DEFAULT_PASSWORD_SHA256: ${{ secrets.ADMIN_DEFAULT_PASSWORD_SHA256 }}
+          CI_PORTAL_AUTH_TOKEN_ENDPOINT_URL: ${{ secrets.PORTAL_AUTH_TOKEN_ENDPOINT_URL }}
           AUTO_GITHUB_OTA_OWNER: ${{ github.repository_owner }}
           AUTO_GITHUB_OTA_REPO: ${{ github.event.repository.name }}
         run: |
@@ -115,18 +115,20 @@ jobs:
           echo "STORE_PASSWORD=${EFF_STORE_PASS}" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=${EFF_KEY_PASS}" >> "$GITHUB_ENV"
 
-          if [ -n "$CI_EXPECTED_CERT_SHA256" ]; then
-            CERT_SHA256="$(echo "$CI_EXPECTED_CERT_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-          else
-            CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -alias upload -storepass "$EFF_STORE_PASS" 2>/dev/null | grep -i 'SHA256:' | head -n 1 | awk '{print $2}' | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -alias upload -storepass "$EFF_STORE_PASS" 2>/dev/null | sed -n 's/.*SHA256:[[:space:]]*//Ip' | head -n 1 | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
+          if [ -z "$CERT_SHA256" ]; then
+            CERT_SHA256="$(keytool -list -v -keystore my-upload-key.jks -storepass "$EFF_STORE_PASS" 2>/dev/null | sed -n 's/.*SHA256:[[:space:]]*//Ip' | head -n 1 | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
+          fi
+          if [ -z "$CERT_SHA256" ] && [ -n "$CI_EXPECTED_CERT_SHA256" ]; then
+            CERT_SHA256="$(echo "$CI_EXPECTED_CERT_SHA256" | tr -d ':\r\n ' | tr '[:upper:]' '[:lower:]')"
           fi
           EFF_CERT_SHA256="${CERT_SHA256:-2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5}"
           EFF_DEX_CRC32="${CI_EXPECTED_DEX_CRC32:-AUTO_BASELINE}"
           EFF_HMAC_PEPPER="${CI_EXAM_ANSWER_HMAC_PEPPER:-WCI_EXAM_BLIND_PEPPER_2026_V1}"
-          EFF_GRADING_URL="${CI_EXAM_GRADING_ENDPOINT_URL:-https://us-central1-gen-lang-client-0309263247.cloudfunctions.net/gradeExamSubmission}"
+          EFF_GRADING_URL="${CI_EXAM_GRADING_ENDPOINT_URL:-https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/gradeExamSubmission}"
+          EFF_PORTAL_TOKEN_URL="${CI_PORTAL_AUTH_TOKEN_ENDPOINT_URL:-https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/issuePortalCustomToken}"
           EFF_OTA_OWNER="${AUTO_GITHUB_OTA_OWNER:-ww8256972}"
           EFF_OTA_REPO="${AUTO_GITHUB_OTA_REPO:-Waqar-first-project-}"
-          EFF_ADMIN_SHA256="${CI_ADMIN_DEFAULT_PASSWORD_SHA256:-8002e137d3ca041230837e5f5071f5d585e94ecb34a84c74a74606ff9ea17fed}"
           EFF_AGORA_ID="${CI_AGORA_APP_ID:-802667ef48b4460784c048aaf9bfe8e1}"
 
           {
@@ -134,9 +136,9 @@ jobs:
             echo "EXPECTED_DEX_CRC32=${EFF_DEX_CRC32}"
             echo "EXAM_ANSWER_HMAC_PEPPER=${EFF_HMAC_PEPPER}"
             echo "EXAM_GRADING_ENDPOINT_URL=${EFF_GRADING_URL}"
+            echo "PORTAL_AUTH_TOKEN_ENDPOINT_URL=${EFF_PORTAL_TOKEN_URL}"
             echo "GITHUB_OTA_OWNER=${EFF_OTA_OWNER}"
             echo "GITHUB_OTA_REPO=${EFF_OTA_REPO}"
-            echo "ADMIN_DEFAULT_PASSWORD_SHA256=${EFF_ADMIN_SHA256}"
             echo "AGORA_APP_ID=${EFF_AGORA_ID}"
           } >> "$GITHUB_ENV"
 
@@ -147,9 +149,9 @@ jobs:
             printf "EXPECTED_DEX_CRC32=%s\n" "${EFF_DEX_CRC32}"
             printf "EXAM_ANSWER_HMAC_PEPPER=%s\n" "${EFF_HMAC_PEPPER}"
             printf "EXAM_GRADING_ENDPOINT_URL=%s\n" "${EFF_GRADING_URL}"
+            printf "PORTAL_AUTH_TOKEN_ENDPOINT_URL=%s\n" "${EFF_PORTAL_TOKEN_URL}"
             printf "GITHUB_OTA_OWNER=%s\n" "${EFF_OTA_OWNER}"
             printf "GITHUB_OTA_REPO=%s\n" "${EFF_OTA_REPO}"
-            printf "ADMIN_DEFAULT_PASSWORD_SHA256=%s\n" "${EFF_ADMIN_SHA256}"
           } > .env
 
       # 7. Set up Gradle 9.3.1 with build caching
@@ -182,15 +184,10 @@ jobs:
       # 11. Run Unit Tests
       - name: Run Unit Tests
         run: |
-          gradle :app:testDebugUnitTest \
-            --tests "com.example.ExampleUnitTest" \
-            --tests "com.example.RemediationVerificationTest" \
-            --tests "com.example.EnterpriseAuditRemediationTest" \
-            --tests "com.example.MahaBrahmastraAndInstantAdminTest" \
-            --stacktrace
+          gradle :app:testDebugUnitTest --stacktrace
 
       # 12. Assemble Debug APK & Signed Release APK
-      - name: Assemble Debug APK
+      - name: Assemble Debug & Release APKs
         run: |
           gradle :app:assembleDebug :app:assembleRelease -PenableNativeCxxBuild=true --stacktrace
 

@@ -435,24 +435,50 @@ class PdfMcqBankParserAndAntiCheatTest {
             )
         )
 
-        // 2. Verify bundled Master Admin photo (`assets/admin_master_face_waqar.jpg`) loads & enrolls
+        // 2. Verify bundled Master Admin photo asset is removed from APK and interactive enrollment into /adminFaces works
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
-        val masterBitmap = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.loadBundledMasterAdminBitmap(context)
-        org.junit.Assert.assertNotNull("Bundled Master Admin photo must be present in assets", masterBitmap)
+        @Suppress("DEPRECATION")
+        val bundledBitmap = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.loadBundledMasterAdminBitmap(context)
+        org.junit.Assert.assertNull("Bundled Master Admin photo asset must NOT exist in APK", bundledBitmap)
 
-        val masterProfile = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ensureMasterAdminPhotoEnrolled(context)
-        org.junit.Assert.assertNotNull("Master Admin profile must be enrolled", masterProfile)
-        assertEquals(128, masterProfile!!.faceEmbedding.size)
+        // Create a realistic non-uniform portrait test bitmap (passes natural texture variance audit)
+        val enrolledBitmap = android.graphics.Bitmap.createBitmap(128, 128, android.graphics.Bitmap.Config.ARGB_8888)
+        for (y in 0 until 128) {
+            for (x in 0 until 128) {
+                val r = ((x * 2 + (y % 17) * 5 + ((x xor y) and 0x1F)) % 220 + 25).coerceIn(0, 255)
+                val g = ((y * 2 + (x % 13) * 6 + ((x * 3 + y) and 0x1F)) % 210 + 20).coerceIn(0, 255)
+                val b = (((x + y) + ((x * y) % 31) * 4) % 200 + 20).coerceIn(0, 255)
+                enrolledBitmap.setPixel(x, y, android.graphics.Color.rgb(r, g, b))
+            }
+        }
+
+        val masterProfile = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.enrollAdminFaceBitmapToVault(
+            context = context,
+            bitmap = enrolledBitmap
+        )
+        assertEquals(128, masterProfile.faceEmbedding.size)
         assertEquals("waqar", masterProfile.adminUsername)
         assertTrue(masterProfile.isPrimaryMaster)
+        assertEquals("adminFaces", com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ADMIN_FACES_COLLECTION)
 
-        // Matching the Master Admin photo against the Admin Vault must succeed (>= 0.85 cosine similarity)
+        // Strong one-time Admin password policy verification
+        val generatedOtp = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.generateSecureOneTimeAdminPassword()
+        assertTrue(
+            "Generated OTP must satisfy strong 10+ char complexity policy",
+            com.waqar.institute.biometric.AdminFaceConversionAndGateManager.isStrongAdminPassword(generatedOtp)
+        )
+        org.junit.Assert.assertFalse(
+            "Weak slug123 passwords must be rejected",
+            com.waqar.institute.biometric.AdminFaceConversionAndGateManager.isStrongAdminPassword("waqar123")
+        )
+
+        // Matching the enrolled Admin photo against the Admin Vault must succeed (>= 0.85 cosine similarity)
         val matchOutcome = com.waqar.institute.biometric.AdminFaceConversionAndGateManager.verifyLiveBitmapAgainstAdminVault(
             context = context,
-            liveBitmap = masterBitmap!!
+            liveBitmap = enrolledBitmap
         )
         assertTrue(
-            "Expected Master Admin photo to match Admin Face Vault, got $matchOutcome",
+            "Expected enrolled Admin photo to match Admin Face Vault, got $matchOutcome",
             matchOutcome is com.waqar.institute.biometric.AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched
         )
 

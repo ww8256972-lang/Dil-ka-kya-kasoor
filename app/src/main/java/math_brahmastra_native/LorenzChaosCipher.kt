@@ -1,16 +1,17 @@
 package math_brahmastra_native
 
+import android.content.Context
 import android.util.Base64
+import com.example.security.TinkMaterialVault
 import kotlin.math.abs
 import kotlin.math.floor
 
 /**
  * 2. `math_brahmastra_native/LorenzChaosCipher.kt`
- * Butterfly-Effect Dynamic Stream Cipher using 4th-Order Runge-Kutta (RK4) Integration
- * of the 3D Lorenz Chaotic Attractor:
- *   dx/dt = sigma * (y - x)
- *   dy/dt = x * (rho - z) - y
- *   dz/dt = x * y - beta * z
+ * Authenticated Encryption Vault backed by Google Tink AES-256-GCM AEAD + Android Keystore
+ * (`TinkMaterialVault`), binding the 4th-Order Runge-Kutta (RK4) 3D Lorenz Attractor seed
+ * as Associated Authenticated Data (AAD) so ciphertext and seed are both cryptographically
+ * authenticated against tampering or chosen-ciphertext attacks.
  */
 object LorenzChaosCipher {
 
@@ -18,6 +19,13 @@ object LorenzChaosCipher {
     private const val RHO = 28.0
     private const val BETA = 8.0 / 3.0
     private const val DT = 0.005
+
+    @Volatile
+    private var appContext: Context? = null
+
+    fun bindContext(context: Context) {
+        appContext = context.applicationContext ?: context
+    }
 
     data class LorenzSeedState(
         val x0: Double,
@@ -44,7 +52,8 @@ object LorenzChaosCipher {
     }
 
     /**
-     * Generates a deterministic chaotic keystream of [length] bytes from [seed] using 4th-order Runge-Kutta.
+     * Generates a deterministic chaotic keystream of [length] bytes from [seed] using 4th-order Runge-Kutta
+     * (used for non-cryptographic entropy mixing / diagnostics; production encryption uses Tink AES-256-GCM AEAD).
      */
     fun generateChaoticKeystream(seed: LorenzSeedState, length: Int): ByteArray {
         var x = seed.x0
@@ -74,29 +83,45 @@ object LorenzChaosCipher {
         return out
     }
 
+    /**
+     * Encrypts [plaintext] using Google Tink AES-256-GCM AEAD backed by Android Keystore,
+     * binding the Lorenz seed state as Associated Authenticated Data (AAD).
+     */
     fun encryptWithLorenzChaos(
         plaintext: String,
         seed: LorenzSeedState = deriveSeedFromEntropy()
     ): ChaoticCipherPacket {
         val plainBytes = plaintext.toByteArray(Charsets.UTF_8)
-        val keystream = generateChaoticKeystream(seed, plainBytes.size)
-        val cipherBytes = ByteArray(plainBytes.size) { i ->
-            (plainBytes[i].toInt() xor keystream[i].toInt()).toByte()
-        }
+        val aad = buildSeedAad(seed)
+        val cipherBytes = TinkMaterialVault.encryptBytes(
+            context = appContext,
+            plaintext = plainBytes,
+            associatedData = aad
+        )
         return ChaoticCipherPacket(
             seed = seed,
             ciphertextBase64 = Base64.encodeToString(cipherBytes, Base64.NO_WRAP)
         )
     }
 
+    /**
+     * Decrypts [packet] using Google Tink AES-256-GCM AEAD backed by Android Keystore,
+     * verifying integrity of both ciphertext and Lorenz seed AAD.
+     */
     fun decryptWithLorenzChaos(packet: ChaoticCipherPacket): String {
         val cipherBytes = Base64.decode(packet.ciphertextBase64, Base64.NO_WRAP)
-        val keystream = generateChaoticKeystream(packet.seed, cipherBytes.size)
-        val plainBytes = ByteArray(cipherBytes.size) { i ->
-            (cipherBytes[i].toInt() xor keystream[i].toInt()).toByte()
-        }
+        val aad = buildSeedAad(packet.seed)
+        val plainBytes = TinkMaterialVault.decryptBytes(
+            context = appContext,
+            ciphertext = cipherBytes,
+            associatedData = aad
+        )
         return String(plainBytes, Charsets.UTF_8)
     }
+
+    private fun buildSeedAad(seed: LorenzSeedState): ByteArray =
+        "wci_lorenz_aead_v2|${seed.x0.toBits()}|${seed.y0.toBits()}|${seed.z0.toBits()}"
+            .toByteArray(Charsets.UTF_8)
 
     private inline fun rk4Step(
         x: Double,

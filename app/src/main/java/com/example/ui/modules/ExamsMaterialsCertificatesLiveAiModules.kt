@@ -634,9 +634,99 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         )
                     }
                 } else {
+                    // [C3] Batch Ranker Leaderboard (Top 3 Podium) + Top 5 Most-Missed Questions Card
+                    item {
+                        val latestExam = remember(state.examResults, state.exams) {
+                            state.exams.firstOrNull { ex ->
+                                state.examResults.any { it.examId == ex.id }
+                            }
+                        }
+                        val analyticsReport = remember(state.examResults, latestExam) {
+                            com.example.exam.ExamRepository.computeBatchLeaderboardAndWrongQuestionStats(
+                                examId = latestExam?.id.orEmpty(),
+                                results = state.examResults
+                            )
+                        }
+                        if (analyticsReport.leaderboard.isNotEmpty()) {
+                            GlassCard(
+                                modifier = Modifier.fillMaxWidth(),
+                                glowColor = WciColors.Warning,
+                                strongSurface = true
+                            ) {
+                                Text(
+                                    text = "🏆 BATCH RANKER LEADERBOARD (${latestExam?.batchName ?: "All Batches"})",
+                                    style = MaterialTheme.typography.titleSmall.copy(
+                                        fontFamily = JetBrainsMono,
+                                        color = WciColors.Warning,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Candidates: ${analyticsReport.leaderboard.size} • Pass Rate: ${analyticsReport.passRatePercent}% • Avg: ${"%.2f".format(analyticsReport.averagePercentage)}%",
+                                    style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textSecondary)
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                analyticsReport.leaderboard.take(3).forEach { entry ->
+                                    val medal = when (entry.rank) {
+                                        1 -> "🥇"
+                                        2 -> "🥈"
+                                        else -> "🥉"
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "$medal ${entry.podiumBadge} ${entry.result.studentName}",
+                                            style = MaterialTheme.typography.bodyMedium.copy(
+                                                color = WciColors.textPrimary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        )
+                                        Text(
+                                            text = "${entry.result.marksObtained}/${entry.result.totalMarks} (${entry.formattedPercentage} • ${entry.result.grade})",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontFamily = JetBrainsMono,
+                                                color = WciColors.Success,
+                                                fontWeight = FontWeight.ExtraBold
+                                            )
+                                        )
+                                    }
+                                }
+                                if (analyticsReport.topMissedQuestions.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    HorizontalDivider(color = WciColors.glassBorderSubtleColor)
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Top Missed Questions (Revision Focus):",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = WciColors.Danger,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    )
+                                    analyticsReport.topMissedQuestions.take(5).forEach { mq ->
+                                        Text(
+                                            text = "• ${mq.questionId}: ${mq.wrongAttempts}/${mq.totalAttempts} wrong (${mq.missRatePercent}%)",
+                                            style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textSecondary)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     items(state.examResults, key = { it.id }) { res ->
-                        val percentage = if (res.totalMarks > 0) (res.marksObtained * 100) / res.totalMarks else 0
-                        val isPassed = res.status.uppercase() != "FAIL" && percentage >= 40
+                        val exactPct = if (res.exactPercentage > 0.0) {
+                            res.exactPercentage
+                        } else if (res.totalMarks > 0) {
+                            kotlin.math.round(((res.marksObtained.toDouble() * 100.0) / res.totalMarks.toDouble()) * 100.0) / 100.0
+                        } else 0.0
+                        val formattedPctLabel = res.formattedPercentage.ifBlank { "$exactPct%" }
+                        val isPassed = res.status.uppercase() != "FAIL" && res.status.uppercase() != "FAILED" && exactPct >= 40.0
                         val statusColor = if (isPassed) WciColors.Success else WciColors.Danger
 
                         // Rich Multi-Section Institute Marksheet Card
@@ -747,9 +837,9 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                     )
                                 }
                                 DonutProgressRing(
-                                    progress = percentage / 100f,
+                                    progress = (exactPct / 100.0).toFloat().coerceIn(0f, 1f),
                                     color = statusColor,
-                                    label = "$percentage%",
+                                    label = formattedPctLabel,
                                     subLabel = res.grade,
                                     sizeDp = 78.dp
                                 )
@@ -799,7 +889,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 ) {
                                     Column {
                                         Text(
-                                            text = "PERCENTAGE",
+                                            text = "EXACT %",
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 fontSize = 12.sp,
                                                 color = WciColors.textMuted
@@ -807,7 +897,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
-                                            text = "$percentage.0%",
+                                            text = formattedPctLabel,
                                             style = MaterialTheme.typography.titleMedium.copy(
                                                 fontFamily = JetBrainsMono,
                                                 fontWeight = FontWeight.ExtraBold,
@@ -847,32 +937,63 @@ fun ExamsMaterialsCertificatesModuleScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            // 4. Footer Row: Examiner Remarks + Official PDF Export
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                            // 4. Footer Row: Examiner Remarks + Official PDF Export + 1-Tap WhatsApp Alert
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(
                                     text = res.remarks.ifBlank { "Verified by Controller of Examinations" },
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = WciColors.textSecondary
-                                    ),
-                                    modifier = Modifier.weight(1f)
+                                    )
                                 )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                LiquidPill(
-                                    text = "Download PDF Marksheet",
-                                    selected = true,
-                                    icon = Icons.Default.PictureAsPdf,
-                                    onClick = {
-                                        DocumentExportHelper.exportAndShareMarkSheetPdf(
-                                            context = context,
-                                            instituteName = state.preferences.instituteName,
-                                            result = res
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    LiquidPill(
+                                        text = "PDF Marksheet",
+                                        selected = true,
+                                        icon = Icons.Default.PictureAsPdf,
+                                        onClick = {
+                                            DocumentExportHelper.exportAndShareMarkSheetPdf(
+                                                context = context,
+                                                instituteName = state.preferences.instituteName,
+                                                result = res
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f).testTag("export_marksheet_pdf_${res.id}")
+                                    )
+                                    if (canManageAssessments) {
+                                        val parentPhone = state.students.firstOrNull {
+                                            it.id == res.studentId || it.fullName.equals(res.studentName, ignoreCase = true)
+                                        }?.let { stu -> stu.guardianPhone.ifBlank { stu.phone } }.orEmpty()
+                                        LiquidPill(
+                                            text = "WhatsApp Parent",
+                                            selected = false,
+                                            icon = Icons.AutoMirrored.Filled.Send,
+                                            onClick = {
+                                                if (parentPhone.isBlank()) {
+                                                    viewModel.postMessage("No guardian/student phone number found for ${res.studentName}.")
+                                                } else {
+                                                    val launched = com.waqar.institute.communication.WhatsAppInstituteAlertHelper.sendExamResultAlert(
+                                                        context = context,
+                                                        guardianPhone = parentPhone,
+                                                        studentName = res.studentName,
+                                                        examTitle = res.examTitle,
+                                                        marks = res.marksObtained,
+                                                        total = res.totalMarks,
+                                                        pct = formattedPctLabel,
+                                                        grade = res.grade
+                                                    )
+                                                    if (!launched) {
+                                                        viewModel.postMessage("Unable to launch WhatsApp on this device.")
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f).testTag("whatsapp_exam_result_${res.id}")
                                         )
                                     }
-                                )
+                                }
                             }
                         }
                     }
@@ -1019,11 +1140,13 @@ fun ExamsMaterialsCertificatesModuleScreen(
         val coroutineScope = rememberCoroutineScope()
         var title by remember { mutableStateOf("") }
         var course by remember { mutableStateOf(state.courses.firstOrNull()?.title ?: "ADCA") }
+        var selectedBatchId by remember { mutableStateOf(state.batches.firstOrNull()?.id.orEmpty()) }
         var batch by remember { mutableStateOf(state.batches.firstOrNull()?.name ?: "Morning Batch") }
         var examDateIso by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date())) }
         var examTime24h by remember { mutableStateOf("14:00") }
         var examEndTime24h by remember { mutableStateOf("15:00") }
         var duration by remember { mutableStateOf("45") }
+        var durationUnitIsSeconds by remember { mutableStateOf(false) }
         var totalMarks by remember { mutableStateOf("100") }
         var passMarks by remember { mutableStateOf("40") }
         var questionsPerStudentStr by remember { mutableStateOf("1") }
@@ -1110,15 +1233,24 @@ fun ExamsMaterialsCertificatesModuleScreen(
                 ) {
                     LiquidPill(
                         text = when {
-                            isParsingPdf -> "Reading PDF Questions & Real Answers..."
-                            uploadedPdfName.isNotBlank() -> "PDF Uploaded: $uploadedPdfName (${customQuestions.size} Qs) ✓"
-                            else -> "Upload Option-Wise Q&A PDF (Auto Serial Extract)"
+                            isParsingPdf -> "Parsing ChatGPT / PDF Questions & Real Answers..."
+                            uploadedPdfName.isNotBlank() -> "Loaded: $uploadedPdfName (${customQuestions.size} Qs) ✓"
+                            else -> "Upload ChatGPT Q&A File (.txt/.md/.csv/.json/.pdf)"
                         },
                         selected = uploadedPdfName.isNotBlank(),
                         icon = Icons.Default.PictureAsPdf,
                         onClick = {
                             if (!isParsingPdf) {
-                                pdfMcqPickerLauncher.launch(arrayOf("application/pdf", "text/plain"))
+                                pdfMcqPickerLauncher.launch(
+                                    arrayOf(
+                                        "application/pdf",
+                                        "text/plain",
+                                        "text/markdown",
+                                        "text/csv",
+                                        "application/json",
+                                        "*/*"
+                                    )
+                                )
                             }
                         },
                         modifier = Modifier.fillMaxWidth().testTag("upload_qa_pdf_button")
@@ -1136,6 +1268,36 @@ fun ExamsMaterialsCertificatesModuleScreen(
                     }
 
                     OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Exam Title *") }, singleLine = true)
+                    if (state.batches.isNotEmpty()) {
+                        Text(
+                            text = "Select Target Batch (Live Enrolled Student Count):",
+                            style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Info, fontWeight = FontWeight.Bold)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            state.batches.forEach { b ->
+                                val bCount = viewModel.getStudentCountForBatch(b, state.students)
+                                val isSel = (selectedBatchId.isNotBlank() && selectedBatchId == b.id) ||
+                                    (selectedBatchId.isBlank() && batch.equals(b.name, ignoreCase = true))
+                                LiquidPill(
+                                    text = "${b.name} — $bCount Students",
+                                    selected = isSel,
+                                    onClick = {
+                                        selectedBatchId = b.id
+                                        batch = b.name
+                                        if (b.courseName.isNotBlank()) {
+                                            course = b.courseName
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("exam_batch_chip_${b.id}")
+                                )
+                            }
+                        }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = course, onValueChange = { course = it }, label = { Text("Course *") }, modifier = Modifier.weight(1f), singleLine = true)
                         OutlinedTextField(value = batch, onValueChange = { batch = it }, label = { Text("Batch") }, modifier = Modifier.weight(1f), singleLine = true)
@@ -1163,8 +1325,35 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             singleLine = true
                         )
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Duration Unit:", style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textSecondary))
+                        LiquidPill(
+                            text = "Minutes (e.g. 30m)",
+                            selected = !durationUnitIsSeconds,
+                            onClick = { durationUnitIsSeconds = false }
+                        )
+                        LiquidPill(
+                            text = "Seconds (e.g. 30s)",
+                            selected = durationUnitIsSeconds,
+                            onClick = {
+                                durationUnitIsSeconds = true
+                                if ((duration.toIntOrNull() ?: 45) > 300) duration = "30"
+                            }
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = duration, onValueChange = { duration = it }, label = { Text("Mins") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        OutlinedTextField(
+                            value = duration,
+                            onValueChange = { duration = it.filter { ch -> ch.isDigit() } },
+                            label = { Text(if (durationUnitIsSeconds) "Seconds" else "Mins") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
                         OutlinedTextField(value = totalMarks, onValueChange = { totalMarks = it }, label = { Text("Total Marks") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         OutlinedTextField(value = passMarks, onValueChange = { passMarks = it }, label = { Text("Pass Marks") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
@@ -1378,18 +1567,24 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         }
                         val perStudent = (questionsPerStudentStr.toIntOrNull() ?: validItems.size)
                             .coerceIn(1, validItems.size.coerceAtLeast(1))
-                        val formattedSchedule = "${examDateIso.trim()} ${examTime24h.trim()}-${examEndTime24h.trim()}".take(30)
+                        val rawDurValue = duration.toIntOrNull() ?: if (durationUnitIsSeconds) 30 else 45
+                        val computedDurationSeconds = if (durationUnitIsSeconds) {
+                            rawDurValue.coerceAtLeast(10)
+                        } else {
+                            rawDurValue.coerceIn(1, 360) * 60
+                        }
+                        val computedDurationMinutes = ((computedDurationSeconds + 59) / 60).coerceAtLeast(1)
                         val serializedJson = if (validItems.isNotEmpty()) {
                             com.waqar.institute.admin.AdminPdfQuestionBankService.transformQuestionsToFirestoreSchema(
                                 rawQuestions = validItems,
                                 examTitle = title,
                                 courseName = course,
                                 batchName = batch,
-                                durationMinutes = duration.toIntOrNull() ?: 45,
+                                durationMinutes = computedDurationMinutes,
                                 requestedPerStudentCount = perStudent,
-                                scheduledDateIso = formattedSchedule,
+                                scheduledDateIso = examDateIso.trim(),
                                 ownerUid = state.userProfile?.uid ?: "admin_root",
-                                extractionMethod = if (uploadedPdfName.isNotBlank()) "PDF_TEXT_STREAM" else "MANUAL_ADMIN_BANK"
+                                extractionMethod = if (uploadedPdfName.isNotBlank()) "CHATGPT_OR_PDF_BULK" else "MANUAL_ADMIN_BANK"
                             ).questionsJson
                         } else {
                             com.example.exam.PdfMcqBankParser.serializeCustomExamBankJson(
@@ -1402,11 +1597,15 @@ fun ExamsMaterialsCertificatesModuleScreen(
                             courseName = course,
                             batchName = batch,
                             examType = "MCQ_ONLINE",
-                            durationMinutes = duration.toIntOrNull() ?: 45,
+                            durationMinutes = computedDurationMinutes,
                             totalMarks = totalMarks.toIntOrNull() ?: 100,
                             passingMarks = passMarks.toIntOrNull() ?: 40,
-                            scheduledDateIso = formattedSchedule,
-                            questionsJson = serializedJson
+                            scheduledDateIso = examDateIso.trim(),
+                            questionsJson = serializedJson,
+                            batchId = selectedBatchId,
+                            startTime24h = examTime24h.trim().ifBlank { "14:00" },
+                            durationSeconds = computedDurationSeconds,
+                            autoAssignLabPcSeats = true
                         )
                         showCreateExam = false
                     }
@@ -1619,7 +1818,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
         var certType by remember { mutableStateOf("DIPLOMA") }
         var selectedStudentId by remember { mutableStateOf(state.students.firstOrNull()?.id ?: "") }
         var studentName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
-        var rollNumber by remember { mutableStateOf(state.students.firstOrNull()?.enrollmentNo ?: "WCI-2026-1001") }
+        var rollNumber by remember { mutableStateOf(state.students.firstOrNull()?.enrollmentNo ?: "") }
         var courseName by remember { mutableStateOf(state.students.firstOrNull()?.courseName ?: "ADCA") }
         var grade by remember { mutableStateOf("A+") }
 
@@ -1748,7 +1947,7 @@ fun ExamsMaterialsCertificatesModuleScreen(
             mutableStateOf("Facial Biometric Gate: Verify Registered Student Identity (${livenessChallenge.instruction})")
         }
         var remainingSeconds by remember(exam.id) {
-            mutableIntStateOf((exam.durationMinutes.coerceAtLeast(5)) * 60)
+            mutableIntStateOf(exam.effectiveDurationSeconds)
         }
         var secondaryDisplayAlert by remember(exam.id) { mutableStateOf<String?>(null) }
 
@@ -1871,6 +2070,22 @@ fun ExamsMaterialsCertificatesModuleScreen(
                 {}
             }
 
+            // [A1] Hardware Kiosk LockTask + Presentation/HDMI/Screen-Share Display Watchdog
+            if (activity != null && !isAdminPreview && !isDeviceSecurityBlocked) {
+                com.waqar.institute.security.ExamDisplayAndKioskShield.engageExamKioskAndDisplayWatchdog(
+                    activity = activity,
+                    onExternalDisplayDetected = { reason ->
+                        secondaryDisplayAlert = reason
+                        if (faceVerified) {
+                            proctoredExamViewModel.submitExamNow(
+                                ownerUid = ownerUid,
+                                violationReason = "A1 External Display / Screen-Share Blocked: $reason"
+                            )
+                        }
+                    }
+                )
+            }
+
             val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
                 if (isAdminPreview) return@LifecycleEventObserver
                 when (event) {
@@ -1900,6 +2115,9 @@ fun ExamsMaterialsCertificatesModuleScreen(
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose {
                 unregisterDisplayWatcher()
+                if (activity != null) {
+                    com.waqar.institute.security.ExamDisplayAndKioskShield.releaseExamKioskAndDisplayWatchdog(activity)
+                }
                 lifecycleOwner.lifecycle.removeObserver(observer)
                 proctoredExamViewModel.releaseExamSecurityShield(activity)
                 AntiOverlayShield.applyWindowOverlayShield(activity, false)
@@ -1948,11 +2166,11 @@ fun ExamsMaterialsCertificatesModuleScreen(
         // Hardware-enforce FLAG_SECURE & anti-screenshot during active CBT exams
         BindScreenCapturePolicy(ScreenCapturePolicy.LOCKED_SENSITIVE)
 
-        // Tamper-proof monotonic elapsedRealtime countdown timer synced with server time
+        // Tamper-proof monotonic elapsedRealtime countdown timer supporting exact Seconds & Minutes
         val examDeadlineElapsedMs = remember(exam.id, faceVerified) {
             if (faceVerified) {
-                com.example.exam.TamperProofExamClock.elapsedDeadlineAfterDurationMinutes(
-                    exam.durationMinutes.coerceAtLeast(5)
+                com.example.exam.TamperProofExamClock.elapsedDeadlineAfterDurationSeconds(
+                    exam.effectiveDurationSeconds
                 )
             } else 0L
         }

@@ -8,11 +8,13 @@ import kotlin.math.sqrt
 /**
  * 5. `math_brahmastra_native/TremorFftSentinel.kt`
  * Pure-Math Radix-2 Cooley-Tukey Fast Fourier Transform (FFT) Analyzer for Physiological
- * Human Hand Micro-Tremor Verification.
+ * Human Hand Micro-Tremor Verification driven by real `Sensor.TYPE_ACCELEROMETER` hardware batches.
  *
  * Rejects flat-line zero-variance emulators, desk-mounted bot rigs, and synthetic scripts.
  */
 object TremorFftSentinel {
+
+    private const val FFT_WINDOW_SIZE = 64
 
     data class TremorSpectrumReport(
         val sampleCount: Int,
@@ -20,6 +22,74 @@ object TremorFftSentinel {
         val totalAcEnergy: Double,
         val isGenuineHumanHand: Boolean
     )
+
+    private val bufferLock = Any()
+    private val liveRingBuffer = DoubleArray(FFT_WINDOW_SIZE)
+    private var liveSampleCount: Int = 0
+    private var liveWriteCursor: Int = 0
+
+    /**
+     * Appends a single live hardware `Sensor.TYPE_ACCELEROMETER` reading (`ax`, `ay`, `az` in m/s^2).
+     */
+    fun ingestAccelerometerEvent(ax: Float, ay: Float, az: Float) {
+        val magnitude = sqrt(
+            ax.toDouble() * ax.toDouble() +
+                ay.toDouble() * ay.toDouble() +
+                az.toDouble() * az.toDouble()
+        )
+        synchronized(bufferLock) {
+            liveRingBuffer[liveWriteCursor] = magnitude
+            liveWriteCursor = (liveWriteCursor + 1) % FFT_WINDOW_SIZE
+            if (liveSampleCount < FFT_WINDOW_SIZE) {
+                liveSampleCount++
+            }
+        }
+    }
+
+    /**
+     * Ingests a batch of live hardware accelerometer magnitudes into the rolling FFT ring buffer.
+     */
+    fun ingestLiveBatch(magnitudes: DoubleArray) {
+        if (magnitudes.isEmpty()) return
+        synchronized(bufferLock) {
+            for (m in magnitudes) {
+                liveRingBuffer[liveWriteCursor] = m
+                liveWriteCursor = (liveWriteCursor + 1) % FFT_WINDOW_SIZE
+                if (liveSampleCount < FFT_WINDOW_SIZE) {
+                    liveSampleCount++
+                }
+            }
+        }
+    }
+
+    fun hasLiveHardwareBatch(): Boolean = synchronized(bufferLock) {
+        liveSampleCount >= 16
+    }
+
+    fun clearLiveBuffer() {
+        synchronized(bufferLock) {
+            liveRingBuffer.fill(0.0)
+            liveSampleCount = 0
+            liveWriteCursor = 0
+        }
+    }
+
+    /**
+     * Analyzes only genuinely captured live hardware accelerometer samples from the ring buffer.
+     * Returns `null` if insufficient live hardware samples have arrived yet (never fabricates a wave).
+     */
+    fun analyzeLatestLiveWindow(): TremorSpectrumReport? {
+        val snapshot: DoubleArray = synchronized(bufferLock) {
+            if (liveSampleCount < 16) return null
+            val out = DoubleArray(liveSampleCount)
+            val start = if (liveSampleCount < FFT_WINDOW_SIZE) 0 else liveWriteCursor
+            for (i in 0 until liveSampleCount) {
+                out[i] = liveRingBuffer[(start + i) % FFT_WINDOW_SIZE]
+            }
+            out
+        }
+        return analyzeMicroTremorWindow(snapshot)
+    }
 
     /**
      * Computes an in-place Radix-2 Cooley-Tukey FFT on [real] and [imag] arrays (size must be power of 2).
@@ -83,7 +153,7 @@ object TremorFftSentinel {
      * micro-tremor spectrum energy vs. flat-line emulators (`0.0` energy).
      */
     fun analyzeMicroTremorWindow(samples: DoubleArray): TremorSpectrumReport {
-        val n = 64
+        val n = FFT_WINDOW_SIZE
         val paddedReal = DoubleArray(n)
         val paddedImag = DoubleArray(n)
         val mean = if (samples.isEmpty()) 0.0 else samples.average()

@@ -1,28 +1,39 @@
 package internal_compose_brahmastra
 
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import java.math.BigInteger
+import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.SecureRandom
+import javax.crypto.KeyGenerator
+import javax.crypto.Mac
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * 1. `internal_compose_brahmastra/HomomorphicLedgerGuard.kt`
  * Additive & Affine Homomorphic Masking (`E(x) = (a * x + b) mod p`) for In-Memory UI States
- * (Fees Balances, Exam Scores, Attendance Counts).
- *
- * Ensures raw financial or academic integers never sit in plain RAM where Frida/GameGuardian
- * memory scanners can locate and patch them.
+ * (Fees Balances, Exam Scores, Attendance Counts) reinforced with Android Keystore `HmacSHA256`
+ * integrity sealing so masked ledger batches cannot be forged or patched in RAM.
  */
 class HomomorphicLedgerGuard(
     seedBytes: ByteArray = ByteArray(16).also { SecureRandom().nextBytes(it) }
 ) {
     // 127-bit Mersenne Prime p = 2^127 - 1
-    private val primeP: BigInteger = BigInteger.TWO.pow(127).subtract(BigInteger.ONE)
+    private val twoVal: BigInteger = BigInteger.valueOf(2L)
+    private val primeP: BigInteger = twoVal.pow(127).subtract(BigInteger.ONE)
     private val multiplierA: BigInteger
     private val invA: BigInteger
+    private val localHmacFallbackKey: SecretKey
 
     init {
-        val rawA = BigInteger(1, seedBytes).mod(primeP.subtract(BigInteger.TWO)).add(BigInteger.TWO)
+        val rawA = BigInteger(1, seedBytes).mod(primeP.subtract(twoVal)).add(twoVal)
         multiplierA = rawA
         invA = multiplierA.modInverse(primeP)
+        val keyDigest = MessageDigest.getInstance("SHA-256").digest(seedBytes)
+        localHmacFallbackKey = SecretKeySpec(keyDigest, "HmacSHA256")
     }
 
     data class MaskedValue(
@@ -71,5 +82,61 @@ class HomomorphicLedgerGuard(
             cipherResidueHex = c1.add(c2).mod(primeP).toString(16),
             blindingTagHex = b1.add(b2).mod(primeP).toString(16)
         )
+    }
+
+    /**
+     * Seals a batch of masked financial/academic values using an Android Keystore `HmacSHA256` key
+     * so tampered RAM figures fail integrity verification before commit.
+     */
+    fun sealMaskedBatchWithHmac(values: List<MaskedValue>, contextTag: String): String {
+        val canonical = buildString {
+            append("LEDGER_SEAL_V1|").append(contextTag)
+            values.forEach { v ->
+                append('|').append(v.cipherResidueHex).append(':').append(v.blindingTagHex)
+            }
+        }
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(resolveKeystoreHmacKey())
+        return mac.doFinal(canonical.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+
+    fun verifyMaskedBatchHmac(
+        values: List<MaskedValue>,
+        contextTag: String,
+        expectedHmacHex: String
+    ): Boolean {
+        val computed = sealMaskedBatchWithHmac(values, contextTag)
+        return MessageDigest.isEqual(
+            computed.toByteArray(Charsets.UTF_8),
+            expectedHmacHex.trim().lowercase().toByteArray(Charsets.UTF_8)
+        )
+    }
+
+    private fun resolveKeystoreHmacKey(): SecretKey {
+        if (Build.FINGERPRINT?.equals("robolectric", ignoreCase = true) == true) {
+            return localHmacFallbackKey
+        }
+        return runCatching {
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            if (!ks.containsAlias(LEDGER_HMAC_ALIAS)) {
+                val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, ANDROID_KEYSTORE)
+                kg.init(
+                    KeyGenParameterSpec.Builder(
+                        LEDGER_HMAC_ALIAS,
+                        KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+                    )
+                        .setDigests(KeyProperties.DIGEST_SHA256)
+                        .build()
+                )
+                kg.generateKey()
+            }
+            (ks.getKey(LEDGER_HMAC_ALIAS, null) as? SecretKey) ?: localHmacFallbackKey
+        }.getOrDefault(localHmacFallbackKey)
+    }
+
+    private companion object {
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val LEDGER_HMAC_ALIAS = "wci_homomorphic_ledger_hmac_v1"
     }
 }

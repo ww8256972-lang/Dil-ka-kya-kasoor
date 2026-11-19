@@ -12,10 +12,17 @@ import com.example.security.EnterpriseRateLimiter
 import com.example.security.HardwareKeystoreVault
 import com.example.security.MemoryScrubberLifecycleObserver
 import com.example.security.SessionFingerprintManager
+import com.example.BuildConfig
 import com.google.firebase.Timestamp
+import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.waqar.institute.security.TeeSecurityManager
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import org.lsposed.lsparanoid.Obfuscate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,12 +32,14 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Arrays
 import java.util.Date
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
@@ -108,6 +117,96 @@ class FirebaseAuthServiceProvider(
                 storedEncodedHash = expectedHash,
                 legacySaltHex = saltHex
             )
+        }
+    }
+
+    private val tokenExchangeHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(6, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private sealed class CustomTokenExchangeOutcome {
+        data class Authenticated(val session: AuthenticatedPortalSession) : CustomTokenExchangeOutcome()
+        data class Rejected(val message: String) : CustomTokenExchangeOutcome()
+        data object Unavailable : CustomTokenExchangeOutcome()
+    }
+
+    /**
+     * Zero-Trust Custom Token Exchange (`issuePortalCustomToken` in asia-east1).
+     * Verifies username + password + role server-side, receives a signed Firebase Custom Token
+     * carrying `{ role, portalUid, username, linkedEntityId }` claims, and signs into FirebaseAuth
+     * via `auth.signInWithCustomToken(token).await()` so all Firestore queries run with a verified JWT.
+     */
+    private suspend fun exchangePortalCredentialsForCustomToken(
+        username: String,
+        rawPassword: String,
+        selectedRole: PortalRole,
+        deviceFp: String
+    ): CustomTokenExchangeOutcome = withContext(Dispatchers.IO) {
+        val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+        val endpoint = BuildConfig.PORTAL_AUTH_TOKEN_ENDPOINT_URL.trim()
+        if (isRobolectric || !endpoint.startsWith("https://", ignoreCase = true)) {
+            return@withContext CustomTokenExchangeOutcome.Unavailable
+        }
+        val appCheckToken = runCatching {
+            withTimeoutOrNull(2_500L) {
+                FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@withContext CustomTokenExchangeOutcome.Unavailable
+
+        runCatching {
+            val bodyJson = JSONObject().apply {
+                put("username", username)
+                put("password", rawPassword)
+                put("role", selectedRole.key)
+            }.toString()
+
+            val request = Request.Builder()
+                .url(endpoint)
+                .header("X-Firebase-AppCheck", appCheckToken)
+                .post(bodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            tokenExchangeHttpClient.newCall(request).execute().use { resp ->
+                val respBody = resp.body?.string().orEmpty()
+                if (resp.code == 401 || resp.code == 403 || resp.code == 429) {
+                    val errMsg = runCatching { JSONObject(respBody).optString("error") }
+                        .getOrNull()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Invalid username or password for ${selectedRole.label} portal."
+                    return@runCatching CustomTokenExchangeOutcome.Rejected(errMsg)
+                }
+                if (!resp.isSuccessful) {
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable
+                }
+                val json = JSONObject(respBody)
+                val customToken = json.optString("customToken").trim()
+                if (customToken.isBlank()) {
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable
+                }
+                val authResult = auth.signInWithCustomToken(customToken).await()
+                val signedInUser = authResult.user ?: auth.currentUser
+                val portalUid = signedInUser?.uid ?: json.optString("portalUid", "cred_$username")
+                val displayName = json.optString("displayName", username).ifBlank { username }
+                val linkedEntityId = json.optString("linkedEntityId", "")
+                CustomTokenExchangeOutcome.Authenticated(
+                    AuthenticatedPortalSession(
+                        firebaseUser = signedInUser,
+                        sessionUid = portalUid,
+                        role = selectedRole,
+                        username = json.optString("username", username).ifBlank { username },
+                        displayName = displayName,
+                        linkedEntityId = linkedEntityId,
+                        deviceFingerprint = deviceFp
+                    )
+                )
+            }
+        }.getOrElse { err ->
+            Log.d(TAG, "Custom token exchange unavailable (falling back to local/cache): ${err.localizedMessage}")
+            CustomTokenExchangeOutcome.Unavailable
         }
     }
 
@@ -223,6 +322,14 @@ class FirebaseAuthServiceProvider(
                         profile
                     }
                     runCatching { repository.saveUserProfile(merged) }
+                    runCatching {
+                        portalAuthRepository.bindAuthenticatedPortalSession(
+                            sessionUid = session.sessionUid,
+                            username = session.username,
+                            role = session.role.key,
+                            linkedEntityId = session.linkedEntityId
+                        )
+                    }
                 }
                 AuthPortalResult.Success(profile = profile, session = session)
             },
@@ -379,7 +486,42 @@ class FirebaseAuthServiceProvider(
         val isPermittedAdminCandidate = cleanUsername in setOf("admin", "waqar", "waqar_admin") || isBootstrappedOwner
         val deviceFp = SessionFingerprintManager.captureCurrentDeviceFingerprint(activityContext)
 
-        // 0. Instant (<0.1s) Offline/Online Admin Portal Authentication via EncryptedSharedPreferences + Keystore SHA-256
+        // 0. Zero-Trust Server Custom Token Exchange (mints signed Firebase JWT with { role, portalUid } claims)
+        when (val tokenOutcome = exchangePortalCredentialsForCustomToken(cleanUsername, cleanPassword, selectedRole, deviceFp)) {
+            is CustomTokenExchangeOutcome.Authenticated -> {
+                val verifiedSession = tokenOutcome.session
+                CoroutineScope(Dispatchers.IO).launch {
+                    runCatching {
+                        val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
+                        repository.saveBoundPortalSession(
+                            uid = verifiedSession.sessionUid,
+                            actorId = verifiedSession.linkedEntityId.ifBlank { verifiedSession.sessionUid },
+                            username = verifiedSession.username,
+                            role = verifiedSession.role.key,
+                            deviceFingerprint = deviceFp,
+                            expiresAt = expiresAt
+                        )
+                        logSecurityAuditEvent(
+                            actorUid = verifiedSession.sessionUid,
+                            actorName = verifiedSession.displayName,
+                            eventType = "PORTAL_CUSTOM_TOKEN_LOGIN_SUCCESS",
+                            severity = "INFO",
+                            details = "Authenticated '${verifiedSession.username}' (${verifiedSession.role.key}) via signed Firebase Custom Token (fp=$deviceFp)"
+                        )
+                        sealSessionInKeystore(activityContext, verifiedSession)
+                    }
+                }
+                return@runCatching verifiedSession
+            }
+            is CustomTokenExchangeOutcome.Rejected -> {
+                throw SecurityException(tokenOutcome.message)
+            }
+            CustomTokenExchangeOutcome.Unavailable -> {
+                // Offline / Robolectric fallback continues below using encrypted local vault
+            }
+        }
+
+        // 0b. Instant Offline Admin Portal Authentication via Encrypted Argon2id Store (only when explicitly configured)
         if (selectedRole == PortalRole.ADMIN) {
             val adminCtx = context ?: activityContext
             val localPassChars = cleanPassword.toCharArray()
@@ -406,7 +548,6 @@ class FirebaseAuthServiceProvider(
             if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.Verified) {
                 val resolvedUid = currentFirebaseUser?.uid ?: "cred_$cleanUsername"
                 val existingLocal = InstituteRepository.getCachedCredentialLocally(cleanUsername)
-                // Respect explicitly provisioned/cached local credential if present in memory/test vault with a different hash
                 val matchesExistingLocalIfPresent = existingLocal == null || run {
                     val chkChars = cleanPassword.toCharArray()
                     try {
@@ -434,21 +575,27 @@ class FirebaseAuthServiceProvider(
                     )
                     CoroutineScope(Dispatchers.IO).launch {
                         runCatching {
-                            val syncedCred = existingLocal ?: PortalCredential(
-                                username = cleanUsername,
-                                passwordHash = AdminEncryptedCredentialStore.sha256Hex(cleanPassword),
-                                passwordSalt = "",
-                                role = PortalRole.ADMIN.key,
-                                linkedEntityId = "ADMIN_ROOT",
-                                displayName = displayName,
-                                assignedByUid = resolvedUid,
-                                active = true,
-                                isAdmin = true,
-                                portalRoles = listOf(PortalRole.ADMIN.key),
-                                createdAt = Timestamp(Date(System.currentTimeMillis() - 1000L))
-                            )
+                            val syncedCred = existingLocal ?: run {
+                                val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(cleanPassword.toCharArray())
+                                val pbkdf2Parity = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(cleanPassword.toCharArray())
+                                PortalCredential(
+                                    username = cleanUsername,
+                                    passwordHash = argonDigest.encodedHash,
+                                    passwordSalt = argonDigest.saltBase64,
+                                    role = PortalRole.ADMIN.key,
+                                    linkedEntityId = "ADMIN_ROOT",
+                                    displayName = displayName,
+                                    assignedByUid = resolvedUid,
+                                    active = true,
+                                    isAdmin = true,
+                                    portalRoles = listOf(PortalRole.ADMIN.key),
+                                    createdAt = Timestamp(Date(System.currentTimeMillis() - 1000L)),
+                                    pbkdf2ParityHash = pbkdf2Parity.hashHex,
+                                    pbkdf2ParitySalt = pbkdf2Parity.saltHex
+                                )
+                            }
                             InstituteRepository.cacheCredentialLocally(syncedCred)
-                            if (adminVerify.isCustomized) {
+                            if (adminVerify.isCustomized && auth.currentUser != null) {
                                 portalAuthRepository.provisionCredentialWithRoleFlags(syncedCred)
                             }
                             logSecurityAuditEvent(
@@ -456,7 +603,7 @@ class FirebaseAuthServiceProvider(
                                 actorName = displayName,
                                 eventType = "ADMIN_INSTANT_LOGIN_SUCCESS",
                                 severity = "INFO",
-                                details = "Authenticated Admin '$cleanUsername' via Encrypted Keystore SHA-256 (fp=$deviceFp)"
+                                details = "Authenticated Admin '$cleanUsername' via Argon2id Keystore Vault (fp=$deviceFp)"
                             )
                             sealSessionInKeystore(activityContext, session)
                         }
@@ -630,6 +777,7 @@ class FirebaseAuthServiceProvider(
             } finally {
                 Arrays.fill(passChars, '\u0000')
             }
+            val pbkdf2Parity = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(cleanPassword.toCharArray())
             val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
             val adminDisplayName = currentFirebaseUser?.displayName ?: "Waqar Khan (Admin)"
 
@@ -644,7 +792,9 @@ class FirebaseAuthServiceProvider(
                 active = true,
                 isAdmin = true,
                 portalRoles = listOf(PortalRole.ADMIN.key),
-                createdAt = safeNow
+                createdAt = safeNow,
+                pbkdf2ParityHash = pbkdf2Parity.hashHex,
+                pbkdf2ParitySalt = pbkdf2Parity.saltHex
             )
             InstituteRepository.cacheCredentialLocally(adminCred)
 
@@ -686,10 +836,10 @@ class FirebaseAuthServiceProvider(
             return@runCatching session
         }
 
-        // Handle Admin portal lookup miss clearly without blocking default/local Admin with "No internet connection"
+        // Handle Admin portal lookup miss clearly without blocking configured offline Admin
         if (selectedRole == PortalRole.ADMIN) {
-            val activeStoredAdmin = AdminEncryptedCredentialStore.getActiveAdminUsername(context ?: activityContext)
-            if (cleanUsername == activeStoredAdmin) {
+            val adminCtx = context ?: activityContext
+            if (AdminEncryptedCredentialStore.isAdminConfigured(adminCtx)) {
                 throw SecurityException("Invalid username or password for Admin portal.")
             }
             if (isPermittedAdminCandidate) {
@@ -762,7 +912,8 @@ class FirebaseAuthServiceProvider(
                 AdminEncryptedCredentialStore.saveUpdatedAdminCredentials(
                     context = targetCtx,
                     newUsername = cleanNew,
-                    newPasswordChars = charsCopy
+                    newPasswordChars = charsCopy,
+                    previousUsernameHint = oldUsername
                 )
             } finally {
                 Arrays.fill(charsCopy, '\u0000')
@@ -770,6 +921,7 @@ class FirebaseAuthServiceProvider(
         }
 
         val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(rawPass.toCharArray())
+        val pbkdf2Parity = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(rawPass.toCharArray())
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
         val adminUid = auth.currentUser?.uid
             ?: actorUidOverride?.takeIf { it.isNotBlank() }
@@ -787,7 +939,9 @@ class FirebaseAuthServiceProvider(
             active = true,
             isAdmin = flags.isAdmin,
             portalRoles = flags.portalRoles,
-            createdAt = safeNow
+            createdAt = safeNow,
+            pbkdf2ParityHash = pbkdf2Parity.hashHex,
+            pbkdf2ParitySalt = pbkdf2Parity.saltHex
         )
 
         val cleanOld = normalizeUsername(oldUsername)
@@ -856,7 +1010,8 @@ class FirebaseAuthServiceProvider(
             ?: "cred_admin"
 
         val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(cleanPass.toCharArray())
-        val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000))
+        val pbkdf2Parity = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(cleanPass.toCharArray())
+        val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
 
         val existing = InstituteRepository.getCachedCredentialLocally(cleanNew)
             ?: portalAuthRepository.fetchPortalCredentialCrossDevice(cleanNew)
@@ -877,7 +1032,9 @@ class FirebaseAuthServiceProvider(
             isParent = flags.isParent,
             isAdmin = flags.isAdmin,
             portalRoles = flags.portalRoles,
-            createdAt = existing?.createdAt ?: safeNow
+            createdAt = existing?.createdAt ?: safeNow,
+            pbkdf2ParityHash = pbkdf2Parity.hashHex,
+            pbkdf2ParitySalt = pbkdf2Parity.saltHex
         )
 
         return withContext(Dispatchers.IO) {

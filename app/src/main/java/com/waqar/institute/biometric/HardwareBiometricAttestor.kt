@@ -109,8 +109,11 @@ object HardwareBiometricAttestor {
     fun evaluateChallengeSatisfied(
         challenge: LivenessChallenge,
         face: Face,
-        blinkPassed: Boolean
+        blinkPassed: Boolean = false
     ): Boolean {
+        val pitch = face.headEulerAngleX
+        if (kotlin.math.abs(pitch) > 35f) return false
+
         return when (challenge) {
             LivenessChallenge.BLINK_BOTH_EYES -> {
                 if (blinkPassed) true
@@ -121,17 +124,33 @@ object HardwareBiometricAttestor {
                 }
             }
             LivenessChallenge.SLIGHT_HEAD_TURN_LEFT -> {
-                face.headEulerAngleY >= 8f || blinkPassed
+                face.headEulerAngleY <= -10f || face.headEulerAngleY >= 10f
             }
             LivenessChallenge.SLIGHT_HEAD_TURN_RIGHT -> {
-                face.headEulerAngleY <= -8f || blinkPassed
+                face.headEulerAngleY <= -10f || face.headEulerAngleY >= 10f
             }
             LivenessChallenge.NATURAL_SMILE -> {
                 val smile = face.smilingProbability
-                (smile != null && smile >= 0.45f) || blinkPassed
+                smile != null && smile >= 0.55f
             }
         }
     }
+
+    fun evaluateChallengeSatisfied(
+        face: Face,
+        challenge: LivenessChallenge,
+        blinkPassed: Boolean = false
+    ): Boolean = evaluateChallengeSatisfied(challenge, face, blinkPassed)
+
+    /**
+     * [A4] Evaluates a live camera frame bitmap for LCD/OLED screen Moiré striping and printed
+     * photo glare before issuing a StrongBox/TEE biometric pass receipt.
+     */
+    fun verifyFrameAgainstScreenSpoof(
+        faceCropBitmap: android.graphics.Bitmap,
+        context: Context? = null
+    ): BiometricScreenSpoofDetector.SpoofAuditResult =
+        BiometricScreenSpoofDetector.analyzeFrameForScreenOrPrintSpoof(faceCropBitmap, context)
 
     /**
      * Issues a tamper-evident StrongBox/TEE Keystore-sealed biometric pass receipt for auditability.

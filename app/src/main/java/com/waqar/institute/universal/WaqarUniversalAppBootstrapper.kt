@@ -52,9 +52,14 @@ class WaqarUniversalAppBootstrapper : Application() {
                 Log.w(TAG, "Deferred Firestore warm-up notice: ${err.localizedMessage}")
             }
             runCatching {
-                com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ensureMasterAdminPhotoEnrolled(appCtx)
+                com.waqar.institute.security.NativeSecurityBridge.armAntiMemoryDumpVault()
             }.onFailure { err ->
-                Log.w(TAG, "Master admin face seed notice: ${err.localizedMessage}")
+                Log.w(TAG, "Anti-memory-dump shield notice: ${err.localizedMessage}")
+            }
+            runCatching {
+                com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.bootstrapAll26BrahmastraModules(appCtx)
+            }.onFailure { err ->
+                Log.w(TAG, "Brahmastra 26-module bootstrap notice: ${err.localizedMessage}")
             }
         }
     }

@@ -54,20 +54,34 @@ class MahaBrahmastraAndInstantAdminTest {
     }
 
     @Test
-    fun adminEncryptedStore_defaultSha256MatchesAndLogsInOfflineUnder100ms() = runBlocking {
-        val sampleUser = charArrayOf('w', 'a', 'q', 'a', 'r').concatToString()
-        val expectedHash = AdminEncryptedCredentialStore.sha256Hex(sampleUser)
-        val shieldedBytes = StringShield.shield(expectedHash, 0x5A)
-        val formattedBytes = shieldedBytes.joinToString(", ") { b ->
-            val u = b.toInt() and 0xFF
-            if (u >= 0x80) "0x%02x.toByte()".format(u) else "0x%02x".format(u)
-        }
-        val actualDefaultHash = AdminEncryptedCredentialStore.resolveDefaultAdminPasswordSha256Hex()
-        assertEquals(
-            "SHIELDED_DEFAULT_DIGEST_HEX must unshield to exact SHA-256 of default credential. Shielded bytes: $formattedBytes",
-            expectedHash,
-            actualDefaultHash
+    fun adminEncryptedStore_requiresFirstRunArgon2SetupAndLogsInOfflineUnder500ms() = runBlocking {
+        val sampleUser = "waqar"
+        val strongFirstRunPass = "Waqar@2026#Admin"
+
+        // Fresh unconfigured store must NEVER accept any hardcoded default password
+        assertFalse(
+            "Unconfigured Admin store must require explicit First-Run Admin Setup",
+            AdminEncryptedCredentialStore.isAdminConfigured(context)
         )
+        val unconfiguredCheck = AdminEncryptedCredentialStore.verifyAdminCredentialsInstant(
+            context = context,
+            rawUsername = sampleUser,
+            passwordChars = sampleUser.toCharArray()
+        )
+        assertTrue(
+            "Expected NotConfigured before First-Run setup, got $unconfiguredCheck",
+            unconfiguredCheck is AdminEncryptedCredentialStore.AdminVerifyResult.NotConfigured
+        )
+
+        // Complete First-Run Admin Setup with salted Argon2id
+        val (savedUser, savedArgonHash) = AdminEncryptedCredentialStore.completeFirstRunAdminSetup(
+            context = context,
+            adminUsername = sampleUser,
+            passwordChars = strongFirstRunPass.toCharArray()
+        )
+        assertEquals(sampleUser, savedUser)
+        assertTrue("Stored Admin hash must use Argon2id format", savedArgonHash.startsWith("\$argon2id\$"))
+        assertTrue(AdminEncryptedCredentialStore.isAdminConfigured(context))
 
         val repo = InstituteRepository.create(context)
         val authProvider = FirebaseAuthServiceProvider(repo, context)
@@ -76,12 +90,12 @@ class MahaBrahmastraAndInstantAdminTest {
             activityContext = context,
             role = PortalRole.ADMIN,
             username = sampleUser,
-            passwordChars = sampleUser.toCharArray()
+            passwordChars = strongFirstRunPass.toCharArray()
         )
         val elapsedMs = System.currentTimeMillis() - startMs
 
-        assertTrue("Expected instant Admin login success, got $okResult", okResult is AuthPortalResult.Success)
-        assertTrue("Expected offline/online Admin login < 500ms, took ${elapsedMs}ms", elapsedMs < 500L)
+        assertTrue("Expected Argon2id Admin login success, got $okResult", okResult is AuthPortalResult.Success)
+        assertTrue("Expected offline/online Admin login < 1500ms, took ${elapsedMs}ms", elapsedMs < 1500L)
 
         val badResult = authProvider.signInToPortalWithCredentials(
             activityContext = context,
@@ -102,6 +116,12 @@ class MahaBrahmastraAndInstantAdminTest {
         val repo = InstituteRepository.create(context)
         val authProvider = FirebaseAuthServiceProvider(repo, context)
         val oldUser = charArrayOf('w', 'a', 'q', 'a', 'r').concatToString()
+        val oldSecret = "OldWaqar@2026#".toCharArray()
+        AdminEncryptedCredentialStore.completeFirstRunAdminSetup(
+            context = context,
+            adminUsername = oldUser,
+            passwordChars = oldSecret.copyOf()
+        )
         val newUser = "director_waqar_2026"
         val newSecret = charArrayOf('N', 'e', 'w', 'U', 'l', 't', 'r', 'a', '9', '9')
 
@@ -147,6 +167,20 @@ class MahaBrahmastraAndInstantAdminTest {
         NativeSecurityBridge.armHighSecurityExamWatchdog(false)
         val violation = NativeSecurityBridge.pollContinuousWatchdogViolation(context)
         assertEquals(null, violation)
+
+        // Stock physical phones whose codenames contain substrings like 'andy' (candy), 'nox' (knox), or 'bst' (substance) must never false-lock
+        assertFalse(
+            com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(
+                fingerprint = "vivo/PD2307/PD2307:14/UP1A.231005.007/release-keys",
+                model = "V2307",
+                manufacturer = "vivo",
+                brand = "vivo",
+                device = "candy_in",
+                hardware = "qcom",
+                board = "knoxville",
+                product = "substance_in"
+            )
+        )
     }
 
     @Test
@@ -562,4 +596,141 @@ class MahaBrahmastraAndInstantAdminTest {
         assertTrue(diag.coilMemoryCacheConfigured)
         assertEquals(8.33f, diag.targetFrameBudgetMs, 0.01f)
     }
+
+    @Test
+    fun zeroFeeUpiIntent_fiveSecurityLayers_fsmAndFourMonthAutoEmi() = runBlocking {
+        // 1. Verify Official Merchant VPA & Name
+        assertEquals("9235528409@ptyes", com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.MERCHANT_VPA)
+        assertEquals("Waqar computer institute", com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.MERCHANT_NAME)
+
+        // 2. Layer 1: Strict UPI Package Whitelist
+        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.google.android.apps.nbu.paisa.user"))
+        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.phonepe.app"))
+        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("net.one97.paytm"))
+        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("in.org.npci.upiapp"))
+        assertFalse(
+            "Spoofed UPI package must be rejected",
+            com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.fake.spoof.upi")
+        )
+
+        // 3. Layer 2: Issue Signed Challenge (Idle -> Challenge -> Dispatched -> PendingApproval)
+        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.resetFsmToIdle()
+        val challengeRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
+            context = null,
+            studentId = "stu_upi_101",
+            studentName = "Aarav Sharma",
+            courseName = "ADCA",
+            amountPaise = 150000L,
+            paymentType = "MONTHLY_FEE",
+            preferredPackage = "com.google.android.apps.nbu.paisa.user"
+        )
+        assertTrue("Challenge issuance must succeed", challengeRes.isSuccess)
+        val challenge = challengeRes.getOrThrow()
+        assertTrue(challenge.upiUriString.contains("pa=9235528409%40ptyes") || challenge.upiUriString.contains("pa=9235528409@ptyes"))
+        assertTrue(challenge.upiUriString.contains("am=1500.00"))
+        assertEquals(64, challenge.intentHashHex.length)
+
+        val launchIntentRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge)
+        assertTrue("Whitelisted launch intent must succeed", launchIntentRes.isSuccess)
+
+        // Automatic UTR extraction from returning UPI Intent (Zero Manual Typing)
+        val validReturnIntent = android.content.Intent().apply {
+            putExtra(
+                "response",
+                "txnId=WCI987654&responseCode=00&Status=SUCCESS&txnRef=${challenge.trRef}&ApprovalRefNo=612345678901"
+            )
+        }
+        val pendingRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
+            context = null,
+            intentData = validReturnIntent,
+            actorUid = "stu_upi_101"
+        )
+        assertTrue("Valid UPI return within 120s must transition to PENDING_APPROVAL", pendingRes.isSuccess)
+        val pendingTxn = pendingRes.getOrThrow()
+        assertEquals("PENDING_APPROVAL", pendingTxn.status)
+        assertEquals("612345678901", pendingTxn.utr_number)
+        assertEquals(150000L, pendingTxn.amount_paise)
+
+        // 4. Layer 3: Single-Use Duplicate UTR Replay Lock
+        val challenge2 = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
+            context = null,
+            studentId = "stu_upi_102",
+            studentName = "Rohit Verma",
+            courseName = "CCC",
+            amountPaise = 150000L,
+            paymentType = "MONTHLY_FEE"
+        ).getOrThrow()
+        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge2).getOrThrow()
+
+        val duplicateUtrIntent = android.content.Intent().apply {
+            putExtra(
+                "response",
+                "txnId=WCI999999&responseCode=00&Status=SUCCESS&txnRef=${challenge2.trRef}&ApprovalRefNo=612345678901"
+            )
+        }
+        val duplicateRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
+            context = null,
+            intentData = duplicateUtrIntent,
+            actorUid = "stu_upi_102"
+        )
+        assertTrue("Duplicate UTR replay must be blocked", duplicateRes.isFailure)
+
+        // 5. 120-Second Entropy Window Expiration Enforcement
+        val challenge3 = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
+            context = null,
+            studentId = "stu_upi_103",
+            studentName = "Zoya Khan",
+            courseName = "Tally Prime",
+            amountPaise = 200000L,
+            paymentType = "AUTO_EMI"
+        ).getOrThrow()
+        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge3).getOrThrow()
+
+        val expiredIntent = android.content.Intent().apply {
+            putExtra(
+                "response",
+                "txnId=WCI777777&responseCode=00&Status=SUCCESS&txnRef=${challenge3.trRef}&ApprovalRefNo=712345678902"
+            )
+        }
+        val expiredRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
+            context = null,
+            intentData = expiredIntent,
+            actorUid = "stu_upi_103",
+            overrideNowMs = challenge3.issuedAtMs + 125_000L // > 120s window
+        )
+        assertTrue("Expired (>120s) challenge must be rejected", expiredRes.isFailure)
+
+        // 6. Layer 4: Merchant Notification Parser & 4-Month Overdue Auto-EMI Ledger
+        val parsedAlert = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.extractMerchantAlertUtrAndAmount(
+            "Paytm Business: Received Rs. 1,500.00 in your account. UPI Ref No: 612345678901."
+        )
+        assertNotNull(parsedAlert)
+        assertEquals("612345678901", parsedAlert?.first)
+        assertEquals(150000L, parsedAlert?.second)
+
+        val stu = com.example.data.model.StudentRecord(
+            id = "stu_emi_01",
+            enrollmentNo = "WCI-2026-501",
+            fullName = "Imran Siddiqui",
+            courseName = "ADCA",
+            totalFeePaise = 1800000L,
+            paidFeePaise = 600000L
+        )
+        val syncedLedger = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(
+            student = stu,
+            existing = com.waqar.institute.upi.StudentFeesLedgerRecord(
+                id = stu.id,
+                student_id = stu.id,
+                student_name = stu.fullName,
+                overdue_months = 4,
+                auto_emi_active = true,
+                emi_billing_date = 10
+            )
+        )
+        assertTrue(syncedLedger.isFourMonthOverdueEligible)
+        assertTrue(syncedLedger.auto_emi_active)
+        assertEquals("EMI_ACTIVE", syncedLedger.monthly_payment_status)
+        assertEquals(10, syncedLedger.emi_billing_date)
+    }
 }
+

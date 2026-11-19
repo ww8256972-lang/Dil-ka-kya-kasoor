@@ -24,7 +24,7 @@ object ZkpSchnorrAuth {
         "670C354E4ABC9804F1746C08CA237327FFFFFFFFFFFFFFFF"
     )
     val PRIME_P: BigInteger = BigInteger(P_HEX, 16)
-    val SUBGROUP_Q: BigInteger = PRIME_P.subtract(BigInteger.ONE).divide(BigInteger.TWO)
+    val SUBGROUP_Q: BigInteger = PRIME_P.subtract(BigInteger.ONE).divide(BigInteger.valueOf(2L))
     val GENERATOR_G: BigInteger = BigInteger.valueOf(2L)
 
     data class SchnorrZeroKnowledgeProof(

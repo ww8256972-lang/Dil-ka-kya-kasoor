@@ -114,14 +114,14 @@ data class CodingSandboxUiState(
 
         val DEFAULT_JS_STARTER: String = """
             // Waqar Computer Institute - 100% Offline JavaScript (QuickJS) Lab
-            const student = "Aarav Sharma";
+            const institute = "Waqar Computer Institute";
             const marks = [88, 92, 95, 84, 91];
             let sum = 0;
             for (let i = 0; i < marks.length; i++) {
                 sum += marks[i];
             }
             const avg = sum / marks.length;
-            console.log("Student:", student);
+            console.log("Institute:", institute);
             console.log("Total Marks:", sum, "| Average:", avg + "%");
             console.log("Grade:", avg >= 85 ? "A+ Distinction" : "A");
         """.trimIndent()
@@ -575,6 +575,14 @@ class CodingSandboxViewModel(
                     )
                 }
             }
+            val cageResult = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.scanCodeSafetyBeforeExecution(normalized)
+            if (!cageResult.isSafeToExecute) {
+                return SandboxAstSecurityScanResult(
+                    isSafe = false,
+                    matchedRule = "BRAHMASTRA_AST_CAGE",
+                    violationSummary = "Forbidden AST token '${cageResult.violatedRule.orEmpty()}' detected in ${language.label}"
+                )
+            }
             return SandboxAstSecurityScanResult(isSafe = true)
         }
 
@@ -969,11 +977,13 @@ class CodingSandboxViewModel(
                         continue
                     }
 
-                    // 4. if <cond>:
+                    // 4. if <cond>: (with optional elif / else branches)
                     val ifMatch = Regex("""^if\s+(.+):$""").matchEntire(line)
                     if (ifMatch != null) {
-                        val condStr = ifMatch.groupValues[1].trim()
-                        val subLines = mutableListOf<String>()
+                        data class CondBranch(val condition: String?, val body: List<String>)
+                        val branches = mutableListOf<CondBranch>()
+                        var activeCond: String? = ifMatch.groupValues[1].trim()
+                        var activeBody = mutableListOf<String>()
                         var nextIdx = idx + 1
                         while (nextIdx < lines.size) {
                             val subRaw = lines[nextIdx]
@@ -982,12 +992,36 @@ class CodingSandboxViewModel(
                                 nextIdx++
                                 continue
                             }
-                            if (countIndent(subRaw) <= currentIndent) break
-                            subLines.add(subRaw)
+                            val subIndent = countIndent(subRaw)
+                            if (subIndent == currentIndent) {
+                                val elifMatch = Regex("""^elif\s+(.+):$""").matchEntire(subTrim)
+                                val elseMatch = Regex("""^else:$""").matchEntire(subTrim)
+                                if (elifMatch != null) {
+                                    branches.add(CondBranch(activeCond, activeBody))
+                                    activeCond = elifMatch.groupValues[1].trim()
+                                    activeBody = mutableListOf()
+                                    nextIdx++
+                                    continue
+                                } else if (elseMatch != null) {
+                                    branches.add(CondBranch(activeCond, activeBody))
+                                    activeCond = null
+                                    activeBody = mutableListOf()
+                                    nextIdx++
+                                    continue
+                                } else {
+                                    break
+                                }
+                            }
+                            if (subIndent < currentIndent) break
+                            activeBody.add(subRaw)
                             nextIdx++
                         }
-                        if (evalCondition(condStr)) {
-                            executeLines(subLines)
+                        branches.add(CondBranch(activeCond, activeBody))
+                        for (branch in branches) {
+                            if (branch.condition == null || evalCondition(branch.condition)) {
+                                executeLines(branch.body)
+                                break
+                            }
                         }
                         idx = nextIdx
                         continue
@@ -1184,76 +1218,116 @@ class CodingSandboxViewModel(
                 return expr
             }
 
-            val lines = sourceCode.lines().map { it.trim() }
-            var i = 0
-            while (i < lines.size) {
-                guardTick()
-                val line = lines[i]
-                if (line.isEmpty() || line.startsWith("//") || line == "{" || line == "}") {
-                    i++
-                    continue
-                }
-
-                // for (let i = 0; i < marks.length; i++) { ... }
-                val forMatch = Regex("""^for\s*\(\s*(?:let|var)\s+([a-zA-Z_]\w*)\s*=\s*(\d+)\s*;\s*\1\s*<\s*([^;]+)\s*;\s*\1\+\+\s*\)\s*\{?$""").matchEntire(line)
-                if (forMatch != null) {
-                    val varName = forMatch.groupValues[1]
-                    val startVal = forMatch.groupValues[2].toIntOrNull() ?: 0
-                    val limitExpr = forMatch.groupValues[3]
-                    val bodyLines = mutableListOf<String>()
-                    var k = i + 1
-                    while (k < lines.size && lines[k] != "}") {
-                        bodyLines.add(lines[k])
-                        k++
+            fun executeJsBlock(blockLines: List<String>) {
+                var i = 0
+                while (i < blockLines.size) {
+                    guardTick()
+                    val line = blockLines[i].trim()
+                    if (line.isEmpty() || line.startsWith("//") || line == "{" || line == "}") {
+                        i++
+                        continue
                     }
-                    val limitVal = (evalJsExpr(limitExpr) as? Number)?.toInt() ?: 0
-                    for (idxVal in startVal until limitVal) {
-                        guardTick()
-                        env[varName] = idxVal.toLong()
-                        for (bLine in bodyLines) {
-                            val plusEq = Regex("""^([a-zA-Z_]\w*)\s*\+=\s*(.+?);?$""").matchEntire(bLine)
-                            if (plusEq != null) {
-                                val target = plusEq.groupValues[1]
-                                val addVal = (evalJsExpr(plusEq.groupValues[2]) as? Number)?.toDouble() ?: 0.0
-                                val curVal = (env[target] as? Number)?.toDouble() ?: 0.0
-                                val sum = curVal + addVal
-                                env[target] = if (sum % 1.0 == 0.0) sum.toLong() else sum
+
+                    // for (let i = 0; i < marks.length; i++) { ... }
+                    val forMatch = Regex("""^for\s*\(\s*(?:let|var)?\s*([a-zA-Z_]\w*)\s*=\s*([^;]+)\s*;\s*\1\s*(<=|<|>=|>|!=|==|===)\s*([^;]+)\s*;\s*\1(\+\+|--|\+=\s*\d+|-=\s*\d+)\s*\)\s*\{?$""").matchEntire(line)
+                    if (forMatch != null) {
+                        val varName = forMatch.groupValues[1]
+                        val startVal = (evalJsExpr(forMatch.groupValues[2]) as? Number)?.toInt() ?: 0
+                        val cmpOp = forMatch.groupValues[3]
+                        val limitExpr = forMatch.groupValues[4]
+                        val stepToken = forMatch.groupValues[5].replace(" ", "")
+                        val bodyLines = mutableListOf<String>()
+                        var k = i + 1
+                        var braceDepth = if (line.endsWith("{")) 1 else 0
+                        while (k < blockLines.size) {
+                            val candidate = blockLines[k].trim()
+                            if (candidate.endsWith("{")) braceDepth++
+                            if (candidate == "}" || candidate.startsWith("}")) {
+                                braceDepth--
+                                if (braceDepth <= 0) break
+                            }
+                            bodyLines.add(candidate)
+                            k++
+                        }
+                        var idxVal = startVal
+                        while (true) {
+                            guardTick()
+                            val limitVal = (evalJsExpr(limitExpr) as? Number)?.toDouble() ?: 0.0
+                            val condOk = when (cmpOp) {
+                                "<" -> idxVal < limitVal
+                                "<=" -> idxVal <= limitVal
+                                ">" -> idxVal > limitVal
+                                ">=" -> idxVal >= limitVal
+                                "!=" -> idxVal.toDouble() != limitVal
+                                "==", "===" -> idxVal.toDouble() == limitVal
+                                else -> false
+                            }
+                            if (!condOk) break
+                            env[varName] = idxVal.toLong()
+                            executeJsBlock(bodyLines)
+                            idxVal = when {
+                                stepToken == "++" -> idxVal + 1
+                                stepToken == "--" -> idxVal - 1
+                                stepToken.startsWith("+=") -> idxVal + (stepToken.removePrefix("+=").toIntOrNull() ?: 1)
+                                stepToken.startsWith("-=") -> idxVal - (stepToken.removePrefix("-=").toIntOrNull() ?: 1)
+                                else -> idxVal + 1
                             }
                         }
+                        i = k + 1
+                        continue
                     }
-                    i = k + 1
-                    continue
-                }
 
-                if (line.startsWith("console.log(") && line.removeSuffix(";").endsWith(")")) {
-                    val inner = line.removeSuffix(";").substring(12, line.removeSuffix(";").length - 1)
-                    val args = splitTopLevelArgs(inner)
-                    output.append(args.joinToString(" ") { formatJsVal(evalJsExpr(it)) }).append('\n')
+                    if (line.startsWith("console.log(") && line.removeSuffix(";").endsWith(")")) {
+                        val cleanLine = line.removeSuffix(";")
+                        val inner = cleanLine.substring(12, cleanLine.length - 1)
+                        val args = splitTopLevelArgs(inner)
+                        output.append(args.joinToString(" ") { formatJsVal(evalJsExpr(it)) }).append('\n')
+                        i++
+                        continue
+                    }
+
+                    val declMatch = Regex("""^(?:const|let|var)\s+([a-zA-Z_]\w*)\s*=\s*(.+?);?$""").matchEntire(line)
+                    if (declMatch != null) {
+                        env[declMatch.groupValues[1]] = evalJsExpr(declMatch.groupValues[2])
+                        i++
+                        continue
+                    }
+
+                    val compoundMatch = Regex("""^([a-zA-Z_]\w*)\s*(\+=|-=|\*=)\s*(.+?);?$""").matchEntire(line)
+                    if (compoundMatch != null) {
+                        val name = compoundMatch.groupValues[1]
+                        val op = compoundMatch.groupValues[2]
+                        val rhsVal = evalJsExpr(compoundMatch.groupValues[3])
+                        val curVal = env[name]
+                        if (op == "+=" && (curVal is String || rhsVal is String)) {
+                            env[name] = "${formatJsVal(curVal)}${formatJsVal(rhsVal)}"
+                        } else {
+                            val rhs = (rhsVal as? Number)?.toDouble() ?: 0.0
+                            val cur = (curVal as? Number)?.toDouble() ?: 0.0
+                            val res = when (op) {
+                                "+=" -> cur + rhs
+                                "-=" -> cur - rhs
+                                "*=" -> cur * rhs
+                                else -> cur
+                            }
+                            env[name] = if (res % 1.0 == 0.0) res.toLong() else res
+                        }
+                        i++
+                        continue
+                    }
+
+                    val reassignMatch = Regex("""^([a-zA-Z_]\w*)\s*=\s*(.+?);?$""").matchEntire(line)
+                    if (reassignMatch != null) {
+                        env[reassignMatch.groupValues[1]] = evalJsExpr(reassignMatch.groupValues[2])
+                        i++
+                        continue
+                    }
+
                     i++
-                    continue
                 }
-
-                val declMatch = Regex("""^(?:const|let|var)\s+([a-zA-Z_]\w*)\s*=\s*(.+?);?$""").matchEntire(line)
-                if (declMatch != null) {
-                    env[declMatch.groupValues[1]] = evalJsExpr(declMatch.groupValues[2])
-                    i++
-                    continue
-                }
-
-                val plusEqMatch = Regex("""^([a-zA-Z_]\w*)\s*\+=\s*(.+?);?$""").matchEntire(line)
-                if (plusEqMatch != null) {
-                    val name = plusEqMatch.groupValues[1]
-                    val rhs = (evalJsExpr(plusEqMatch.groupValues[2]) as? Number)?.toDouble() ?: 0.0
-                    val cur = (env[name] as? Number)?.toDouble() ?: 0.0
-                    val res = cur + rhs
-                    env[name] = if (res % 1.0 == 0.0) res.toLong() else res
-                    i++
-                    continue
-                }
-
-                i++
             }
 
+            executeJsBlock(sourceCode.lines())
             return output.toString().trimEnd()
         }
 

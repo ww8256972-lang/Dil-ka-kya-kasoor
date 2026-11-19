@@ -64,15 +64,24 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.FileProvider
+import com.example.biometric.StudentFaceEnrollmentManager
 import com.example.data.model.PortalRole
 import com.example.data.model.StudentRecord
 import com.example.viewmodel.InstituteUiState
 import com.example.viewmodel.InstituteViewModel
+import com.waqar.institute.biometric.AdminFaceConversionAndGateManager
+import com.waqar.institute.biometric.FaceBiometricVerificationEngine
 import com.waqar.institute.biometric.MultiStageBiometricCoordinator
 import com.waqar.institute.performance.Smooth120HzOptimizer
 import com.waqar.institute.security.MahaBrahmastraProPlusEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -189,24 +198,77 @@ private fun QrAndFaceDualScannerTab(
     state: InstituteUiState,
     viewModel: InstituteViewModel
 ) {
-    val students = state.students.ifEmpty {
-        listOf(
-            StudentRecord(
-                id = "stu_demo_01",
-                enrollmentNo = "WCI-2026-1001",
-                fullName = "Aarav Sharma",
-                courseName = "ADCA Diploma",
-                batchName = "Morning Batch A"
-            )
-        )
-    }
-    var selectedStudent by remember(students) { mutableStateOf(students.first()) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val students = state.students
+    var selectedStudent by remember(students) { mutableStateOf(students.firstOrNull()) }
     var qrInput by remember(selectedStudent) {
-        mutableStateOf(AcademicProSuiteEngine.generateSignedStudentQrPayload(selectedStudent))
+        mutableStateOf(
+            selectedStudent?.let { AcademicProSuiteEngine.generateSignedStudentQrPayload(it) }.orEmpty()
+        )
     }
     var blinkChecked by remember { mutableStateOf(true) }
     var headYawDegrees by remember { mutableStateOf(14.5f) }
     var scanStatus by remember { mutableStateOf<String?>(null) }
+
+    val liveStudentCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { capturedBitmap ->
+        if (capturedBitmap == null) {
+            scanStatus = "REJECTED: Live front-camera selfie capture was cancelled."
+            return@rememberLauncherForActivityResult
+        }
+        val stu = selectedStudent
+        if (stu == null) {
+            scanStatus = "REJECTED: Select an enrolled student record before scanning."
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            scanStatus = "Analyzing 128-D live facial geometry & QR HMAC signature..."
+            val liveEmb = withContext(Dispatchers.Default) {
+                FaceBiometricVerificationEngine.extractEmbeddingFromBitmapSuspend(capturedBitmap, context)
+            }
+            if (liveEmb == null) {
+                scanStatus = "REJECTED: No single clear human face detected in live camera frame."
+                return@launch
+            }
+            val enrolledEmb = withContext(Dispatchers.IO) {
+                val bmp = FaceBiometricVerificationEngine.loadStudentBitmapFromUri(context, stu.photoUri)
+                val fromPhoto = if (bmp != null) {
+                    FaceBiometricVerificationEngine.extractEmbeddingFromBitmapSuspend(bmp, context)
+                } else null
+                fromPhoto ?: StudentFaceEnrollmentManager.loadTemplateFromVault(context, stu.id)?.featureVector
+            }
+            if (enrolledEmb == null) {
+                scanStatus = "REJECTED: Student '${stu.fullName}' has no enrolled biometric portrait in Student Admissions."
+                return@launch
+            }
+            val res = AcademicProSuiteEngine.verifyQrAndFaceDualFactorAttendance(
+                rawQrPayload = qrInput,
+                liveFaceEmbedding = liveEmb,
+                enrolledFaceEmbedding = enrolledEmb,
+                blinkVerified = blinkChecked,
+                markedByUid = state.userProfile?.uid ?: "admin_waqar"
+            )
+            when (res) {
+                is AcademicProSuiteEngine.DualFactorAttendanceResult.Verified -> {
+                    viewModel.markAttendance(
+                        targetType = "STUDENT",
+                        targetId = res.record.targetId,
+                        targetName = res.record.targetName,
+                        batchName = res.record.batchName,
+                        status = "PRESENT",
+                        method = "QR_PLUS_FACE_BIOMETRIC",
+                        remarks = res.record.remarks
+                    )
+                    scanStatus = "VERIFIED & MARKED PRESENT: ${res.record.targetName} • 128-D Similarity ${(res.cosineSimilarity * 100).toInt()}% • RowMAC=${res.rowMacHex.take(12)}"
+                }
+                is AcademicProSuiteEngine.DualFactorAttendanceResult.Rejected -> {
+                    scanStatus = "REJECTED: ${res.reason}"
+                }
+            }
+        }
+    }
 
     LazyColumn(
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -241,21 +303,29 @@ private fun QrAndFaceDualScannerTab(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("Select Student to Generate / Scan Signed ID QR:", color = Color(0xFF94A3B8), fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        students.take(3).forEach { stu ->
-                            FilterChip(
-                                selected = selectedStudent.id == stu.id,
-                                onClick = {
-                                    selectedStudent = stu
-                                    qrInput = AcademicProSuiteEngine.generateSignedStudentQrPayload(stu)
-                                },
-                                label = { Text("${stu.fullName} (${stu.enrollmentNo})") }
-                            )
+                    if (students.isEmpty()) {
+                        Text(
+                            text = "No students enrolled in database yet. Enroll a student in Student Admissions (M03) to generate signed QR payloads.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 12.sp
+                        )
+                    } else {
+                        Text("Select Student to Generate / Scan Signed ID QR:", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            students.take(3).forEach { stu ->
+                                FilterChip(
+                                    selected = selectedStudent?.id == stu.id,
+                                    onClick = {
+                                        selectedStudent = stu
+                                        qrInput = AcademicProSuiteEngine.generateSignedStudentQrPayload(stu)
+                                    },
+                                    label = { Text("${stu.fullName} (${stu.enrollmentNo})") }
+                                )
+                            }
                         }
                     }
 
@@ -282,29 +352,13 @@ private fun QrAndFaceDualScannerTab(
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
                         onClick = {
-                            val vec = FloatArray(128) { i -> kotlin.math.sin((i + 1) * 0.17f) }
-                            val res = AcademicProSuiteEngine.verifyQrAndFaceDualFactorAttendance(
-                                rawQrPayload = qrInput,
-                                liveFaceEmbedding = vec,
-                                enrolledFaceEmbedding = vec,
-                                blinkVerified = blinkChecked,
-                                markedByUid = state.userProfile?.uid ?: "admin_waqar"
-                            )
-                            when (res) {
-                                is AcademicProSuiteEngine.DualFactorAttendanceResult.Verified -> {
-                                    viewModel.markAttendance(
-                                        targetType = "STUDENT",
-                                        targetId = res.record.targetId,
-                                        targetName = res.record.targetName,
-                                        batchName = res.record.batchName,
-                                        status = "PRESENT",
-                                        method = "QR_PLUS_FACE_BIOMETRIC",
-                                        remarks = res.record.remarks
-                                    )
-                                    scanStatus = "VERIFIED & MARKED PRESENT: ${res.record.targetName} • 128-D Similarity ${(res.cosineSimilarity * 100).toInt()}% • RowMAC=${res.rowMacHex.take(12)}"
-                                }
-                                is AcademicProSuiteEngine.DualFactorAttendanceResult.Rejected -> {
-                                    scanStatus = "REJECTED: ${res.reason}"
+                            if (selectedStudent == null) {
+                                scanStatus = "REJECTED: No enrolled student selected."
+                            } else {
+                                runCatching {
+                                    liveStudentCameraLauncher.launch(null)
+                                }.onFailure { err ->
+                                    scanStatus = "REJECTED: Camera unavailable (${err.localizedMessage ?: "No camera hardware"})."
                                 }
                             }
                         },
@@ -343,13 +397,13 @@ private fun LabPcAllotmentAndSyllabusTab(
     var workstations by remember { mutableStateOf(AcademicProSuiteEngine.getAllWorkstations()) }
     var syllabusTopics by remember { mutableStateOf(AcademicProSuiteEngine.getSyllabusTopics()) }
     var selectedPcCode by remember { mutableStateOf("PC-01") }
-    var studentNameInput by remember {
-        mutableStateOf(state.students.firstOrNull()?.fullName ?: "Aarav Sharma")
+    var studentNameInput by remember(state.students) {
+        mutableStateOf(state.students.firstOrNull()?.fullName.orEmpty())
     }
-    var enrollmentInput by remember {
-        mutableStateOf(state.students.firstOrNull()?.enrollmentNo ?: "WCI-2026-1001")
+    var enrollmentInput by remember(state.students) {
+        mutableStateOf(state.students.firstOrNull()?.enrollmentNo.orEmpty())
     }
-    var batchInput by remember {
+    var batchInput by remember(state.batches) {
         mutableStateOf(state.batches.firstOrNull()?.name ?: "ADCA Morning 9AM")
     }
     var newTopicCourse by remember { mutableStateOf("ADCA") }
@@ -576,20 +630,8 @@ private fun PdfIdAndAdmitCardStudioTab(
     viewModel: InstituteViewModel
 ) {
     val context = LocalContext.current
-    val students = state.students.ifEmpty {
-        listOf(
-            StudentRecord(
-                id = "stu_id_01",
-                enrollmentNo = "WCI-2026-1001",
-                fullName = state.userProfile?.displayName ?: "Aarav Sharma",
-                courseName = "ADCA (Advanced Diploma)",
-                batchName = "Morning Batch 9AM",
-                guardianName = "Rajesh Sharma",
-                phone = "+91 9876543210"
-            )
-        )
-    }
-    var selectedStudent by remember(students) { mutableStateOf(students.first()) }
+    val students = state.students
+    var selectedStudent by remember(students) { mutableStateOf(students.firstOrNull()) }
     var examTitleInput by remember { mutableStateOf("ADCA Final Diploma CBT Examination 2026") }
     var allottedPcInput by remember { mutableStateOf("PC-01") }
     var lastArtifact by remember { mutableStateOf<AcademicProSuiteEngine.GeneratedPdfArtifact?>(null) }
@@ -623,6 +665,31 @@ private fun PdfIdAndAdmitCardStudioTab(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    if (students.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            students.take(3).forEach { stu ->
+                                FilterChip(
+                                    selected = selectedStudent?.id == stu.id,
+                                    onClick = { selectedStudent = stu },
+                                    label = { Text("${stu.fullName} (${stu.enrollmentNo})") }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    } else {
+                        Text(
+                            text = "Enroll a student in Student Admissions (M03) to generate official PDF ID & Admit Cards.",
+                            color = Color(0xFFFBBF24),
+                            fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    var autoSeatMap by remember(students.size) {
+                        mutableStateOf<Map<String, AcademicProSuiteEngine.LabSeatAllocation>>(emptyMap())
+                    }
+                    val selectedSeatAllocation = selectedStudent?.let { autoSeatMap[it.id] }
+
                     OutlinedTextField(
                         value = examTitleInput,
                         onValueChange = { examTitleInput = it },
@@ -630,31 +697,79 @@ private fun PdfIdAndAdmitCardStudioTab(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = allottedPcInput,
-                        onValueChange = { allottedPcInput = it },
-                        label = { Text("Allotted Computer Lab PC (e.g., PC-01)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = allottedPcInput,
+                            onValueChange = { allottedPcInput = it },
+                            label = { Text("Lab PC (PC-01..PC-30)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        Button(
+                            onClick = {
+                                if (students.isEmpty()) {
+                                    viewModel.postMessage("Enroll students first to auto-allot Computer Lab PC seats.")
+                                    return@Button
+                                }
+                                val allocations = AcademicProSuiteEngine.autoAllotExamLabPcSeats(
+                                    batchStudents = students,
+                                    labCapacity = 30
+                                )
+                                autoSeatMap = allocations
+                                val currentStu = selectedStudent ?: students.first()
+                                selectedStudent = currentStu
+                                val matchedSeat = autoSeatMap[currentStu.id]
+                                if (matchedSeat != null) {
+                                    allottedPcInput = matchedSeat.seatCode
+                                }
+                                val totalShifts = allocations.values.maxOfOrNull { it.shiftNumber } ?: 1
+                                viewModel.postMessage(
+                                    "Auto-allotted ${allocations.size} Lab PC seats across $totalShifts shift(s)!"
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                            modifier = Modifier.height(52.dp).testTag("auto_allot_lab_seats_button")
+                        ) {
+                            Text("Auto-Allot Seats")
+                        }
+                    }
+                    if (selectedSeatAllocation != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Assigned: ${selectedSeatAllocation.seatCode} • ${selectedSeatAllocation.shiftLabel} (Lab Capacity: 30 PCs/Shift)",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             onClick = {
+                                val stu = selectedStudent
+                                if (stu == null) {
+                                    viewModel.postMessage("Please enroll and select a student first.")
+                                    return@Button
+                                }
                                 val artifact = AcademicProSuiteEngine.generateStudentIdCardPdf(
                                     context = context,
-                                    student = selectedStudent,
+                                    student = stu,
                                     instituteName = state.preferences.instituteName
                                 )
                                 lastArtifact = artifact
                                 viewModel.recordAudit(
                                     action = "GENERATE_PDF_ID_CARD",
                                     module = "M03_STUDENTS",
-                                    targetId = selectedStudent.id,
+                                    targetId = stu.id,
                                     severity = "INFO",
                                     details = "Generated PDF ID Card (${artifact.byteSize} bytes • SHA256:${artifact.sha256ChecksumHex.take(12)})"
                                 )
-                                viewModel.postMessage("Generated Official PDF ID Card for ${selectedStudent.fullName}")
+                                viewModel.postMessage("Generated Official PDF ID Card for ${stu.fullName}")
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4F46E5)),
                             modifier = Modifier.weight(1f).height(48.dp).testTag("generate_pdf_id_card_button")
@@ -666,24 +781,33 @@ private fun PdfIdAndAdmitCardStudioTab(
 
                         Button(
                             onClick = {
+                                val stu = selectedStudent
+                                if (stu == null) {
+                                    viewModel.postMessage("Please enroll and select a student first.")
+                                    return@Button
+                                }
+                                val assignedSeat = autoSeatMap[stu.id]
+                                val finalPc = assignedSeat?.seatCode ?: allottedPcInput
+                                val finalShift = assignedSeat?.shiftLabel ?: "Shift 1"
                                 val artifact = AcademicProSuiteEngine.generateExamAdmitCardPdf(
                                     context = context,
-                                    student = selectedStudent,
+                                    student = stu,
                                     examTitle = examTitleInput,
                                     examDateIso = "2026-12-01",
                                     durationMinutes = 60,
-                                    allottedPcCode = allottedPcInput,
+                                    allottedPcCode = finalPc,
+                                    shiftLabel = finalShift,
                                     instituteName = state.preferences.instituteName
                                 )
                                 lastArtifact = artifact
                                 viewModel.recordAudit(
                                     action = "GENERATE_EXAM_ADMIT_CARD",
                                     module = "M10_EXAMS",
-                                    targetId = selectedStudent.id,
+                                    targetId = stu.id,
                                     severity = "INFO",
-                                    details = "Generated Exam Admit Card (${artifact.byteSize} bytes • Seat:$allottedPcInput)"
+                                    details = "Generated Exam Admit Card (${artifact.byteSize} bytes • Seat:$finalPc • $finalShift)"
                                 )
-                                viewModel.postMessage("Generated Exam Hall Ticket PDF for ${selectedStudent.fullName}")
+                                viewModel.postMessage("Generated Exam Hall Ticket PDF for ${stu.fullName} ($finalPc • $finalShift)")
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669)),
                             modifier = Modifier.weight(1f).height(48.dp).testTag("generate_admit_card_pdf_button")
@@ -936,8 +1060,50 @@ private fun BrahmastraProPlusAndBiometricTab(
     overlayReport: MahaBrahmastraProPlusEngine.ScreenOverlayAndRemoteAuditReport,
     canaryReport: MahaBrahmastraProPlusEngine.CanaryAuditResult
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var stepUpVerified by remember {
         mutableStateOf(MultiStageBiometricCoordinator.isAdminStepUpVerifiedWithinWindow())
+    }
+    var stepUpStatusMessage by remember { mutableStateOf<String?>(null) }
+
+    val adminStepUpCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { capturedBitmap ->
+        if (capturedBitmap == null) {
+            stepUpStatusMessage = "Admin Step-Up Face capture cancelled."
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            stepUpStatusMessage = "Matching live Admin selfie against Master Admin & Firebase Admin Vault..."
+            val outcome = AdminFaceConversionAndGateManager.verifyLiveBitmapAgainstAdminVault(
+                context = context,
+                liveBitmap = capturedBitmap
+            )
+            when (outcome) {
+                is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Matched -> {
+                    MultiStageBiometricCoordinator.recordAdminStepUpFaceVerification()
+                    stepUpVerified = MultiStageBiometricCoordinator.isAdminStepUpVerifiedWithinWindow()
+                    stepUpStatusMessage = outcome.message
+                    viewModel.recordAudit(
+                        action = "ADMIN_STEP_UP_FACE_VERIFIED",
+                        module = "M22_SECURITY",
+                        targetId = state.userProfile?.username ?: "waqar",
+                        severity = "INFO",
+                        details = "Admin completed 128-D Step-Up Face Lock (${(outcome.cosineSimilarity * 100).toInt()}% match • valid 10m)"
+                    )
+                    viewModel.postMessage("Admin Step-Up Face Lock Verified for 10 minutes ✓")
+                }
+                is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Mismatch -> {
+                    stepUpStatusMessage = outcome.message
+                    viewModel.postMessage(outcome.message)
+                }
+                is AdminFaceConversionAndGateManager.AdminFaceMatchOutcome.Error -> {
+                    stepUpStatusMessage = outcome.errorMessage
+                    viewModel.postMessage(outcome.errorMessage)
+                }
+            }
+        }
     }
 
     LazyColumn(
@@ -963,7 +1129,7 @@ private fun BrahmastraProPlusAndBiometricTab(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Layered on top of preserved Rules #1–#5 (Cert Pin, DEX CRC32, HMAC Exam Vault, 5-in-60s Rate Limiter, Signed OTA).",
+                        text = "Layered on top of preserved Rules #1–#5 (Cert Pin, DEX CRC32, HMAC Exam Vault, Rate Limiter, Signed OTA).",
                         color = Color(0xFFCBD5E1),
                         fontSize = 12.sp
                     )
@@ -999,16 +1165,11 @@ private fun BrahmastraProPlusAndBiometricTab(
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
                             onClick = {
-                                MultiStageBiometricCoordinator.recordAdminStepUpFaceVerification()
-                                stepUpVerified = MultiStageBiometricCoordinator.isAdminStepUpVerifiedWithinWindow()
-                                viewModel.recordAudit(
-                                    action = "ADMIN_STEP_UP_FACE_VERIFIED",
-                                    module = "M22_SECURITY",
-                                    targetId = state.userProfile?.username ?: "waqar",
-                                    severity = "INFO",
-                                    details = "Admin completed 128-D Step-Up Face Lock for critical destructive operations (valid 10m)"
-                                )
-                                viewModel.postMessage("Admin Step-Up Face Lock Verified for 10 minutes ✓")
+                                runCatching {
+                                    adminStepUpCameraLauncher.launch(null)
+                                }.onFailure { err ->
+                                    stepUpStatusMessage = "Camera unavailable: ${err.localizedMessage ?: "Cannot launch camera"}"
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (stepUpVerified) Color(0xFF059669) else Color(0xFF4F46E5)
@@ -1020,6 +1181,14 @@ private fun BrahmastraProPlusAndBiometricTab(
                             Text(
                                 if (stepUpVerified) "Admin Step-Up Face Lock Active (10m Window)"
                                 else "Verify Admin Step-Up Face for Critical Actions"
+                            )
+                        }
+                        stepUpStatusMessage?.let { statusMsg ->
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = statusMsg,
+                                color = if (stepUpVerified) Color(0xFF34D399) else Color(0xFFFBBF24),
+                                fontSize = 12.sp
                             )
                         }
                     }

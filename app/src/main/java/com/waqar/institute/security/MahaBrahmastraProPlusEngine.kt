@@ -87,15 +87,20 @@ object MahaBrahmastraProPlusEngine {
         val suspiciousLibrariesDetected: List<String>
     )
 
+    private fun allowTestOverrides(): Boolean =
+        com.example.BuildConfig.DEBUG ||
+            android.os.Build.FINGERPRINT?.equals("robolectric", ignoreCase = true) == true
+
     /**
-     * Scans `/proc/self/maps` (or supplied maps lines for deterministic testing) for `r-xp`
+     * Scans `/proc/self/maps` (or supplied maps lines in debug/unit tests only) for `r-xp`
      * executable memory pages, detects injected hooking frameworks (Frida, Zygisk, LSPosed,
      * SandHook, Dobby, Substrate), and computes a SHA-256 fingerprint of executable mappings.
      */
     fun auditNativeExecutableMemorySegments(
         overrideMapsLines: List<String>? = null
     ): MemoryIntegrityReport {
-        val lines: List<String> = overrideMapsLines ?: runCatching {
+        val effectiveOverride = if (allowTestOverrides()) overrideMapsLines else null
+        val lines: List<String> = effectiveOverride ?: runCatching {
             val mapsFile = File("/proc/self/maps")
             if (mapsFile.exists() && mapsFile.canRead()) {
                 mapsFile.useLines { seq -> seq.take(4000).toList() }
@@ -152,13 +157,15 @@ object MahaBrahmastraProPlusEngine {
     /**
      * Audits active displays (`DisplayManager`) for screen-mirroring/presentation/virtual displays
      * and inspects enabled `AccessibilityService` packages for remote-control or auto-clicker tools.
+     * Simulation parameters are strictly ignored in Release builds.
      */
     fun auditOverlayScreenShareAndAccessibility(
         context: Context,
         simulatedExternalDisplayCount: Int? = null,
         simulatedAccessibilityPackages: List<String>? = null
     ): ScreenOverlayAndRemoteAuditReport {
-        val externalDisplays = simulatedExternalDisplayCount ?: runCatching {
+        val allowSim = allowTestOverrides()
+        val externalDisplays = (if (allowSim) simulatedExternalDisplayCount else null) ?: runCatching {
             val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
             val displays = dm?.displays ?: emptyArray()
             displays.count { d ->
@@ -167,7 +174,7 @@ object MahaBrahmastraProPlusEngine {
             }
         }.getOrDefault(0)
 
-        val enabledPackages = simulatedAccessibilityPackages ?: runCatching {
+        val enabledPackages = (if (allowSim) simulatedAccessibilityPackages else null) ?: runCatching {
             val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
             val list = am?.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).orEmpty()
             list.mapNotNull { info -> info.resolveInfo?.serviceInfo?.packageName?.lowercase(Locale.US) }

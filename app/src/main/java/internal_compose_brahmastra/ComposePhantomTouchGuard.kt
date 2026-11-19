@@ -52,18 +52,25 @@ object ComposePhantomTouchGuard {
             reason = "GENUINE_TOUCH_VERIFIED"
         )
     }
+
+    fun evaluateLiveMotionEvent(event: MotionEvent): TouchSecurityAudit {
+        val isFingerDown = event.actionMasked == MotionEvent.ACTION_DOWN &&
+            event.pointerCount > 0 &&
+            event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER
+        return evaluateMotionEventFlagsAndGeometry(
+            motionFlags = event.flags,
+            touchMajorPx = if (isFingerDown) event.touchMajor else 18f,
+            touchMinorPx = if (isFingerDown) event.touchMinor else 14f,
+            pressure = if (isFingerDown) event.pressure else 0.45f
+        )
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun Modifier.ultraSecureTouchGuard(
     onBlockedOverlayOrMacro: ((String) -> Unit)? = null
 ): Modifier = this.pointerInteropFilter { event ->
-    val verdict = ComposePhantomTouchGuard.evaluateMotionEventFlagsAndGeometry(
-        motionFlags = event.flags,
-        touchMajorPx = event.touchMajor.coerceAtLeast(1f),
-        touchMinorPx = event.touchMinor.coerceAtLeast(1f),
-        pressure = event.pressure.coerceAtLeast(0.1f)
-    )
+    val verdict = ComposePhantomTouchGuard.evaluateLiveMotionEvent(event)
     if (!verdict.allowed) {
         onBlockedOverlayOrMacro?.invoke(verdict.reason)
         true // Consume and block the obscured/synthetic touch event

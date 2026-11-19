@@ -23,7 +23,8 @@ object CertificateQrGenerator {
     private const val VERIFY_BASE_URL = "https://waqar-institute-erp.web.app/verify"
 
     /**
-     * Builds the canonical, tamper-evident verification URL for a student's certificate.
+     * Builds the canonical, tamper-evident verification URL for a student's certificate,
+     * cryptographically signed with [com.waqar.institute.security.Ed25519DocumentSigner].
      */
     fun buildVerificationUrl(
         certSerialNo: String,
@@ -32,36 +33,48 @@ object CertificateQrGenerator {
         courseName: String,
         grade: String,
         percentage: Int,
-        issueDateIso: String
+        issueDateIso: String,
+        context: android.content.Context? = null
     ): String {
         val signaturePayload = "$certSerialNo|$enrollmentNo|$studentName|$courseName|$grade|$percentage|$issueDateIso|Waqar"
-        val sigHash = sha256ShortHex(signaturePayload)
+        val ed25519Hex = com.waqar.institute.security.Ed25519DocumentSigner.signDocumentWithInstituteKey(
+            context = context,
+            canonicalPayload = signaturePayload
+        )
         return Uri.parse(VERIFY_BASE_URL)
             .buildUpon()
             .appendQueryParameter("cert_id", certSerialNo.trim())
+            .appendQueryParameter("cert", certSerialNo.trim())
             .appendQueryParameter("roll", enrollmentNo.trim())
             .appendQueryParameter("name", studentName.trim())
             .appendQueryParameter("course", courseName.trim())
             .appendQueryParameter("grade", grade.trim())
-            .appendQueryParameter("pct", "$percentage%")
+            .appendQueryParameter("pct", "$percentage")
             .appendQueryParameter("issued", issueDateIso.trim())
             .appendQueryParameter("signatory", "Waqar")
-            .appendQueryParameter("sig", sigHash)
+            .appendQueryParameter("sig", ed25519Hex)
             .build()
             .toString()
     }
 
     /**
-     * Generates a compact, high-density scannable verification URL optimized for fast optical camera lock.
+     * Generates a compact, high-density scannable verification URL with Ed25519 signature (`&sig=`)
+     * and short SHA-256 checksum (`&s=`) optimized for fast optical camera lock and web verification.
      */
     fun buildCompactScannableUrl(
         certSerialNo: String,
         enrollmentNo: String,
         grade: String,
-        percentage: Int
+        percentage: Int,
+        context: android.content.Context? = null
     ): String {
-        val sig = sha256ShortHex("$certSerialNo|$enrollmentNo|$grade|$percentage|Waqar").take(8)
-        return "$VERIFY_BASE_URL?cert_id=${Uri.encode(certSerialNo)}&roll=${Uri.encode(enrollmentNo)}&g=${Uri.encode(grade)}&p=$percentage&s=$sig"
+        val canonical = "$certSerialNo|$enrollmentNo|$grade|$percentage|Waqar"
+        val shortHash = sha256ShortHex(canonical).take(8)
+        val ed25519Hex = com.waqar.institute.security.Ed25519DocumentSigner.signDocumentWithInstituteKey(
+            context = context,
+            canonicalPayload = canonical
+        )
+        return "$VERIFY_BASE_URL?cert_id=${Uri.encode(certSerialNo)}&roll=${Uri.encode(enrollmentNo)}&g=${Uri.encode(grade)}&p=$percentage&s=$shortHash&sig=$ed25519Hex"
     }
 
     /**
@@ -154,7 +167,7 @@ object CertificateQrGenerator {
             get() = 17 + 4 * version
     }
 
-    // Standard ISO/IEC 18004 ECC Level L specifications for Versions 1 to 10
+    // Standard ISO/IEC 18004 ECC Level L specifications for Versions 1 to 14 (supports up to 458 bytes)
     private val VERSION_SPECS_ECC_L = listOf(
         QrVersionSpec(1, 26, 7, 1, 19),
         QrVersionSpec(2, 44, 10, 1, 34, alignmentCenters = intArrayOf(6, 18)),
@@ -165,7 +178,11 @@ object CertificateQrGenerator {
         QrVersionSpec(7, 196, 20, 2, 78, alignmentCenters = intArrayOf(6, 22, 38)),
         QrVersionSpec(8, 242, 24, 2, 97, alignmentCenters = intArrayOf(6, 24, 42)),
         QrVersionSpec(9, 292, 30, 2, 116, alignmentCenters = intArrayOf(6, 26, 46)),
-        QrVersionSpec(10, 346, 18, 2, 68, 2, 69, alignmentCenters = intArrayOf(6, 28, 50))
+        QrVersionSpec(10, 346, 18, 2, 68, 2, 69, alignmentCenters = intArrayOf(6, 28, 50)),
+        QrVersionSpec(11, 404, 20, 4, 81, alignmentCenters = intArrayOf(6, 30, 54)),
+        QrVersionSpec(12, 466, 24, 2, 92, 2, 93, alignmentCenters = intArrayOf(6, 32, 58)),
+        QrVersionSpec(13, 532, 26, 4, 107, alignmentCenters = intArrayOf(6, 34, 62)),
+        QrVersionSpec(14, 581, 30, 3, 115, 1, 116, alignmentCenters = intArrayOf(6, 26, 46, 66))
     )
 
     private fun encodeIso18004QrMatrix(text: String): Array<BooleanArray> {

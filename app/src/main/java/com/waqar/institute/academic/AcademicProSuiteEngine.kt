@@ -59,7 +59,7 @@ object AcademicProSuiteEngine {
 
     fun generateSignedStudentQrPayload(student: StudentRecord): String {
         val cleanId = student.id.trim().ifBlank { "stu_default" }
-        val cleanRoll = student.enrollmentNo.trim().ifBlank { "WCI-2026-1001" }
+        val cleanRoll = student.enrollmentNo.trim().ifBlank { cleanId }
         val cleanName = student.fullName.trim().replace("|", " ").ifBlank { "Student" }
         val cleanBatch = student.batchName.trim().replace("|", " ").ifBlank { "General Batch" }
         val canonical = "$QR_PREFIX|$cleanId|$cleanRoll|$cleanName|$cleanBatch"
@@ -138,6 +138,31 @@ object AcademicProSuiteEngine {
             record = record,
             cosineSimilarity = similarity,
             rowMacHex = rowMac
+        )
+    }
+
+    /**
+     * Verifies a signed Student QR payload together with a live front-camera [Bitmap] and the
+     * student's enrolled profile [Bitmap] using the unified 128-D face identity pipeline (FIX-01).
+     */
+    suspend fun verifyDualQrAndFaceBiometric(
+        context: Context,
+        qrPayload: String,
+        liveCameraBitmap: android.graphics.Bitmap,
+        enrolledStudentPhotoBitmap: android.graphics.Bitmap,
+        blinkVerified: Boolean,
+        markedByUid: String = "admin_waqar"
+    ): DualFactorAttendanceResult {
+        val liveEmb = FaceBiometricVerificationEngine.extractEmbeddingFromBitmapSuspend(liveCameraBitmap, context)
+            ?: return DualFactorAttendanceResult.Rejected("No clear single human face detected in live camera frame.")
+        val enrolledEmb = FaceBiometricVerificationEngine.extractEmbeddingFromBitmapSuspend(enrolledStudentPhotoBitmap, context)
+            ?: return DualFactorAttendanceResult.Rejected("Enrolled student admission portrait does not contain valid facial landmarks.")
+        return verifyQrAndFaceDualFactorAttendance(
+            rawQrPayload = qrPayload,
+            liveFaceEmbedding = liveEmb,
+            enrolledFaceEmbedding = enrolledEmb,
+            blinkVerified = blinkVerified,
+            markedByUid = markedByUid
         )
     }
 
@@ -357,8 +382,48 @@ object AcademicProSuiteEngine {
         val studentName: String,
         val verificationQrPayload: String,
         val sha256ChecksumHex: String,
-        val byteSize: Long
+        val byteSize: Long,
+        val ed25519SignatureHex: String = ""
     )
+
+    /**
+     * [C4] Deterministic Lab PC & Shift Allotment result (`PC-01`..`PC-30`, Shift 1 for 1..30, Shift 2 for 31..60).
+     */
+    data class LabSeatAllocation(
+        val studentId: String,
+        val studentName: String,
+        val enrollmentNo: String,
+        val seatCode: String,
+        val shiftNumber: Int,
+        val shiftLabel: String
+    )
+
+    fun autoAllotExamLabPcSeats(
+        batchStudents: List<StudentRecord>,
+        labCapacity: Int = 30
+    ): Map<String, LabSeatAllocation> {
+        val safeCapacity = labCapacity.coerceAtLeast(1)
+        val sorted = batchStudents.sortedWith(
+            compareBy<StudentRecord> { it.enrollmentNo.ifBlank { it.id }.lowercase(Locale.US) }
+                .thenBy { it.fullName.lowercase(Locale.US) }
+        )
+        val out = LinkedHashMap<String, LabSeatAllocation>(sorted.size)
+        sorted.forEachIndexed { idx, stu ->
+            val seatNum = (idx % safeCapacity) + 1
+            val shiftNum = (idx / safeCapacity) + 1
+            val seatCode = String.format(Locale.US, "PC-%02d", seatNum)
+            val shiftLabel = "Shift $shiftNum"
+            out[stu.id] = LabSeatAllocation(
+                studentId = stu.id,
+                studentName = stu.fullName,
+                enrollmentNo = stu.enrollmentNo.ifBlank { stu.id },
+                seatCode = seatCode,
+                shiftNumber = shiftNum,
+                shiftLabel = shiftLabel
+            )
+        }
+        return out
+    }
 
     fun generateStudentIdCardPdf(
         context: Context,
@@ -367,7 +432,11 @@ object AcademicProSuiteEngine {
         branchName: String = "Main Campus, Unnao (U.P.)",
         sessionYear: String = "2026–2027"
     ): GeneratedPdfArtifact {
-        val qrPayload = generateSignedStudentQrPayload(student)
+        val idEd25519Sig = com.waqar.institute.security.Ed25519DocumentSigner.signDocumentWithInstituteKey(
+            context = context,
+            canonicalPayload = "IDCARD|${student.id}|${student.enrollmentNo}|${student.fullName}|${student.courseName}|$sessionYear"
+        )
+        val qrPayload = "${generateSignedStudentQrPayload(student)}&sig=$idEd25519Sig"
         val outDir = File(context.cacheDir, "documents").apply { mkdirs() }
         val cleanRoll = student.enrollmentNo.ifBlank { student.id }.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val outFile = File(outDir, "WCI_ID_Card_$cleanRoll.pdf")
@@ -431,10 +500,10 @@ object AcademicProSuiteEngine {
 
                 val footerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.rgb(52, 211, 153)
-                    textSize = 10f
+                    textSize = 9.5f
                     typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
                 }
-                canvas.drawText("QR+FACE BIOMETRIC VERIFIED ID • SIGN: WAQAR KHAN (DIRECTOR)", 28f, 314f, footerPaint)
+                canvas.drawText("ED25519: ${idEd25519Sig.take(20)}... • WAQAR KHAN (DIRECTOR)", 28f, 314f, footerPaint)
 
                 doc.finishPage(page)
                 FileOutputStream(outFile).use { fos -> doc.writeTo(fos) }
@@ -457,7 +526,8 @@ object AcademicProSuiteEngine {
             studentName = student.fullName,
             verificationQrPayload = qrPayload,
             sha256ChecksumHex = sha256,
-            byteSize = outFile.length()
+            byteSize = outFile.length(),
+            ed25519SignatureHex = idEd25519Sig
         )
     }
 
@@ -468,9 +538,14 @@ object AcademicProSuiteEngine {
         examDateIso: String,
         durationMinutes: Int,
         allottedPcCode: String = "PC-01",
-        instituteName: String = "WAQAR COMPUTER INSTITUTE"
+        instituteName: String = "WAQAR COMPUTER INSTITUTE",
+        shiftLabel: String = "Shift 1"
     ): GeneratedPdfArtifact {
-        val qrPayload = generateSignedStudentQrPayload(student)
+        val admitEd25519Sig = com.waqar.institute.security.Ed25519DocumentSigner.signDocumentWithInstituteKey(
+            context = context,
+            canonicalPayload = "ADMIT|${student.id}|${student.enrollmentNo}|$examTitle|$examDateIso|$allottedPcCode|$shiftLabel"
+        )
+        val qrPayload = "${generateSignedStudentQrPayload(student)}&seat=$allottedPcCode&shift=${shiftLabel.replace(" ", "_")}&sig=$admitEd25519Sig"
         val outDir = File(context.cacheDir, "documents").apply { mkdirs() }
         val cleanRoll = student.enrollmentNo.ifBlank { student.id }.replace(Regex("[^a-zA-Z0-9_-]"), "_")
         val outFile = File(outDir, "WCI_Admit_Card_$cleanRoll.pdf")
@@ -523,7 +598,7 @@ object AcademicProSuiteEngine {
                     "Course & Batch" to "${student.courseName.ifBlank { "ADCA" }} (${student.batchName.ifBlank { "Regular" }})",
                     "Examination Title" to examTitle.ifBlank { "Diploma Final CBT Assessment" },
                     "Scheduled Date & Duration" to "$examDateIso • $durationMinutes Minutes",
-                    "Allotted Computer Lab Seat" to "$allottedPcCode (Main Computer Lab)",
+                    "Allotted Computer Lab Seat" to "$allottedPcCode • $shiftLabel (Main Computer Lab)",
                     "Biometric & Security Mode" to "128-D Live Face Proctoring + Kiosk Lock + Anti-Overlay"
                 )
                 for ((label, value) in rows) {
@@ -558,7 +633,7 @@ object AcademicProSuiteEngine {
                     ry += 22f
                 }
 
-                canvas.drawText("Controller of Examinations: Waqar Khan (Director)", 44f, 770f, bodyBold)
+                canvas.drawText("Ed25519 Seal: ${admitEd25519Sig.take(28)}... • Controller: Waqar Khan", 44f, 770f, bodyBold)
                 doc.finishPage(page)
                 FileOutputStream(outFile).use { fos -> doc.writeTo(fos) }
             } finally {
@@ -580,7 +655,8 @@ object AcademicProSuiteEngine {
             studentName = student.fullName,
             verificationQrPayload = qrPayload,
             sha256ChecksumHex = sha256,
-            byteSize = outFile.length()
+            byteSize = outFile.length(),
+            ed25519SignatureHex = admitEd25519Sig
         )
     }
 
@@ -617,36 +693,15 @@ object AcademicProSuiteEngine {
         top: Float,
         size: Float
     ) {
-        val cells = 21
-        val cellSize = size / cells
-        val whitePaint = Paint().apply { color = Color.WHITE }
-        val darkPaint = Paint().apply { color = Color.BLACK }
-        canvas.drawRect(left - 6f, top - 6f, left + size + 6f, top + size + 6f, whitePaint)
-        val hash = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.UTF_8))
-
-        for (r in 0 until cells) {
-            for (c in 0 until cells) {
-                val isFinder = (r < 7 && c < 7) || (r < 7 && c >= cells - 7) || (r >= cells - 7 && c < 7)
-                val isDark = if (isFinder) {
-                    val lr = if (r >= cells - 7) r - (cells - 7) else r
-                    val lc = if (c >= cells - 7) c - (cells - 7) else c
-                    lr == 0 || lr == 6 || lc == 0 || lc == 6 || (lr in 2..4 && lc in 2..4)
-                } else {
-                    val bitIdx = (r * cells + c) % (hash.size * 8)
-                    val byteVal = hash[bitIdx / 8].toInt() and 0xFF
-                    ((byteVal ushr (bitIdx % 8)) and 1) == 1
-                }
-                if (isDark) {
-                    canvas.drawRect(
-                        left + c * cellSize,
-                        top + r * cellSize,
-                        left + (c + 1) * cellSize,
-                        top + (r + 1) * cellSize,
-                        darkPaint
-                    )
-                }
-            }
-        }
+        val cleanPayload = payload.ifBlank { "https://waqarinstitute.com/verify" }
+        val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        canvas.drawRect(left - 4f, top - 4f, left + size + 4f, top + size + 4f, whitePaint)
+        val qrBitmap = com.waqar.institute.certificate.CertificateQrGenerator.generateScannableQrBitmap(
+            content = cleanPayload,
+            sizePx = size.toInt().coerceAtLeast(140)
+        )
+        val destRect = RectF(left, top, left + size, top + size)
+        canvas.drawBitmap(qrBitmap, null, destRect, null)
     }
 
     // =========================================================================

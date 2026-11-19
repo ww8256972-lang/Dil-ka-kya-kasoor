@@ -480,8 +480,6 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
         return false;
     }
 
-    raw_sys_lseek(fd, 0, SEEK_SET);
-
     Sha256Context shaCtx{};
     sha256Init(shaCtx);
 
@@ -489,95 +487,10 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
     bool foundManifest = false;
     bool foundMetaInfCert = false;
     bool foundV2SigBlock = false;
-    uint8_t header[30];
+    uint32_t cdOffset = 0u;
+    uint32_t cdSize = 0u;
 
-    // Scan local ZIP file headers for classes.dex, AndroidManifest.xml, and META-INF signing artifacts via kernel syscalls
-    for (int entryIdx = 0; entryIdx < 1024; ++entryIdx) {
-        if (raw_sys_read(fd, header, 30) != 30) break;
-
-        if (header[0] != 0x50u || header[1] != 0x4Bu || header[2] != 0x03u || header[3] != 0x04u) {
-            break;
-        }
-
-        uint16_t flags = static_cast<uint16_t>(header[6] | (header[7] << 8));
-        uint32_t entryCrc32 = static_cast<uint32_t>(header[14]) |
-                              (static_cast<uint32_t>(header[15]) << 8) |
-                              (static_cast<uint32_t>(header[16]) << 16) |
-                              (static_cast<uint32_t>(header[17]) << 24);
-        uint32_t compressedSize = static_cast<uint32_t>(header[18]) |
-                                  (static_cast<uint32_t>(header[19]) << 8) |
-                                  (static_cast<uint32_t>(header[20]) << 16) |
-                                  (static_cast<uint32_t>(header[21]) << 24);
-        uint16_t fileNameLen = static_cast<uint16_t>(header[26] | (header[27] << 8));
-        uint16_t extraLen = static_cast<uint16_t>(header[28] | (header[29] << 8));
-
-        if (fileNameLen == 0 || fileNameLen > 512) break;
-
-        std::string entryName(fileNameLen, '\0');
-        if (raw_sys_read(fd, entryName.data(), fileNameLen) != static_cast<ssize_t>(fileNameLen)) break;
-
-        if (extraLen > 0) {
-            raw_sys_lseek(fd, static_cast<off_t>(extraLen), SEEK_CUR);
-        }
-
-        if (entryName == "classes.dex") {
-            foundClassesDex = true;
-            if (entryCrc32 != 0U) {
-                uint32_t expectedBaseline = 0U;
-                if (!gBaselineDexCrc32.compare_exchange_strong(expectedBaseline, entryCrc32)) {
-                    if (expectedBaseline != entryCrc32) {
-                        raw_sys_close(fd);
-                        g_tamperDetected.store(true, std::memory_order_release);
-                        return false;
-                    }
-                }
-                const char* pinnedDexHex = WCI_EXPECTED_DEX_CRC32;
-                if (!isDebuggableBuild && pinnedDexHex != nullptr && std::strlen(pinnedDexHex) == 8) {
-                    char actualDexHex[9] = {0};
-                    std::snprintf(actualDexHex, sizeof(actualDexHex), "%08x", entryCrc32);
-                    uint8_t dexDiff = 0;
-                    for (int di = 0; di < 8; ++di) {
-                        dexDiff |= static_cast<uint8_t>(actualDexHex[di] ^ pinnedDexHex[di]);
-                    }
-                    if (dexDiff != 0) {
-                        raw_sys_close(fd);
-                        g_tamperDetected.store(true, std::memory_order_release);
-                        return false;
-                    }
-                }
-            }
-        }
-        if (entryName == "AndroidManifest.xml") foundManifest = true;
-        if (entryName.rfind("META-INF/", 0) == 0 &&
-            (entryName.ends_with(".RSA") || entryName.ends_with(".EC") ||
-             entryName.ends_with(".DSA") || entryName.ends_with(".SF"))) {
-            foundMetaInfCert = true;
-        }
-
-        if (entryName == "classes.dex" || entryName.rfind("META-INF/", 0) == 0 || entryName == "AndroidManifest.xml") {
-            sha256Update(shaCtx, header, 30);
-            sha256Update(shaCtx, reinterpret_cast<const uint8_t*>(entryName.data()), entryName.size());
-
-            size_t bytesToHash = (compressedSize > 0 && compressedSize < 16384u) ? compressedSize : 4096u;
-            std::vector<uint8_t> sampleBuf(bytesToHash);
-            ssize_t actuallyRead = raw_sys_read(fd, sampleBuf.data(), bytesToHash);
-            if (actuallyRead > 0) {
-                sha256Update(shaCtx, sampleBuf.data(), static_cast<size_t>(actuallyRead));
-            }
-            if (actuallyRead >= 0 && compressedSize >= static_cast<uint32_t>(actuallyRead) && (flags & 0x08u) == 0u) {
-                raw_sys_lseek(fd, static_cast<off_t>(compressedSize - static_cast<uint32_t>(actuallyRead)), SEEK_CUR);
-            } else {
-                break;
-            }
-        } else {
-            if ((flags & 0x08u) != 0u) {
-                break;
-            }
-            raw_sys_lseek(fd, static_cast<off_t>(compressedSize), SEEK_CUR);
-        }
-    }
-
-    // Inspect APK tail & EOCD for APK Signing Block v2/v3 ("APK Sig Block 42")
+    // Locate EOCD (PK\x05\x06) at tail of APK via raw syscalls to find Central Directory & APK Sig Block 42
     off_t fileSize = raw_sys_lseek(fd, 0, SEEK_END);
     if (fileSize > 64) {
         const off_t tailWindow = (fileSize > 65536) ? 65536 : fileSize;
@@ -590,16 +503,19 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
             if (bufferContainsBytes(tailBuf.data(), readLen, "APK Sig Block 42", 16)) {
                 foundV2SigBlock = true;
             }
-            // Locate EOCD (PK\x05\x06) to locate Central Directory offset and verify APK Sig Block immediately preceding CD
-            if (!foundV2SigBlock && readLen >= 22) {
+            if (readLen >= 22) {
                 for (size_t pos = readLen - 22; ; --pos) {
                     if (tailBuf[pos] == 0x50u && tailBuf[pos + 1] == 0x4Bu &&
                         tailBuf[pos + 2] == 0x05u && tailBuf[pos + 3] == 0x06u) {
-                        uint32_t cdOffset = static_cast<uint32_t>(tailBuf[pos + 16]) |
-                                            (static_cast<uint32_t>(tailBuf[pos + 17]) << 8) |
-                                            (static_cast<uint32_t>(tailBuf[pos + 18]) << 16) |
-                                            (static_cast<uint32_t>(tailBuf[pos + 19]) << 24);
-                        if (cdOffset >= 24 && static_cast<off_t>(cdOffset) <= fileSize) {
+                        cdSize = static_cast<uint32_t>(tailBuf[pos + 12]) |
+                                 (static_cast<uint32_t>(tailBuf[pos + 13]) << 8) |
+                                 (static_cast<uint32_t>(tailBuf[pos + 14]) << 16) |
+                                 (static_cast<uint32_t>(tailBuf[pos + 15]) << 24);
+                        cdOffset = static_cast<uint32_t>(tailBuf[pos + 16]) |
+                                   (static_cast<uint32_t>(tailBuf[pos + 17]) << 8) |
+                                   (static_cast<uint32_t>(tailBuf[pos + 18]) << 16) |
+                                   (static_cast<uint32_t>(tailBuf[pos + 19]) << 24);
+                        if (!foundV2SigBlock && cdOffset >= 24 && static_cast<off_t>(cdOffset) <= fileSize) {
                             uint8_t magic16[16] = {0};
                             raw_sys_lseek(fd, static_cast<off_t>(cdOffset) - 16, SEEK_SET);
                             if (raw_sys_read(fd, magic16, 16) == 16) {
@@ -614,6 +530,76 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
                     if (pos == 0) break;
                 }
             }
+        }
+    }
+
+    // Scan full ZIP Central Directory (handles APKs with >1024 entries and flag 0x08 data descriptors)
+    if (cdOffset > 0u && cdSize > 0u && static_cast<off_t>(cdOffset) + static_cast<off_t>(cdSize) <= fileSize && cdSize <= (32u * 1024u * 1024u)) {
+        raw_sys_lseek(fd, static_cast<off_t>(cdOffset), SEEK_SET);
+        std::vector<uint8_t> cdBuf(cdSize);
+        size_t totalRead = 0;
+        while (totalRead < cdSize) {
+            ssize_t r = raw_sys_read(fd, cdBuf.data() + totalRead, cdSize - totalRead);
+            if (r <= 0) break;
+            totalRead += static_cast<size_t>(r);
+        }
+
+        size_t off = 0;
+        while (off + 46 <= totalRead) {
+            if (cdBuf[off] != 0x50u || cdBuf[off + 1] != 0x4Bu ||
+                cdBuf[off + 2] != 0x01u || cdBuf[off + 3] != 0x02u) {
+                break;
+            }
+            uint32_t entryCrc32 = static_cast<uint32_t>(cdBuf[off + 16]) |
+                                  (static_cast<uint32_t>(cdBuf[off + 17]) << 8) |
+                                  (static_cast<uint32_t>(cdBuf[off + 18]) << 16) |
+                                  (static_cast<uint32_t>(cdBuf[off + 19]) << 24);
+            uint16_t nameLen = static_cast<uint16_t>(cdBuf[off + 28] | (cdBuf[off + 29] << 8));
+            uint16_t extraLen = static_cast<uint16_t>(cdBuf[off + 30] | (cdBuf[off + 31] << 8));
+            uint16_t commentLen = static_cast<uint16_t>(cdBuf[off + 32] | (cdBuf[off + 33] << 8));
+
+            const size_t nextOff = off + 46u + nameLen + extraLen + commentLen;
+            if (nextOff > totalRead) break;
+
+            std::string entryName(reinterpret_cast<const char*>(cdBuf.data() + off + 46), nameLen);
+            if (entryName == "classes.dex") {
+                foundClassesDex = true;
+                sha256Update(shaCtx, cdBuf.data() + off, 46u + nameLen);
+                if (entryCrc32 != 0U) {
+                    uint32_t expectedBaseline = 0U;
+                    if (!gBaselineDexCrc32.compare_exchange_strong(expectedBaseline, entryCrc32)) {
+                        if (expectedBaseline != entryCrc32) {
+                            raw_sys_close(fd);
+                            g_tamperDetected.store(true, std::memory_order_release);
+                            return false;
+                        }
+                    }
+                    const char* pinnedDexHex = WCI_EXPECTED_DEX_CRC32;
+                    if (!isDebuggableBuild && pinnedDexHex != nullptr && std::strlen(pinnedDexHex) == 8) {
+                        char actualDexHex[9] = {0};
+                        std::snprintf(actualDexHex, sizeof(actualDexHex), "%08x", entryCrc32);
+                        uint8_t dexDiff = 0;
+                        for (int di = 0; di < 8; ++di) {
+                            dexDiff |= static_cast<uint8_t>(actualDexHex[di] ^ pinnedDexHex[di]);
+                        }
+                        if (dexDiff != 0) {
+                            raw_sys_close(fd);
+                            g_tamperDetected.store(true, std::memory_order_release);
+                            return false;
+                        }
+                    }
+                }
+            } else if (entryName == "AndroidManifest.xml") {
+                foundManifest = true;
+                sha256Update(shaCtx, cdBuf.data() + off, 46u + nameLen);
+            } else if (entryName.rfind("META-INF/", 0) == 0 &&
+                       (entryName.ends_with(".RSA") || entryName.ends_with(".EC") ||
+                        entryName.ends_with(".DSA") || entryName.ends_with(".SF"))) {
+                foundMetaInfCert = true;
+                sha256Update(shaCtx, cdBuf.data() + off, 46u + nameLen);
+            }
+
+            off = nextOff;
         }
     }
 
@@ -632,16 +618,6 @@ bool verifyApkDexAndSignatureDigest(const char* apkPath, bool isDebuggableBuild)
         std::snprintf(computedHex + (i * 2), 3, "%02x", digest[i]);
     }
     secureZeroMemory(digest, sizeof(digest));
-
-    // Constant-time pin comparison against release pin when applicable
-    const char* expectedCertHex = WCI_EXPECTED_CERT_SHA256;
-    uint8_t diff = 0;
-    for (int i = 0; i < 64; ++i) {
-        diff |= static_cast<uint8_t>(computedHex[i] ^ expectedCertHex[i]);
-    }
-    if (diff == 0) {
-        return true;
-    }
 
     // Bind first verified runtime APK digest to defeat runtime APK swap / TOCTOU bypass
     bool expectedSet = false;
@@ -921,19 +897,39 @@ static jboolean JNICALL native_verifyReleaseSigningCertPin(JNIEnv* env, jobject 
     if (env == nullptr || runtimeCertHexStr == nullptr) return JNI_FALSE;
     const char* rawHex = env->GetStringUTFChars(runtimeCertHexStr, nullptr);
     if (rawHex == nullptr) return JNI_FALSE;
-    const size_t len = std::strlen(rawHex);
+
+    std::string normActual;
+    normActual.reserve(64);
+    for (size_t i = 0; rawHex[i] != '\0'; ++i) {
+        char c = rawHex[i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+            normActual.push_back(c);
+        }
+    }
+    env->ReleaseStringUTFChars(runtimeCertHexStr, rawHex);
+
+    std::string normExpected;
+    normExpected.reserve(64);
     const char* expected = WCI_EXPECTED_CERT_SHA256;
+    if (expected != nullptr) {
+        for (size_t i = 0; expected[i] != '\0'; ++i) {
+            char c = expected[i];
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+                normExpected.push_back(c);
+            }
+        }
+    }
+
     bool match = false;
-    if (len == 64 && expected != nullptr && std::strlen(expected) == 64) {
+    if (normActual.size() == 64 && normExpected.size() == 64) {
         uint8_t diff = 0;
         for (size_t i = 0; i < 64; ++i) {
-            char c = rawHex[i];
-            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-            diff |= static_cast<uint8_t>(c ^ expected[i]);
+            diff |= static_cast<uint8_t>(normActual[i] ^ normExpected[i]);
         }
         match = (diff == 0);
     }
-    env->ReleaseStringUTFChars(runtimeCertHexStr, rawHex);
     if (!match) {
         g_tamperDetected.store(true, std::memory_order_release);
     }

@@ -225,9 +225,15 @@
         "title": { "type": "string" },
         "courseId": { "type": "string" },
         "courseName": { "type": "string" },
+        "batchId": { "type": "string" },
         "batchName": { "type": "string" },
         "examType": { "type": "string", "enum": ["MCQ_ONLINE", "PRACTICAL", "THEORY", "FINAL"] },
         "durationMinutes": { "type": "integer" },
+        "durationSeconds": { "type": "integer" },
+        "startTime24h": { "type": "string" },
+        "scheduledStartEpochMs": { "type": "integer" },
+        "autoAssignLabPcSeats": { "type": "boolean" },
+        "createdByRole": { "type": "string" },
         "totalMarks": { "type": "integer" },
         "passingMarks": { "type": "integer" },
         "scheduledDateIso": { "type": "string" },
@@ -240,7 +246,7 @@
     },
     "ExamResult": {
       "title": "ExamResult",
-      "description": "Student exam submission, marks obtained, grade, and rank (M10).",
+      "description": "Student exam submission, marks obtained, exact percentage, grade, and rank (M10).",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -250,6 +256,10 @@
         "studentName": { "type": "string" },
         "marksObtained": { "type": "integer" },
         "totalMarks": { "type": "integer" },
+        "exactPercentage": { "type": "number" },
+        "formattedPercentage": { "type": "string" },
+        "correctCount": { "type": "integer" },
+        "totalQuestions": { "type": "integer" },
         "grade": { "type": "string" },
         "rank": { "type": "integer" },
         "status": { "type": "string", "enum": ["PASSED", "FAILED", "ABSENT"] },
@@ -482,6 +492,167 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "title", "category", "payloadJson", "recordCount", "checksum", "ownerUid", "createdAt"]
+    },
+    "UpiTransactionRecord": {
+      "title": "UpiTransactionRecord",
+      "description": "Zero-Fee Direct UPI Intent transaction record with 5-layer cryptographic challenge-response and Admin 1-Tap approval.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "student_name": { "type": "string" },
+        "course_name": { "type": "string" },
+        "amount": { "type": "number" },
+        "amount_paise": { "type": "integer" },
+        "payment_type": { "type": "string", "enum": ["MONTHLY_FEE", "AUTO_EMI", "FULL_FEE"] },
+        "tr_ref": { "type": "string" },
+        "tn_note": { "type": "string" },
+        "signal_nonce": { "type": "string" },
+        "intent_hash": { "type": "string" },
+        "utr_number": { "type": "string" },
+        "upi_package": { "type": "string" },
+        "device_fingerprint": { "type": "string" },
+        "apk_signature_sha256": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "expires_at_ms": { "type": "integer" },
+        "status": { "type": "string", "enum": ["CHALLENGE_ISSUED", "DISPATCHED", "PENDING_APPROVAL", "VERIFIED_PAID", "REJECTED_FRAUD", "EXPIRED"] },
+        "verified_by_uid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "student_id", "student_name", "course_name", "amount", "amount_paise", "payment_type", "tr_ref", "tn_note", "signal_nonce", "intent_hash", "utr_number", "upi_package", "device_fingerprint", "apk_signature_sha256", "timestamp", "expires_at_ms", "status", "verified_by_uid", "createdAt"]
+    },
+    "StudentFeesLedgerRecord": {
+      "title": "StudentFeesLedgerRecord",
+      "description": "Student monthly fee and 4-month overdue Admin-controlled Auto-EMI ledger record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "student_name": { "type": "string" },
+        "enrollment_no": { "type": "string" },
+        "course_name": { "type": "string" },
+        "batch_name": { "type": "string" },
+        "total_fee_paise": { "type": "integer" },
+        "paid_fee_paise": { "type": "integer" },
+        "monthly_fee_paise": { "type": "integer" },
+        "emi_installment_paise": { "type": "integer" },
+        "monthly_payment_status": { "type": "string", "enum": ["PAID", "PENDING", "OVERDUE", "EMI_ACTIVE"] },
+        "overdue_months": { "type": "integer" },
+        "auto_emi_active": { "type": "boolean" },
+        "emi_billing_date": { "type": "integer" },
+        "next_due_date_iso": { "type": "string" },
+        "last_emi_notice_iso": { "type": "string" },
+        "last_utr_number": { "type": "string" },
+        "owner_uid": { "type": "string" },
+        "updatedAt": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "student_id", "student_name", "enrollment_no", "course_name", "batch_name", "total_fee_paise", "paid_fee_paise", "monthly_fee_paise", "emi_installment_paise", "monthly_payment_status", "overdue_months", "auto_emi_active", "emi_billing_date", "next_due_date_iso", "last_emi_notice_iso", "last_utr_number", "owner_uid", "updatedAt", "createdAt"]
+    },
+    "InstituteAuditLogRecord": {
+      "title": "InstituteAuditLogRecord",
+      "description": "Immutable 5-layer UPI cryptographic challenge-response and duplicate UTR fraud audit log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "actor_uid": { "type": "string" },
+        "actor_name": { "type": "string" },
+        "student_id": { "type": "string" },
+        "event_type": { "type": "string" },
+        "severity": { "type": "string", "enum": ["INFO", "WARNING", "CRITICAL"] },
+        "utr_number": { "type": "string" },
+        "intent_hash": { "type": "string" },
+        "device_fingerprint": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actor_uid", "actor_name", "student_id", "event_type", "severity", "utr_number", "intent_hash", "device_fingerprint", "details", "timestamp", "createdAt"]
+    },
+    "UsedUtrLock": {
+      "title": "UsedUtrLock",
+      "description": "Server-side single-use UTR lock preventing duplicate UTR replay fraud.",
+      "type": "object",
+      "properties": {
+        "utr_number": { "type": "string" },
+        "txn_id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "amount_paise": { "type": "integer" },
+        "locked_at_ms": { "type": "integer" }
+      },
+      "required": ["utr_number", "txn_id", "student_id", "amount_paise", "locked_at_ms"]
+    },
+    "TeacherBiometricRecord": {
+      "title": "TeacherBiometricRecord",
+      "description": "Teacher 128-D face biometric template and enrollment status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "enrolledByAdminUid": { "type": "string" },
+        "faceEmbedding": { "type": "array", "items": { "type": "number" } },
+        "biometricEnrolled": { "type": "boolean" },
+        "biometricEnrolledAt": { "type": "integer" }
+      },
+      "required": ["id", "name", "enrolledByAdminUid", "biometricEnrolled", "biometricEnrolledAt"]
+    },
+    "TeacherAttendanceRecord": {
+      "title": "TeacherAttendanceRecord",
+      "description": "Daily teacher 128-D biometric attendance and 10:30 AM auto-absent cutoff record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "dateIso": { "type": "string" },
+        "status": { "type": "string", "enum": ["PRESENT", "ABSENT", "LATE", "LEAVE"] },
+        "verifiedByBiometric": { "type": "boolean" },
+        "timestampMs": { "type": "integer" }
+      },
+      "required": ["id", "teacherId", "teacherName", "dateIso", "status", "verifiedByBiometric", "timestampMs"]
+    },
+    "ImmutableLedgerEntry": {
+      "title": "ImmutableLedgerEntry",
+      "description": "SHA-256 hash-chained append-only financial and academic audit ledger entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sequenceNo": { "type": "integer" },
+        "eventType": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "payloadJson": { "type": "string" },
+        "previousHash": { "type": "string" },
+        "currentHash": { "type": "string" },
+        "timestampMs": { "type": "integer" }
+      },
+      "required": ["id", "sequenceNo", "eventType", "actorUid", "payloadJson", "previousHash", "currentHash", "timestampMs"]
+    },
+    "RateLimitBucket": {
+      "title": "RateLimitBucket",
+      "description": "Server-side rate limit bucket state (35 requests per 60s window with 5-minute cooldown).",
+      "type": "object",
+      "properties": {
+        "count": { "type": "integer" },
+        "windowStartMs": { "type": "integer" },
+        "blockedUntilMs": { "type": "integer" }
+      },
+      "required": ["count", "windowStartMs", "blockedUntilMs"]
+    },
+    "ExamAnswerKey": {
+      "title": "ExamAnswerKey",
+      "description": "Admin/Server-only authoritative master answer key for CBT exams (strictly denied to students).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "examId": { "type": "string" },
+        "examTitle": { "type": "string" },
+        "batchId": { "type": "string" },
+        "answersByMasterQId": { "type": "object" },
+        "questionCount": { "type": "integer" },
+        "ownerUid": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "examId", "answersByMasterQId", "ownerUid"]
     }
   },
   "firestore": {
@@ -492,23 +663,41 @@
     "/students/{studentId}": { "schema": { "$ref": "#/entities/StudentRecord" }, "description": "Students directory." },
     "/enquiries/{enquiryId}": { "schema": { "$ref": "#/entities/AdmissionEnquiry" }, "description": "Admission CRM leads." },
     "/courses/{courseId}": { "schema": { "$ref": "#/entities/CourseRecord" }, "description": "Institute courses and curriculum." },
-    "/batches/{batchId}": { "schema": { "$ref": "#/entities/BatchRecord" }, "description": "Batches and timetable schedules." },
+    "/batches/{batchId}": { "schema": { "$ref": "#/entities/BatchRecord" }, "description": "Batches, timetable schedules, and Batch-Admin Teacher assignments." },
     "/attendance/{attendanceId}": { "schema": { "$ref": "#/entities/AttendanceRecord" }, "description": "Student and staff attendance records." },
     "/fees/{feeId}": { "schema": { "$ref": "#/entities/FeeInvoice" }, "description": "Fee invoices, installments, and receipts." },
+    "/feeInvoices/{invoiceId}": { "schema": { "$ref": "#/entities/FeeInvoice" }, "description": "Structured student fee invoices." },
+    "/feeTransactions/{txnId}": { "schema": { "$ref": "#/entities/FeeInvoice" }, "description": "Immutable fee payment transactions." },
+    "/feesLedger/{ledgerId}": { "schema": { "$ref": "#/entities/LedgerEntry" }, "description": "Institute fee ledger records." },
     "/ledger/{entryId}": { "schema": { "$ref": "#/entities/LedgerEntry" }, "description": "Expenses, vendor bills, and accounting ledger." },
-    "/exams/{examId}": { "schema": { "$ref": "#/entities/ExamRecord" }, "description": "Scheduled exams and question banks." },
-    "/examResults/{resultId}": { "schema": { "$ref": "#/entities/ExamResult" }, "description": "Student exam results and mark sheets." },
+    "/exams/{examId}": { "schema": { "$ref": "#/entities/ExamRecord" }, "description": "Scheduled 24h smart exams and question banks." },
+    "/examAnswerKeys/{examId}": { "schema": { "$ref": "#/entities/ExamAnswerKey" }, "description": "Server/Admin-only authoritative exam master answer keys (denied to students)." },
+    "/examResults/{resultId}": { "schema": { "$ref": "#/entities/ExamResult" }, "description": "Student exam results, exact percentages, and mark sheets." },
+    "/examMarks/{markId}": { "schema": { "$ref": "#/entities/ExamResult" }, "description": "Granular subject-wise exam marks." },
     "/materials/{materialId}": { "schema": { "$ref": "#/entities/StudyMaterial" }, "description": "Study materials, notes, and assignments." },
     "/certificates/{certificateId}": { "schema": { "$ref": "#/entities/CertificateRecord" }, "description": "Issued QR certificates and ID cards." },
     "/staff/{staffId}": { "schema": { "$ref": "#/entities/StaffMember" }, "description": "Faculty and staff directory." },
+    "/teachers/{teacherId}": { "schema": { "$ref": "#/entities/TeacherBiometricRecord" }, "description": "Teacher 128-D face biometric templates." },
+    "/teacherAttendance/{recordId}": { "schema": { "$ref": "#/entities/TeacherAttendanceRecord" }, "description": "Teacher daily biometric attendance logs." },
     "/payroll/{payrollId}": { "schema": { "$ref": "#/entities/PayrollEntry" }, "description": "Staff payroll and leave records." },
+    "/staffPayroll/{payrollId}": { "schema": { "$ref": "#/entities/PayrollEntry" }, "description": "Staff monthly salary disbursement records." },
     "/guardians/{guardianId}": { "schema": { "$ref": "#/entities/GuardianLink" }, "description": "Parent/guardian links and PTM logs." },
     "/announcements/{announcementId}": { "schema": { "$ref": "#/entities/AnnouncementItem" }, "description": "Broadcast notices and announcements." },
+    "/notices/{noticeId}": { "schema": { "$ref": "#/entities/AnnouncementItem" }, "description": "Official institute notice board items." },
+    "/notifications/{notificationId}": { "schema": { "$ref": "#/entities/AnnouncementItem" }, "description": "User and role targeted notifications." },
     "/liveClasses/{liveClassId}": { "schema": { "$ref": "#/entities/LiveClassSession" }, "description": "Live classes and lab bookings." },
     "/aiLogs/{aiLogId}": { "schema": { "$ref": "#/entities/AiInteractionLog" }, "description": "AI Tutor logs and token usage." },
     "/assets/{assetId}": { "schema": { "$ref": "#/entities/InventoryAsset" }, "description": "Lab PCs, library books, and assets." },
+    "/inventory/{assetId}": { "schema": { "$ref": "#/entities/InventoryAsset" }, "description": "Hardware and lab inventory registry." },
     "/tickets/{ticketId}": { "schema": { "$ref": "#/entities/SupportTicket" }, "description": "Helpdesk tickets and NPS feedback." },
     "/auditLogs/{auditId}": { "schema": { "$ref": "#/entities/SecurityAuditLog" }, "description": "Immutable security audit trail." },
-    "/backups/{backupId}": { "schema": { "$ref": "#/entities/InstituteBackupOrConfig" }, "description": "Backup snapshots and global institute settings." }
+    "/securityAlerts/{alertId}": { "schema": { "$ref": "#/entities/SecurityAuditLog" }, "description": "Real-time RASP and tamper security alerts." },
+    "/immutableLedger/{eventId}": { "schema": { "$ref": "#/entities/ImmutableLedgerEntry" }, "description": "SHA-256 hash-chained immutable ledger." },
+    "/rateLimits/{bucketId}": { "schema": { "$ref": "#/entities/RateLimitBucket" }, "description": "Server-side rate limiter buckets." },
+    "/backups/{backupId}": { "schema": { "$ref": "#/entities/InstituteBackupOrConfig" }, "description": "Backup snapshots and global institute settings." },
+    "/upi_transactions/{txnId}": { "schema": { "$ref": "#/entities/UpiTransactionRecord" }, "description": "Zero-Fee Direct UPI Intent transactions with 5-layer HMAC-SHA256 verification, SHA-256 hash-chain, and Admin 1-Tap confirmation." },
+    "/student_fees_ledger/{studentId}": { "schema": { "$ref": "#/entities/StudentFeesLedgerRecord" }, "description": "Student monthly fee and 4-month overdue Auto-EMI ledger." },
+    "/institute_audit_logs/{logId}": { "schema": { "$ref": "#/entities/InstituteAuditLogRecord" }, "description": "Immutable UPI cryptographic security and duplicate UTR audit trail." },
+    "/used_utr_locks/{utrNumber}": { "schema": { "$ref": "#/entities/UsedUtrLock" }, "description": "Server-side single-use UTR lock index preventing duplicate UTR replay fraud." }
   }
 }

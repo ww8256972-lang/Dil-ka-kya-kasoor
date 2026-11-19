@@ -1,16 +1,16 @@
 package quantum_physical_shield
 
+import android.graphics.Bitmap
 import java.security.MessageDigest
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
  * 1. `quantum_physical_shield/PrnuSensorFingerprint.kt`
- * Camera CMOS Sensor Photo-Response Non-Uniformity (PRNU) Wavelet Noise Extractor.
+ * Real Camera CMOS Sensor Photo-Response Non-Uniformity (PRNU) Wavelet Noise Extractor.
  *
- * Applies a 2D spatial high-pass Haar/Laplacian wavelet residual filter (`W = I - Denoised(I)`)
- * to extract physical silicon photon-response non-uniformity noise and reject flat synthetic
- * virtual-camera frames or zero-noise deepfake buffers.
+ * Operates exclusively on real unmodified CameraX / Bitmap luminance buffers (zero synthetic
+ * noise injection) to extract 2D spatial high-pass residual patterns and reject flat/virtual frames.
  */
 object PrnuSensorFingerprint {
 
@@ -20,6 +20,34 @@ object PrnuSensorFingerprint {
         val normalizedCorrelation: Double,
         val isAuthenticPhysicalCmos: Boolean
     )
+
+    /**
+     * Extracts unmodified Rec.601 luminance directly from a live camera [Bitmap] and runs
+     * 2D wavelet PRNU residual extraction without injecting any synthetic offsets.
+     */
+    fun extractFromBitmap(
+        bitmap: Bitmap,
+        sampleDim: Int = 32,
+        referencePrnuResidual: FloatArray? = null
+    ): PrnuAuditResult {
+        val dim = sampleDim.coerceIn(8, 64)
+        val scaled = runCatching {
+            if (bitmap.width == dim && bitmap.height == dim) bitmap
+            else Bitmap.createScaledBitmap(bitmap, dim, dim, true)
+        }.getOrDefault(bitmap)
+        val w = scaled.width.coerceAtLeast(4)
+        val h = scaled.height.coerceAtLeast(4)
+        val pixels = IntArray(w * h)
+        runCatching { scaled.getPixels(pixels, 0, w, 0, 0, w, h) }
+        val luminance = FloatArray(w * h) { i ->
+            val px = pixels[i]
+            val r = (px shr 16) and 0xFF
+            val g = (px shr 8) and 0xFF
+            val b = px and 0xFF
+            0.299f * r + 0.587f * g + 0.114f * b
+        }
+        return extractAndVerifyPrnu(luminance, w, h, referencePrnuResidual)
+    }
 
     /**
      * Extracts the 2D high-pass PRNU residual matrix from a grayscale luminance frame (`width x height`)
@@ -43,7 +71,6 @@ object PrnuSensorFingerprint {
             for (x in 1 until width - 1) {
                 val idx = y * width + x
                 val center = luminanceFrame[idx]
-                // 3x3 local wavelet denoised approximation
                 val localMean = (
                     luminanceFrame[(y - 1) * width + x] +
                     luminanceFrame[(y + 1) * width + x] +

@@ -77,17 +77,31 @@ class ExamViewModel(
         // Maha Brahmastra #4: Arm 2-second continuous C++ anti-Frida/ptrace watchdog
         runCatching { com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(true) }
 
-        // Kiosk Lock Task Mode: Pin / lock the exam screen during active assessment
+        // Kiosk Lock Task Mode + [A1] HDMI/USB-C/Miracast/Chromecast External Display Blocker
         val kioskActive = engageAndroidKioskLockTaskMode(activity)
+        var externalDisplayViolation: String? = null
+        if (activity != null) {
+            com.waqar.institute.security.ExamDisplayAndKioskShield.engageExamKioskAndDisplayWatchdog(
+                activity = activity,
+                onExternalDisplayDetected = { reason ->
+                    externalDisplayViolation = reason
+                    _examState.value = _examState.value.copy(
+                        isMultiWindowBlocked = true,
+                        securityAlertBanner = "DISPLAY SHIELD BLOCK: $reason"
+                    )
+                }
+            )
+        }
 
         // Rule 3: Check multi-window / split-screen mode
-        val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        val inMultiWindow = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             activity?.isInMultiWindowMode == true
-        } else false
+        } else false) || externalDisplayViolation != null
 
         // Rule 4: Hardware & Root posture check
         val posture = activity?.let { EnterpriseRaspGuard.auditDeviceSecurity(it) }
         val securityWarning = when {
+            externalDisplayViolation != null -> "DISPLAY SHIELD BLOCK: $externalDisplayViolation"
             inMultiWindow -> "ANTI-CHEAT BLOCK: Split-Screen / Pop-Up View detected! Exit multi-window immediately."
             posture?.isCompromised == true -> "SECURITY ALERT: Root / Magisk binary detected on device."
             else -> null
@@ -253,6 +267,9 @@ class ExamViewModel(
     fun releaseExamSecurityShield(activity: Activity?) {
         val targetActivity = activity ?: activeExamActivityRef?.get()
         targetActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (targetActivity != null) {
+            com.waqar.institute.security.ExamDisplayAndKioskShield.releaseExamKioskAndDisplayWatchdog(targetActivity)
+        }
         disengageAndroidKioskLockTaskMode(targetActivity)
         runCatching { com.waqar.institute.security.NativeSecurityBridge.armHighSecurityExamWatchdog(false) }
         activeExamActivityRef = null

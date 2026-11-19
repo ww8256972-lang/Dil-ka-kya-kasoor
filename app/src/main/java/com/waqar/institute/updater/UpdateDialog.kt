@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import com.example.ui.designsystem.JetBrainsMono
 import com.example.ui.designsystem.WciColors
+import kotlinx.coroutines.launch
 
 /**
  * Non-Cancelable Material 3 Jetpack Compose OTA Update Dialog (`UpdateDialog.kt`).
@@ -50,8 +51,10 @@ fun UpdateDialog(
     onUpdateStarted: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var isLaunchingUpdate by remember { mutableStateOf(false) }
     var progressValue by remember { mutableFloatStateOf(0f) }
+    var statusLabel by remember { mutableStateOf("Downloading & Verifying Official Release APK…") }
 
     AlertDialog(
         onDismissRequest = { /* Non-cancelable mandatory update dialog */ },
@@ -123,7 +126,7 @@ fun UpdateDialog(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Opening Official GitHub Release…",
+                                text = statusLabel,
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = WciColors.Success
                                 )
@@ -152,10 +155,32 @@ fun UpdateDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    isLaunchingUpdate = true
-                    progressValue = 1.0f
-                    GitHubOtaUpdater.launchOfficialReleaseUpdate(context, releaseInfo)
-                    onUpdateStarted()
+                    if (!isLaunchingUpdate) {
+                        isLaunchingUpdate = true
+                        progressValue = 0.05f
+                        onUpdateStarted()
+                        if (releaseInfo.assetUrl.endsWith(".apk", ignoreCase = true)) {
+                            scope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                                val result = GitHubOtaUpdater.downloadAndInstallReleaseApkInApp(
+                                    context = context,
+                                    releaseInfo = releaseInfo,
+                                    onProgress = { pct -> progressValue = pct }
+                                )
+                                if (result.isFailure) {
+                                    statusLabel = "Opening Official GitHub Release…"
+                                    progressValue = 1.0f
+                                    GitHubOtaUpdater.launchOfficialReleaseUpdate(context, releaseInfo)
+                                } else {
+                                    statusLabel = "Verified SHA-256 & Certificate Pin — Launching Installer…"
+                                    progressValue = 1.0f
+                                }
+                            }
+                        } else {
+                            statusLabel = "Opening Official GitHub Release…"
+                            progressValue = 1.0f
+                            GitHubOtaUpdater.launchOfficialReleaseUpdate(context, releaseInfo)
+                        }
+                    }
                 },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(

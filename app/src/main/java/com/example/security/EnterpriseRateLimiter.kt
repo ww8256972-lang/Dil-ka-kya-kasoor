@@ -21,7 +21,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object EnterpriseRateLimiter {
 
-    const val MAX_REQUESTS_PER_WINDOW: Int = 5
+    const val MAX_REQUESTS_PER_WINDOW: Int = 35
+    const val STRICT_BRUTE_FORCE_LIMIT: Int = 5
     const val WINDOW_MS: Long = 60_000L          // 60 seconds
     const val BLOCK_DURATION_MS: Long = 300_000L // 5 minutes (300 seconds)
     const val HTTP_TOO_MANY_REQUESTS: Int = 429
@@ -82,15 +83,15 @@ object EnterpriseRateLimiter {
     fun buildBucketKey(scope: RateLimitScope, identityKey: String): String =
         "${scope.code}:${normalizeIdentityKey(identityKey)}"
 
+    private fun resolveEffectiveLimit(bucketKey: String): Int =
+        if (bucketKey.contains("brute_target") || bucketKey.contains("concurrent_actor")) {
+            STRICT_BRUTE_FORCE_LIMIT
+        } else {
+            MAX_REQUESTS_PER_WINDOW
+        }
+
     /**
      * Atomically evaluates and records a request against `(scope, identityKey)`.
-     *
-     * - Requests 1..5 inside a 60-second window -> `allowed = true`, `httpStatus = 200`.
-     * - Request 6 inside the same 60-second window -> `allowed = false`, `httpStatus = 429`,
-     *   and locks the bucket for 5 minutes (`nowEpochMs + 300_000L`).
-     * - Any request while `nowEpochMs < blockedUntilEpochMs` -> `allowed = false`, `httpStatus = 429`.
-     * - First request after `nowEpochMs >= blockedUntilEpochMs` -> resets bucket and starts a new
-     *   60-second window at `count = 1`, `allowed = true`.
      */
     fun checkAndConsume(
         context: Context?,
@@ -99,6 +100,7 @@ object EnterpriseRateLimiter {
         nowEpochMs: Long = System.currentTimeMillis()
     ): RateLimitDecision {
         val bucketKey = buildBucketKey(scope, identityKey)
+        val effectiveLimit = resolveEffectiveLimit(bucketKey)
         val lock = lockFor(bucketKey)
 
         return synchronized(lock) {
@@ -130,8 +132,8 @@ object EnterpriseRateLimiter {
             val windowStart = if (isNewWindow) nowEpochMs else current!!.windowStartEpochMs
             val nextCount = if (isNewWindow) 1 else (current!!.count + 1)
 
-            // 3. Enforce max 5 requests per 60-second window; 6th request triggers 5-minute block
-            if (nextCount > MAX_REQUESTS_PER_WINDOW) {
+            // 3. Enforce max requests per 60-second window; exceeding triggers 5-minute block
+            if (nextCount > effectiveLimit) {
                 val blockedUntil = nowEpochMs + BLOCK_DURATION_MS
                 val blockedState = BucketState(
                     count = nextCount,
@@ -148,19 +150,19 @@ object EnterpriseRateLimiter {
                     remainingInWindow = 0,
                     blockedUntilEpochMs = blockedUntil,
                     retryAfterSeconds = retryAfterSec,
-                    message = "HTTP 429 Too Many Requests: Maximum $MAX_REQUESTS_PER_WINDOW requests per 60s exceeded " +
+                    message = "HTTP 429 Too Many Requests: Maximum $effectiveLimit requests per 60s exceeded " +
                         "for ${scope.displayLabel}. Temporarily blocked for ${retryAfterSec}s (5 minutes)."
                 )
             }
 
-            // 4. Request 1..5 within 60-second window -> Allow & persist atomically
+            // 4. Request within 60-second window -> Allow & persist atomically
             val updatedState = BucketState(
                 count = nextCount,
                 windowStartEpochMs = windowStart,
                 blockedUntilEpochMs = 0L
             )
             saveBucketState(prefs, bucketKey, updatedState)
-            val remaining = (MAX_REQUESTS_PER_WINDOW - nextCount).coerceAtLeast(0)
+            val remaining = (effectiveLimit - nextCount).coerceAtLeast(0)
             RateLimitDecision(
                 allowed = true,
                 httpStatus = HTTP_OK,
@@ -184,6 +186,7 @@ object EnterpriseRateLimiter {
         nowEpochMs: Long = System.currentTimeMillis()
     ): RateLimitDecision {
         val bucketKey = buildBucketKey(scope, identityKey)
+        val effectiveLimit = resolveEffectiveLimit(bucketKey)
         val lock = lockFor(bucketKey)
         return synchronized(lock) {
             val prefs = resolveEncryptedPrefs(context)
@@ -211,7 +214,7 @@ object EnterpriseRateLimiter {
                 httpStatus = HTTP_OK,
                 bucketKey = bucketKey,
                 attemptCountInWindow = activeCount,
-                remainingInWindow = (MAX_REQUESTS_PER_WINDOW - activeCount).coerceAtLeast(0),
+                remainingInWindow = (effectiveLimit - activeCount).coerceAtLeast(0),
                 blockedUntilEpochMs = 0L,
                 retryAfterSeconds = 0L,
                 message = "OK"

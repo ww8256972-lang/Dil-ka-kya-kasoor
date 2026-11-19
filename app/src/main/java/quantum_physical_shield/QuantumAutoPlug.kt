@@ -1,16 +1,17 @@
 package quantum_physical_shield
 
 import android.content.Context
+import android.os.Build
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 6. `quantum_physical_shield/QuantumAutoPlug.kt`
  * Zero-Config Self-Executing Entry Point (`autoArmQuantumShield()`) wiring:
- * - `PrnuSensorFingerprint`
- * - `UltrasonicSonarLiveness`
- * - `ThermalClockDriftEngine`
- * - `PoincareHyperbolicVault`
- * - `KolmogorovTouchTopology`
+ * - Real `PowerManager.currentThermalStatus` via `ThermalClockDriftEngine`
+ * - Real Google Tink AES-256-GCM + Android Keystore via `PoincareHyperbolicVault`
+ * - Real Hardware Posture Baseline Digest (ZERO synthetic fake camera frames; real PRNU
+ *   calibration runs only when live CameraX frames arrive in `PrnuSensorFingerprint.extractFromBitmap`).
  */
 object QuantumAutoPlug {
 
@@ -26,26 +27,31 @@ object QuantumAutoPlug {
     private var lastStatus: QuantumShieldStatus? = null
 
     fun autoArmQuantumShield(context: Context? = null): QuantumShieldStatus {
-        val thermal = ThermalClockDriftEngine.runMicroMatrixThermalCalibration(12)
+        context?.let { PoincareHyperbolicVault.bindContext(it) }
+        val thermal = ThermalClockDriftEngine.runMicroMatrixThermalCalibration(12, context)
         val poincareEntry = PoincareHyperbolicVault.sealSecretInPoincareDisk(
             keyAlias = "wci_quantum_session_seed",
             secretText = "QUANTUM_SHIELD_ACTIVE_${context?.packageName ?: "wci_erp"}"
         )
-        val syntheticSensorFrame = FloatArray(16 * 16) { idx ->
-            128f + ((idx * 37) % 11) * 0.17f - ((idx * 13) % 7) * 0.11f
+
+        // Compute real hardware posture digest (no fabricated synthetic camera sensor frame)
+        val hardwareDescriptor = buildString {
+            append(Build.HARDWARE ?: "unknown_hw").append('|')
+            append(Build.BOARD ?: "unknown_board").append('|')
+            append(Build.MANUFACTURER ?: "unknown_mfg").append('|')
+            append(thermal.hardwareThermalStatus).append('|')
+            append(context?.packageName ?: "wci_erp")
         }
-        val prnu = PrnuSensorFingerprint.extractAndVerifyPrnu(
-            luminanceFrame = syntheticSensorFrame,
-            width = 16,
-            height = 16
-        )
+        val hardwareDigestHex = MessageDigest.getInstance("SHA-256")
+            .digest(hardwareDescriptor.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 
         isArmed.set(true)
         val status = QuantumShieldStatus(
             armed = true,
             thermalDriftVerified = thermal.isPhysicalSiliconThermodynamics,
-            poincareSessionSealed = poincareEntry.transformedPoints.isNotEmpty(),
-            prnuBaselineDigestHex = prnu.prnuDigestHex
+            poincareSessionSealed = poincareEntry.tinkAeadCiphertext.isNotEmpty() && poincareEntry.transformedPoints.isNotEmpty(),
+            prnuBaselineDigestHex = hardwareDigestHex
         )
         lastStatus = status
         return status

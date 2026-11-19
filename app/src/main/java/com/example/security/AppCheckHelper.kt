@@ -11,8 +11,8 @@ import android.view.WindowManager
 import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.appcheck.AppCheckProviderFactory
 import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import java.io.File
 
@@ -21,6 +21,8 @@ private const val TAG = "AppCheckInit"
 private const val DEBUG_TOKEN_EXTRA = "FIREBASE_APPCHECK_DEBUG_TOKEN"
 private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store."
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
+private const val DEBUG_PROVIDER_CLASS =
+    "com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory"
 
 fun ensureFirebaseInitialized(context: Context) {
     val appCtx = context.applicationContext ?: context
@@ -57,54 +59,65 @@ enum class AppCheckDistributionStrategy {
 
 fun resolveReleaseAppCheckStrategy(customTokenOrMode: String? = null): AppCheckDistributionStrategy {
     val cleanMode = customTokenOrMode?.trim().orEmpty()
-    return if (cleanMode.equals("PLAY_INTEGRITY", ignoreCase = true)) {
-        AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK
-    } else {
+    if (cleanMode.equals("PLAY_INTEGRITY", ignoreCase = true)) {
+        return AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK
+    }
+    return if (BuildConfig.DEBUG) {
         AppCheckDistributionStrategy.DEBUG_PROVIDER
+    } else {
+        AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK
     }
 }
 
+private fun instantiateDebugAppCheckProviderFactoryOrNull(): AppCheckProviderFactory? {
+    if (!BuildConfig.DEBUG) return null
+    return runCatching {
+        val clazz = Class.forName(DEBUG_PROVIDER_CLASS)
+        val getInstanceMethod = clazz.getMethod("getInstance")
+        getInstanceMethod.invoke(null) as? AppCheckProviderFactory
+    }.getOrNull()
+}
+
 /**
- * Configures Firebase App Check for Debug and Sideloaded Release APKs (shared via GitHub/WhatsApp/Telegram).
- * Uses DebugAppCheckProviderFactory so sideloaded APKs distributed outside Google Play Store are never
- * blocked by Play Integrity prompts.
+ * Configures Firebase App Check:
+ * - Debug builds (`BuildConfig.DEBUG == true`): resolves `DebugAppCheckProviderFactory` (scoped via
+ *   `debugImplementation`) so debug/emulator runs authenticate cleanly.
+ * - Release builds (`BuildConfig.DEBUG == false`): installs `PlayIntegrityAppCheckProviderFactory`
+ *   with zero debug App Check code packaged in Release APKs.
  */
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
         ensureFirebaseInitialized(context)
 
-        val debugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)
-        if (!debugToken.isNullOrEmpty()) {
-            val persistenceKey = FirebaseApp.getInstance().persistenceKey
-            val prefs = context.getSharedPreferences(
-                "$DEBUG_STORE_PREFIX$persistenceKey",
-                Context.MODE_PRIVATE
-            )
-            prefs.edit()
-                .putString(DEBUG_SECRET_KEY, debugToken)
-                .commit()
-            Log.d(TAG, "App Check debug/sideload secret configured successfully.")
+        if (BuildConfig.DEBUG) {
+            val debugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)
+            if (!debugToken.isNullOrEmpty()) {
+                val persistenceKey = FirebaseApp.getInstance().persistenceKey
+                val prefs = context.getSharedPreferences(
+                    "$DEBUG_STORE_PREFIX$persistenceKey",
+                    Context.MODE_PRIVATE
+                )
+                prefs.edit()
+                    .putString(DEBUG_SECRET_KEY, debugToken)
+                    .commit()
+                Log.d(TAG, "App Check debug secret configured successfully.")
+            }
         }
 
-        when (resolveReleaseAppCheckStrategy(null)) {
-            AppCheckDistributionStrategy.PLAY_INTEGRITY_FALLBACK -> {
-                runCatching {
-                    FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                        PlayIntegrityAppCheckProviderFactory.getInstance()
-                    )
-                }.onFailure {
-                    FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                        DebugAppCheckProviderFactory.getInstance()
-                    )
-                }
-            }
-            AppCheckDistributionStrategy.DEBUG_PROVIDER -> {
-                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                    DebugAppCheckProviderFactory.getInstance()
-                )
-                Log.d(TAG, "DebugAppCheckProviderFactory installed for sideload-ready APK.")
+        val strategy = resolveReleaseAppCheckStrategy(null)
+        if (strategy == AppCheckDistributionStrategy.DEBUG_PROVIDER && BuildConfig.DEBUG) {
+            val debugFactory = instantiateDebugAppCheckProviderFactoryOrNull()
+            if (debugFactory != null) {
+                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(debugFactory)
+                Log.d(TAG, "DebugAppCheckProviderFactory installed for debug build.")
+                return
             }
         }
+
+        FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
+            PlayIntegrityAppCheckProviderFactory.getInstance()
+        )
+        Log.d(TAG, "PlayIntegrityAppCheckProviderFactory installed.")
     } catch (e: Exception) {
         Log.e(TAG, "Failed to initialize Firebase App Check", e)
     }

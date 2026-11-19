@@ -326,7 +326,7 @@ interface GatewayRateLimiter {
  * - After 5-minute block expires -> Resets and allows fresh 60s window.
  */
 class InMemoryGatewayRateLimiter(
-    private val maxRequestsPerWindow: Int = 5,
+    private val maxRequestsPerWindow: Int = 35,
     private val windowMs: Long = 60_000L,
     private val blockDurationMs: Long = 300_000L,
     private val clockMs: () -> Long = { System.currentTimeMillis() },
@@ -337,6 +337,7 @@ class InMemoryGatewayRateLimiter(
 
     override fun checkAndConsume(bucketKey: String, nowMs: Long): GatewayRateLimitStatus {
         val now = if (nowMs > 0L) nowMs else clockMs()
+        val effectiveMax = if (bucketKey.startsWith("session_exchange:")) 5 else maxRequestsPerWindow
         val lock = locks.computeIfAbsent(bucketKey) { Any() }
         return synchronized(lock) {
             val current = buckets[bucketKey]
@@ -349,13 +350,13 @@ class InMemoryGatewayRateLimiter(
                 (now - current.windowStartMs >= windowMs)
             val windowStart = if (isNewWindow) now else current!!.windowStartMs
             val nextCount = if (isNewWindow) 1 else (current!!.count + 1)
-            if (nextCount > maxRequestsPerWindow) {
+            if (nextCount > effectiveMax) {
                 val blockedUntil = now + blockDurationMs
                 buckets[bucketKey] = Bucket(nextCount, windowStart, blockedUntil)
                 val retryAfterSec = blockDurationMs / 1000L
                 throw Denied(
                     429,
-                    "HTTP 429 Too Many Requests: Rate limit exceeded (max $maxRequestsPerWindow requests per 60s). Blocked for ${retryAfterSec}s.",
+                    "HTTP 429 Too Many Requests: Rate limit exceeded (max $effectiveMax requests per 60s). Blocked for ${retryAfterSec}s.",
                 )
             }
             buckets[bucketKey] = Bucket(nextCount, windowStart, 0L)

@@ -93,7 +93,10 @@ object StudentFaceEnrollmentManager {
         require(hasMandatoryLandmarks(face)) {
             "Face landmarks unclear in admission portrait. Upload a well-lit front-facing photo."
         }
-        val vector = extractNormalizedGeometryVector(face)
+        val vector = com.waqar.institute.biometric.FaceBiometricVerificationEngine
+            .extractUnified128DFaceIdentityEmbedding(bitmap, face)
+            .takeIf { com.waqar.institute.biometric.FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
+            ?: extractNormalizedGeometryVector(face)
         val template = EnrolledFaceTemplate(
             studentId = studentId,
             featureVector = vector,
@@ -147,13 +150,20 @@ object StudentFaceEnrollmentManager {
             throw SecurityException("Liveness Check Failed: Keep both eyes clearly open facing the camera.")
         }
 
-        val liveVector = extractNormalizedGeometryVector(liveFace)
+        val liveUnified128D = com.waqar.institute.biometric.FaceBiometricVerificationEngine
+            .extractUnified128DFaceIdentityEmbedding(liveSelfieBitmap, liveFace)
+            .takeIf { com.waqar.institute.biometric.FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
+            ?: extractNormalizedGeometryVector(liveFace)
 
         // Retrieve stored template or extract from Admin-enrolled admissionPhotoDataUri
-        val storedTemplate = loadTemplateFromVault(context, studentId)
-            ?: if (admissionPhotoDataUri.isNotBlank()) {
-                enrollFaceFromPhotoDataUri(context, studentId, admissionPhotoDataUri).getOrNull()
-            } else null
+        val cachedTemplate = loadTemplateFromVault(context, studentId)
+        val storedTemplate = if (cachedTemplate != null && cachedTemplate.featureVector.size == liveUnified128D.size) {
+            cachedTemplate
+        } else if (admissionPhotoDataUri.isNotBlank()) {
+            enrollFaceFromPhotoDataUri(context, studentId, admissionPhotoDataUri).getOrNull() ?: cachedTemplate
+        } else {
+            cachedTemplate
+        }
 
         if (storedTemplate == null) {
             throw SecurityException(
@@ -161,7 +171,16 @@ object StudentFaceEnrollmentManager {
             )
         }
 
-        val similarity = computeCosineSimilarity(storedTemplate.featureVector, liveVector)
+        val liveVectorForComparison = if (storedTemplate.featureVector.size == 12 && liveUnified128D.size != 12) {
+            extractNormalizedGeometryVector(liveFace)
+        } else {
+            liveUnified128D
+        }
+
+        val similarity = com.waqar.institute.biometric.FaceBiometricVerificationEngine.computeCosineSimilaritySafe(
+            storedTemplate.featureVector,
+            liveVectorForComparison
+        )
         if (similarity < similarityThreshold) {
             throw SecurityException(
                 "Biometric Face Mismatch (${(similarity * 100).toInt()}% < ${(similarityThreshold * 100).toInt()}%): Only the registered student can take this exam."
@@ -260,7 +279,7 @@ object StudentFaceEnrollmentManager {
         }
         raw ?: return null
         val floats = raw.split(",").mapNotNull { it.toFloatOrNull() }.toFloatArray()
-        if (floats.size != 12) return null
+        if (floats.size != 128 && floats.size != 12) return null
         return EnrolledFaceTemplate(
             studentId = studentId,
             featureVector = floats,

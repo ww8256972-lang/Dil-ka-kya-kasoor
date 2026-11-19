@@ -137,7 +137,9 @@ data class PortalCredential(
     @get:PropertyName("isParent") @PropertyName("isParent") val isParent: Boolean = false,
     @get:PropertyName("isAdmin") @PropertyName("isAdmin") val isAdmin: Boolean = false,
     val portalRoles: List<String> = emptyList(),
-    val createdAt: Timestamp = Timestamp.now()
+    val createdAt: Timestamp = Timestamp.now(),
+    val pbkdf2ParityHash: String = "",
+    val pbkdf2ParitySalt: String = ""
 ) {
     fun effectivePortalRoles(): List<String> {
         val set = linkedSetOf<String>()
@@ -160,7 +162,7 @@ data class PortalCredential(
 
     fun toMap(): Map<String, Any> {
         val roles = effectivePortalRoles()
-        return mapOf(
+        val map = mutableMapOf<String, Any>(
             "username" to username,
             "passwordHash" to passwordHash,
             "passwordSalt" to passwordSalt,
@@ -176,6 +178,9 @@ data class PortalCredential(
             "portalRoles" to roles,
             "createdAt" to createdAt
         )
+        if (pbkdf2ParityHash.isNotBlank()) map["pbkdf2ParityHash"] = pbkdf2ParityHash
+        if (pbkdf2ParitySalt.isNotBlank()) map["pbkdf2ParitySalt"] = pbkdf2ParitySalt
+        return map
     }
 }
 
@@ -291,6 +296,10 @@ data class BatchRecord(
     val courseName: String = "",
     val teacherId: String = "",
     val teacherName: String = "",
+    val batchAdminTeacherId: String = "",
+    val batchAdminTeacherName: String = "",
+    val canBatchAdminTakeAttendance: Boolean = true,
+    val canBatchAdminScheduleExams: Boolean = true,
     val roomName: String = "",
     val daysOfWeek: String = "Mon-Sat",
     val startTime: String = "09:00",
@@ -309,6 +318,10 @@ data class BatchRecord(
         "courseName" to courseName,
         "teacherId" to teacherId,
         "teacherName" to teacherName,
+        "batchAdminTeacherId" to batchAdminTeacherId,
+        "batchAdminTeacherName" to batchAdminTeacherName,
+        "canBatchAdminTakeAttendance" to canBatchAdminTakeAttendance,
+        "canBatchAdminScheduleExams" to canBatchAdminScheduleExams,
         "roomName" to roomName,
         "daysOfWeek" to daysOfWeek,
         "startTime" to startTime,
@@ -428,9 +441,15 @@ data class ExamRecord(
     val title: String = "",
     val courseId: String = "",
     val courseName: String = "",
+    val batchId: String = "",
     val batchName: String = "",
     val examType: String = "MCQ_ONLINE",
     val durationMinutes: Int = 60,
+    val durationSeconds: Int = 0, // Supports exact seconds (e.g., 30s) OR minutes (45 * 60 = 2700s)
+    val startTime24h: String = "10:00", // Strict 24-hour clock format "HH:mm" (00:00..23:59)
+    val scheduledStartEpochMs: Long = 0L, // Exact UTC epoch when exam unlocks
+    val autoAssignLabPcSeats: Boolean = true, // Auto-allots PC-01..PC-30 on Student Admit Card
+    val createdByRole: String = "admin", // "admin" or "batch_admin_teacher"
     val totalMarks: Int = 100,
     val passingMarks: Int = 40,
     val scheduledDateIso: String = "",
@@ -439,14 +458,23 @@ data class ExamRecord(
     val ownerUid: String = "",
     val createdAt: Timestamp = Timestamp.now()
 ) {
+    val effectiveDurationSeconds: Int
+        get() = if (durationSeconds > 0) durationSeconds else (durationMinutes.coerceAtLeast(1) * 60)
+
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
         "title" to title,
         "courseId" to courseId,
         "courseName" to courseName,
+        "batchId" to batchId,
         "batchName" to batchName,
         "examType" to examType,
         "durationMinutes" to durationMinutes,
+        "durationSeconds" to effectiveDurationSeconds,
+        "startTime24h" to startTime24h,
+        "scheduledStartEpochMs" to scheduledStartEpochMs,
+        "autoAssignLabPcSeats" to autoAssignLabPcSeats,
+        "createdByRole" to createdByRole,
         "totalMarks" to totalMarks,
         "passingMarks" to passingMarks,
         "scheduledDateIso" to scheduledDateIso,
@@ -465,28 +493,49 @@ data class ExamResult(
     val studentName: String = "",
     val marksObtained: Int = 0,
     val totalMarks: Int = 100,
+    val exactPercentage: Double = 0.0,
+    val formattedPercentage: String = "",
+    val correctCount: Int = 0,
+    val totalQuestions: Int = 0,
     val grade: String = "A",
     val rank: Int = 1,
     val status: String = "PASSED",
     val remarks: String = "",
     val ownerUid: String = "",
-    val createdAt: Timestamp = Timestamp.now()
+    val createdAt: Timestamp = Timestamp.now(),
+    val hashChainHead: String = ""
 ) {
-    fun toMap(): Map<String, Any> = mapOf(
-        "id" to id,
-        "examId" to examId,
-        "examTitle" to examTitle,
-        "studentId" to studentId,
-        "studentName" to studentName,
-        "marksObtained" to marksObtained,
-        "totalMarks" to totalMarks,
-        "grade" to grade,
-        "rank" to rank,
-        "status" to status,
-        "remarks" to remarks,
-        "ownerUid" to ownerUid,
-        "createdAt" to createdAt
-    )
+    fun toMap(): Map<String, Any> {
+        val computedPct = if (exactPercentage > 0.0 || marksObtained == 0) {
+            exactPercentage
+        } else {
+            (marksObtained.toDouble() * 100.0) / totalMarks.coerceAtLeast(1).toDouble()
+        }
+        val pctLabel = formattedPercentage.ifBlank {
+            "${(kotlin.math.round(computedPct * 100.0) / 100.0)}%"
+        }
+        val map = mutableMapOf<String, Any>(
+            "id" to id,
+            "examId" to examId,
+            "examTitle" to examTitle,
+            "studentId" to studentId,
+            "studentName" to studentName,
+            "marksObtained" to marksObtained,
+            "totalMarks" to totalMarks,
+            "exactPercentage" to computedPct,
+            "formattedPercentage" to pctLabel,
+            "correctCount" to correctCount,
+            "totalQuestions" to totalQuestions,
+            "grade" to grade,
+            "rank" to rank,
+            "status" to status,
+            "remarks" to remarks,
+            "ownerUid" to ownerUid,
+            "createdAt" to createdAt
+        )
+        if (hashChainHead.isNotBlank()) map["hashChainHead"] = hashChainHead
+        return map
+    }
 }
 
 data class StudyMaterial(

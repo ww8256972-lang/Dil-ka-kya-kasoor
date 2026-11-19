@@ -100,7 +100,7 @@ import kotlin.math.sqrt
 object AdminFaceConversionAndGateManager {
 
     const val ROUTE_ADMIN_CONVERSION = "M26_ADMIN_CONVERSION"
-    const val MASTER_ADMIN_ASSET_FILE = "admin_master_face_waqar.jpg"
+    const val ADMIN_FACES_COLLECTION = "adminFaces"
     const val MASTER_ADMIN_DOC_ID = "admin_waqar_master"
     const val ADMIN_FACE_DOC_PREFIX = "admin_"
     const val ADMIN_COSINE_MATCH_THRESHOLD = 0.85f
@@ -158,15 +158,53 @@ object AdminFaceConversionAndGateManager {
     }
 
     /**
-     * Loads the bundled Master Admin photo (`assets/admin_master_face_waqar.jpg`) attached by the user.
+     * Generates a cryptographically strong 12-character one-time password containing uppercase,
+     * lowercase, digit, and special symbol characters using `SecureRandom`.
      */
-    fun loadBundledMasterAdminBitmap(context: Context): Bitmap? {
-        return runCatching {
-            context.assets.open(MASTER_ADMIN_ASSET_FILE).use { input ->
-                BitmapFactory.decodeStream(input)
-            }
-        }.getOrNull()
+    fun generateSecureOneTimeAdminPassword(): String {
+        val upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+        val lower = "abcdefghijkmnopqrstuvwxyz"
+        val digits = "23456789"
+        val symbols = "@#\$%&*!?"
+        val all = upper + lower + digits + symbols
+        val rng = java.security.SecureRandom()
+        val chars = CharArray(12)
+        chars[0] = upper[rng.nextInt(upper.length)]
+        chars[1] = lower[rng.nextInt(lower.length)]
+        chars[2] = digits[rng.nextInt(digits.length)]
+        chars[3] = symbols[rng.nextInt(symbols.length)]
+        for (i in 4 until chars.size) {
+            chars[i] = all[rng.nextInt(all.length)]
+        }
+        // Fisher-Yates shuffle
+        for (i in chars.lastIndex downTo 1) {
+            val j = rng.nextInt(i + 1)
+            val tmp = chars[i]
+            chars[i] = chars[j]
+            chars[j] = tmp
+        }
+        return String(chars)
     }
+
+    /**
+     * Enforces strong Admin password complexity: at least 10 characters with uppercase, lowercase,
+     * digit, and special character.
+     */
+    fun isStrongAdminPassword(password: String): Boolean {
+        if (password.length < 10) return false
+        val hasUpper = password.any { it.isUpperCase() }
+        val hasLower = password.any { it.isLowerCase() }
+        val hasDigit = password.any { it.isDigit() }
+        val hasSymbol = password.any { !it.isLetterOrDigit() }
+        return hasUpper && hasLower && hasDigit && hasSymbol
+    }
+
+    /**
+     * Bundled APK biometric photos are prohibited for security. Always returns `null`; Admin faces
+     * must be enrolled interactively into the encrypted local vault & Firestore `/adminFaces`.
+     */
+    @Deprecated("Bundled APK admin photo asset has been removed; enroll Admin face interactively into /adminFaces.")
+    fun loadBundledMasterAdminBitmap(context: Context): Bitmap? = null
 
     /**
      * Encodes a Bitmap as a compact JPEG `data:image/jpeg;base64,...` URI suitable for Firestore (< 45 KB).
@@ -272,7 +310,7 @@ object AdminFaceConversionAndGateManager {
     }
 
     /**
-     * Extracts both the 128-D ML Kit facial geometry embedding (falling back to visual signature if
+     * Extracts both the unified 128-D ML Kit facial identity embedding (falling back to visual signature if
      * running in headless JVM or when landmarks are partial) and the 128-D visual signature.
      */
     suspend fun extractAdminBiometricVectorsFromBitmap(
@@ -302,9 +340,12 @@ object AdminFaceConversionAndGateManager {
                         Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
                     }.getOrDefault(bitmap)
                     val croppedVisual = extractDeterministic128DVisualSignature(croppedFace)
-                    val geom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
-                    if (FaceBiometricVerificationEngine.isValidEmbeddingVector(geom)) {
-                        return@withContext Pair(geom, croppedVisual)
+                    val unifiedIdentity = FaceBiometricVerificationEngine
+                        .extractUnified128DFaceIdentityEmbedding(bitmap, face)
+                        .takeIf { FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
+                        ?: FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
+                    if (FaceBiometricVerificationEngine.isValidEmbeddingVector(unifiedIdentity)) {
+                        return@withContext Pair(unifiedIdentity, croppedVisual)
                     }
                 }
                 null
@@ -313,8 +354,41 @@ object AdminFaceConversionAndGateManager {
         }
 
     /**
-     * Ensures the attached Master Admin photo (`assets/admin_master_face_waqar.jpg`) is enrolled
-     * locally and synced to Firebase Firestore (`teachers/admin_waqar_master`).
+     * Enrolls a Master or Converted Admin face Bitmap directly into the hardware-encrypted local
+     * vault and Admin-only Firestore `/adminFaces/{docId}` collection.
+     */
+    suspend fun enrollAdminFaceBitmapToVault(
+        context: Context,
+        bitmap: Bitmap,
+        docId: String = MASTER_ADMIN_DOC_ID,
+        adminUsername: String = "waqar",
+        displayName: String = "Waqar Khan (Master Admin)",
+        sourceRoleLabel: String = "Primary Director",
+        isPrimaryMaster: Boolean = docId == MASTER_ADMIN_DOC_ID
+    ): AuthorizedAdminFaceProfile = withContext(Dispatchers.IO) {
+        val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(bitmap, context)
+        val dataUri = encodeBitmapToCompactDataUri(bitmap, maxDimensionPx = 280, quality = 76)
+        val profile = AuthorizedAdminFaceProfile(
+            docId = docId,
+            adminUsername = adminUsername.trim().lowercase().ifBlank { "waqar" },
+            displayName = displayName.trim().ifBlank { "Authorized Admin" },
+            sourceRoleLabel = sourceRoleLabel.trim().ifBlank { "Admin" },
+            faceEmbedding = faceEmb,
+            visualSignature = visualSig,
+            photoDataUri = dataUri,
+            isPrimaryMaster = isPrimaryMaster,
+            enrolledAtMs = System.currentTimeMillis()
+        )
+        inMemoryAdminVault[docId] = profile
+        saveAdminProfileToLocalVault(context, profile)
+        runCatching {
+            syncAdminFaceProfileToFirestore(context, profile)
+        }
+        profile
+    }
+
+    /**
+     * Loads any enrolled Master Admin face from the encrypted local vault (no bundled APK asset).
      */
     suspend fun ensureMasterAdminPhotoEnrolled(context: Context): AuthorizedAdminFaceProfile? =
         withContext(Dispatchers.IO) {
@@ -324,33 +398,7 @@ object AdminFaceConversionAndGateManager {
             if (localCached != null) {
                 inMemoryAdminVault[MASTER_ADMIN_DOC_ID] = localCached
             }
-
-            val bitmap = loadBundledMasterAdminBitmap(context) ?: return@withContext localCached
-            val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(bitmap, context)
-            val dataUri = localCached?.photoDataUri?.takeIf { it.isNotBlank() }
-                ?: encodeBitmapToCompactDataUri(bitmap, maxDimensionPx = 280, quality = 76)
-
-            val masterProfile = AuthorizedAdminFaceProfile(
-                docId = MASTER_ADMIN_DOC_ID,
-                adminUsername = "waqar",
-                displayName = "Waqar Khan (Master Admin)",
-                sourceRoleLabel = "Primary Director",
-                faceEmbedding = faceEmb,
-                visualSignature = visualSig,
-                photoDataUri = dataUri,
-                isPrimaryMaster = true,
-                enrolledAtMs = localCached?.enrolledAtMs ?: System.currentTimeMillis()
-            )
-            inMemoryAdminVault[MASTER_ADMIN_DOC_ID] = masterProfile
-            saveAdminProfileToLocalVault(context, masterProfile)
-
-            if (!masterAssetSeededInProcess) {
-                masterAssetSeededInProcess = true
-                runCatching {
-                    syncAdminFaceProfileToFirestore(context, masterProfile)
-                }
-            }
-            masterProfile
+            localCached
         }
 
     private suspend fun syncAdminFaceProfileToFirestore(
@@ -373,7 +421,7 @@ object AdminFaceConversionAndGateManager {
             "biometricEnrolledAt" to profile.enrolledAtMs
         )
         withTimeoutOrNull(FIRESTORE_TIMEOUT_MS) {
-            firestore.collection("teachers")
+            firestore.collection(ADMIN_FACES_COLLECTION)
                 .document(profile.docId)
                 .set(payload, SetOptions.merge())
                 .await()
@@ -381,9 +429,8 @@ object AdminFaceConversionAndGateManager {
     }
 
     /**
-     * Fetches all authorized Admin faces from local vault + Cloud Firestore (`teachers` collection
-     * where `isAuthorizedAdminFace == true` or docId starts with `admin_`), always including the
-     * Primary Master Admin photo (`admin_waqar_master`).
+     * Fetches all authorized Admin faces from local encrypted vault + Admin-only Cloud Firestore
+     * `/adminFaces` collection (protected by `isAdmin()` zero-trust rules).
      */
     suspend fun fetchAllAuthorizedAdminFaces(context: Context): List<AuthorizedAdminFaceProfile> =
         withContext(Dispatchers.IO) {
@@ -395,13 +442,11 @@ object AdminFaceConversionAndGateManager {
             runCatching {
                 val firestore = InstituteRepository.getConfiguredFirestore(context)
                 val snap = withTimeoutOrNull(FIRESTORE_TIMEOUT_MS) {
-                    firestore.collection("teachers")
-                        .whereEqualTo("isAuthorizedAdminFace", true)
+                    firestore.collection(ADMIN_FACES_COLLECTION)
                         .get(Source.SERVER)
                         .await()
                 } ?: withTimeoutOrNull(2_500L) {
-                    firestore.collection("teachers")
-                        .whereEqualTo("isAuthorizedAdminFace", true)
+                    firestore.collection(ADMIN_FACES_COLLECTION)
                         .get(Source.CACHE)
                         .await()
                 }
@@ -476,9 +521,9 @@ object AdminFaceConversionAndGateManager {
             require(cleanUsername.length >= 3) {
                 "Admin username must be at least 3 characters."
             }
-            val cleanPass = rawPassword.trim().ifBlank { cleanUsername }
-            require(cleanPass.length >= 3) {
-                "Admin password must be at least 3 characters."
+            val cleanPass = rawPassword.trim()
+            require(isStrongAdminPassword(cleanPass)) {
+                "Admin password must be at least 10 characters and include uppercase, lowercase, number, and symbol."
             }
 
             val (faceEmb, visualSig) = extractAdminBiometricVectorsFromBitmap(photoBitmap, context)
@@ -501,16 +546,17 @@ object AdminFaceConversionAndGateManager {
             inMemoryAdminVault[docId] = profile
             saveAdminProfileToLocalVault(context, profile)
 
-            // 2. Save face embedding & reference photo to Firebase Firestore (`teachers/admin_<username>`)
+            // 2. Save face embedding & reference photo to Admin-only Firebase Firestore (`/adminFaces/<docId>`)
             syncAdminFaceProfileToFirestore(context, profile)
 
-            // 3. Provision Admin `portalCredentials/<username>` with PBKDF2-HMAC-SHA256 (12,000 iterations, 32-char hex salt)
+            // 3. Provision Admin `portalCredentials/<username>` with Argon2id + PBKDF2-HMAC-SHA256 parity
+            val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(cleanPass.toCharArray())
             val pbkdf2 = Argon2CredentialHasher.hashPasswordPbkdf2WebParity(cleanPass.toCharArray())
             val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
             val adminCred = PortalCredential(
                 username = cleanUsername,
-                passwordHash = pbkdf2.hashHex,
-                passwordSalt = pbkdf2.saltHex,
+                passwordHash = argonDigest.encodedHash,
+                passwordSalt = argonDigest.saltBase64,
                 role = PortalRole.ADMIN.key,
                 linkedEntityId = docId,
                 displayName = cleanName,
@@ -518,7 +564,9 @@ object AdminFaceConversionAndGateManager {
                 active = true,
                 isAdmin = true,
                 portalRoles = listOf(PortalRole.ADMIN.key),
-                createdAt = safeNow
+                createdAt = safeNow,
+                pbkdf2ParityHash = pbkdf2.hashHex,
+                pbkdf2ParitySalt = pbkdf2.saltHex
             )
             InstituteRepository.cacheCredentialLocally(adminCred)
             runCatching {
@@ -542,6 +590,17 @@ object AdminFaceConversionAndGateManager {
         val authorizedList = fetchAllAuthorizedAdminFaces(context)
         if (authorizedList.isEmpty()) {
             return@withContext AdminFaceMatchOutcome.Error("Admin Face Vault is empty. Re-enroll Master Admin photo.")
+        }
+
+        val spoofAudit = BiometricScreenSpoofDetector.analyzeFrameForScreenOrPrintSpoof(
+            faceCropBitmap = liveBitmap,
+            context = context
+        )
+        if (!spoofAudit.isGenuinePhysicalFace) {
+            return@withContext AdminFaceMatchOutcome.Mismatch(
+                bestSimilarity = 0f,
+                message = "Admin Gate Spoof Blocked: ${spoofAudit.reason}"
+            )
         }
 
         val (liveGeom, liveVis) = extractAdminBiometricVectorsFromBitmap(liveBitmap, context)
@@ -1426,7 +1485,7 @@ fun AdminConversionModuleScreen(
                                         .take(12)
                                         .ifBlank { "adminuser" }
                                     selectedUsername = "admin_$slug"
-                                    selectedPassword = "${slug}123"
+                                    selectedPassword = AdminFaceConversionAndGateManager.generateSecureOneTimeAdminPassword()
                                     selectedSourceRole = "Converted from Teacher/Staff"
                                     if (staffMember.photoUri.isNotBlank()) {
                                         FaceBiometricVerificationEngine.decodeDataUriToBitmap(staffMember.photoUri)?.let {
@@ -1449,7 +1508,7 @@ fun AdminConversionModuleScreen(
                                         .take(12)
                                         .ifBlank { "adminstu" }
                                     selectedUsername = "admin_$slug"
-                                    selectedPassword = "${slug}123"
+                                    selectedPassword = AdminFaceConversionAndGateManager.generateSecureOneTimeAdminPassword()
                                     selectedSourceRole = "Converted from Student"
                                     if (student.photoUri.isNotBlank()) {
                                         FaceBiometricVerificationEngine.decodeDataUriToBitmap(student.photoUri)?.let {

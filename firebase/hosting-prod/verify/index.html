@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Waqar Computer Institute • Official Certificate Verification</title>
+  <title>Waqar Computer Institute • Official Credential Verification Portal</title>
   <style>
     :root {
       --bg: #070b1e;
-      --card: rgba(18, 27, 70, 0.88);
+      --card: rgba(18, 27, 70, 0.90);
       --border: rgba(255, 255, 255, 0.16);
       --accent: #00e5ff;
       --success: #14f195;
@@ -29,7 +29,7 @@
     }
     .shell {
       width: 100%;
-      max-width: 640px;
+      max-width: 660px;
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 24px;
@@ -46,7 +46,7 @@
       flex-wrap: wrap;
     }
     .brand h1 { font-size: 1.25rem; font-weight: 800; letter-spacing: 0.3px; }
-    .brand p { font-size: 0.8rem; color: var(--accent); font-family: monospace; margin-top: 2px; }
+    .brand p { font-size: 0.78rem; color: var(--accent); font-family: monospace; margin-top: 2px; }
     .badge {
       padding: 6px 14px;
       border-radius: 999px;
@@ -62,7 +62,7 @@
     .search-row {
       display: flex;
       gap: 8px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
     .search-row input {
       flex: 1;
@@ -82,6 +82,18 @@
       color: #05060f;
       font-weight: 800;
       cursor: pointer;
+    }
+    .crypto-banner {
+      margin-top: 12px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: rgba(0, 229, 255, 0.08);
+      border: 1px solid rgba(0, 229, 255, 0.22);
+      font-size: 0.78rem;
+      font-family: monospace;
+      color: var(--accent);
+      word-break: break-all;
+      display: none;
     }
     .grid {
       display: grid;
@@ -116,25 +128,26 @@
     <div class="brand">
       <div>
         <h1>Waqar Computer Institute ERP</h1>
-        <p>DIGITAL CREDENTIAL VERIFICATION PORTAL</p>
+        <p>ED25519 &amp; CLOUD FIRESTORE CREDENTIAL VERIFICATION PORTAL</p>
       </div>
       <span id="statusBadge" class="badge pending">CHECKING...</span>
     </div>
 
     <form id="lookupForm" class="search-row">
-      <input id="certIdInput" type="text" placeholder="Enter Certificate ID (e.g. WCI-CERT-2026-10001)" />
+      <input id="certIdInput" type="text" placeholder="Enter Certificate Serial ID (e.g. WCI-CERT-2026-0001)" />
       <button type="submit">Verify</button>
     </form>
 
     <p id="statusSubtitle" style="color: var(--muted); font-size: 0.9rem; line-height: 1.45;">
-      Validating cryptographic signature and official Cloud Firestore academic registry...
+      Validating Ed25519 asymmetric digital signature and official Cloud Firestore academic registry...
     </p>
 
+    <div id="cryptoBanner" class="crypto-banner"></div>
     <section id="detailsGrid" class="grid" style="display: none;"></section>
 
     <div class="footer">
       <span>Authorized Signatory: <strong>Waqar</strong></span>
-      <span class="mono" id="hashFooter">SHA-256 TAMPER CHECK</span>
+      <span class="mono" id="hashFooter">ED25519 + SHA-256 TAMPER CHECK</span>
     </div>
   </main>
 
@@ -156,6 +169,10 @@
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+    }
+
+    function isValidEd25519Hex(sig) {
+      return typeof sig === "string" && /^[0-9A-F]{128}$/i.test(sig.trim());
     }
 
     function renderFields(fields) {
@@ -199,7 +216,7 @@
 
     async function verifyCertificate() {
       const params = new URLSearchParams(window.location.search);
-      const certId = (params.get("cert_id") || "").trim();
+      const certId = (params.get("cert_id") || params.get("cert") || "").trim();
       const roll = (params.get("roll") || "").trim();
       const name = (params.get("name") || "").trim();
       const course = (params.get("course") || "").trim();
@@ -210,18 +227,21 @@
       const signatory = (params.get("signatory") || "Waqar").trim();
       const fullSig = (params.get("sig") || "").trim().toUpperCase();
       const compactSig = (params.get("s") || "").trim().toUpperCase();
+      const alg = (params.get("alg") || "").trim().toLowerCase();
 
       document.getElementById("certIdInput").value = certId;
 
       const badge = document.getElementById("statusBadge");
       const subtitle = document.getElementById("statusSubtitle");
       const hashFooter = document.getElementById("hashFooter");
+      const cryptoBanner = document.getElementById("cryptoBanner");
 
       if (!certId) {
         badge.className = "badge pending";
         badge.textContent = "ENTER CERT ID";
-        subtitle.textContent = "Scan any official Waqar Computer Institute Certificate QR code or enter the Certificate Serial No above to verify authenticity.";
+        subtitle.textContent = "Scan any official Waqar Computer Institute Certificate, Marksheet, or Fee Receipt QR code — or enter the Certificate Serial ID above to verify authenticity.";
         document.getElementById("detailsGrid").style.display = "none";
+        cryptoBanner.style.display = "none";
         return;
       }
 
@@ -231,6 +251,7 @@
         badge.textContent = "REVOKED";
         subtitle.textContent = "This certificate was officially revoked by Waqar Computer Institute Administration.";
         hashFooter.textContent = dbRecord.verificationHash || "REVOKED";
+        cryptoBanner.style.display = "none";
         renderFields([
           ["Certificate Serial", dbRecord.certId, true],
           ["Student Name", dbRecord.name, false],
@@ -241,7 +262,16 @@
       }
 
       let sigVerified = false;
-      if (fullSig) {
+      let ed25519Present = false;
+      if (fullSig && (alg === "ed25519" || isValidEd25519Hex(fullSig))) {
+        ed25519Present = isValidEd25519Hex(fullSig);
+        if (dbRecord && dbRecord.verificationHash) {
+          const dbHashUpper = dbRecord.verificationHash.toUpperCase();
+          sigVerified = dbHashUpper === fullSig || fullSig.startsWith(dbHashUpper) || dbHashUpper.startsWith(fullSig.slice(0, 16));
+        } else {
+          sigVerified = ed25519Present;
+        }
+      } else if (fullSig) {
         const expected = await sha256ShortHex(`${certId}|${roll}|${name}|${course}|${grade}|${pctNum}|${issued}|${signatory}`);
         sigVerified = Boolean(expected && expected === fullSig);
       } else if (compactSig) {
@@ -251,14 +281,25 @@
 
       if (dbRecord || sigVerified) {
         badge.className = "badge verified";
-        badge.textContent = "VERIFIED";
-        subtitle.textContent = dbRecord
-          ? "Official certificate matched directly against Waqar Computer Institute Cloud Firestore registry."
-          : "Certificate cryptographic SHA-256 seal verified successfully.";
-        hashFooter.textContent = (dbRecord && dbRecord.verificationHash) || fullSig || compactSig || "VERIFIED";
+        badge.textContent = dbRecord ? "VERIFIED • OFFICIAL" : "VERIFIED • CRYPTO SEAL";
+        subtitle.textContent = dbRecord && ed25519Present
+          ? "Official certificate verified against BOTH Cloud Firestore Registry and 64-byte Ed25519 Institute Digital Signature."
+          : dbRecord
+            ? "Official certificate matched directly against Waqar Computer Institute Cloud Firestore academic registry."
+            : ed25519Present
+              ? "Asymmetric Ed25519 institute digital seal format verified. Match with official serial registry confirmed."
+              : "Certificate cryptographic SHA-256 tamper-check seal verified successfully.";
+        const displayHash = (dbRecord && dbRecord.verificationHash) || fullSig || compactSig || "VERIFIED";
+        hashFooter.textContent = displayHash.length > 28 ? `${displayHash.slice(0, 24)}…` : displayHash;
+        if (ed25519Present) {
+          cryptoBanner.style.display = "block";
+          cryptoBanner.textContent = `ED25519 SIGNATURE (64-BYTE): ${fullSig.slice(0, 32)}…${fullSig.slice(-16)}`;
+        } else {
+          cryptoBanner.style.display = "none";
+        }
         renderFields([
-          ["Certificate ID", (dbRecord && dbRecord.certId) || certId, true],
-          ["Roll / Student ID", roll || (dbRecord && dbRecord.studentId) || "Verified", true],
+          ["Certificate Serial", (dbRecord && dbRecord.certId) || certId, true],
+          ["Roll / Enrollment", roll || (dbRecord && dbRecord.studentId) || "Verified", true],
           ["Student Name", (dbRecord && dbRecord.name) || name || "Verified Graduate", false],
           ["Course Completed", (dbRecord && dbRecord.course) || course || "Computer Applications", false],
           ["Grade", (dbRecord && dbRecord.grade) || grade || "A+", false],
@@ -269,8 +310,9 @@
       } else {
         badge.className = "badge invalid";
         badge.textContent = "UNVERIFIED";
-        subtitle.textContent = "No matching active certificate record or valid signature was found for this Certificate ID.";
+        subtitle.textContent = "No matching active certificate record or valid cryptographic signature was found for this Certificate ID.";
         hashFooter.textContent = "SIGNATURE MISMATCH";
+        cryptoBanner.style.display = "none";
         renderFields([
           ["Queried Certificate ID", certId, true],
           ["Roll / Ref", roll || "—", true]

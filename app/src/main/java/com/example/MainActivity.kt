@@ -141,8 +141,19 @@ class MainActivity : ComponentActivity() {
             runCatching { AntiHookManager.runComprehensiveHookScan() }
             runCatching { VirtualSpaceShield.evaluateEnvironment(appCtx) }
             runCatching { TeeSecurityManager.inspectHardwareKeyAttestation(appCtx) }
+            runCatching { com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.bootstrapAll26BrahmastraModules(appCtx) }
             runCatching { InstituteBackgroundSyncWorker.schedulePeriodicEnterpriseSync(appCtx) }
         }
+    }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        if (ev != null) {
+            val allowed = runCatching {
+                com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.inspectGlobalActivityTouch(ev)
+            }.getOrDefault(true)
+            if (!allowed) return true
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -199,8 +210,6 @@ fun WaqarInstituteApp(
                 "RASP_EMULATOR_BLOCKED",
                 "RASP_APK_REPACKAGED_MT_MANAGER",
                 "RASP_FRIDA_LSPOSED_HOOK_DETECTED",
-                "RASP_DEVICE_CLONE_DETECTED",
-                "RASP_DEOBFUSCATION_TAMPER",
                 "RASP_DUAL_SPACE_CLONE_DETECTED"
             )
             val audit = state.raspReport

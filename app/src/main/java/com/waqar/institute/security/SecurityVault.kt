@@ -7,8 +7,7 @@ import android.os.Build
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.example.security.HardwareKeystoreVault
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import android.util.Base64
 import java.security.SecureRandom
 
@@ -119,12 +118,12 @@ object SecurityVault {
     }
 
     /**
-     * Creates a SQLCipher `SupportFactory` for encrypting Room databases with AES-256.
+     * Creates a SQLCipher 4.6.1 `SupportOpenHelperFactory` for encrypting Room databases with AES-256.
      */
-    fun createSqlCipherSupportFactory(context: Context): SupportFactory {
+    fun createSqlCipherSupportFactory(context: Context): SupportOpenHelperFactory {
         val appContext = context.applicationContext ?: context
-        runCatching { SQLiteDatabase.loadLibs(appContext) }
+        runCatching { System.loadLibrary("sqlcipher") }
         val passphrase = getOrCreateSqlCipherPassphraseBytes(appContext)
-        return SupportFactory(passphrase, null, false)
+        return SupportOpenHelperFactory(passphrase)
     }
 }

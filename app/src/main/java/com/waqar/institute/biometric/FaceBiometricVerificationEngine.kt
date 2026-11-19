@@ -1,6 +1,7 @@
 package com.waqar.institute.biometric
 
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.annotation.Keep
 import com.example.security.HardwareKeystoreVault
 import com.google.firebase.firestore.SetOptions
@@ -14,6 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.lsposed.lsparanoid.Obfuscate
+import org.tensorflow.lite.Interpreter
+import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.sqrt
@@ -44,7 +51,8 @@ object FaceBiometricVerificationEngine {
             val cosineSimilarity: Float,
             val livenessConfidence: Float,
             val newlyEnrolled: Boolean,
-            val message: String
+            val message: String,
+            val requiresSecondaryFactor: Boolean = false
         ) : BiometricMatchResult()
 
         data class SpoofOrLivenessFailed(val reason: String) : BiometricMatchResult()
@@ -397,7 +405,10 @@ object FaceBiometricVerificationEngine {
                     runCatching {
                         val detector = FaceDetection.getClient(highPrecisionOptions)
                         val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
-                        faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it, context) }
+                        faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { face ->
+                            extractUnified128DFaceIdentityEmbedding(bmp, face).takeIf { isValidEmbeddingVector(it) }
+                                ?: extract128DFacialEmbedding(face, context)
+                        }
                     }.getOrNull()
                 }
                 if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
@@ -417,7 +428,10 @@ object FaceBiometricVerificationEngine {
                 runCatching {
                     val detector = FaceDetection.getClient(highPrecisionOptions)
                     val faces = detector.process(InputImage.fromBitmap(bmp, 0)).await()
-                    faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { extract128DFacialEmbedding(it, context) }
+                    faces.firstOrNull()?.takeIf { hasMinimumCoreLandmarks(it) }?.let { face ->
+                        extractUnified128DFaceIdentityEmbedding(bmp, face).takeIf { isValidEmbeddingVector(it) }
+                            ?: extract128DFacialEmbedding(face, context)
+                    }
                 }.getOrNull()
             }
             if (decodedVec != null && isValidEmbeddingVector(decodedVec)) {
@@ -441,7 +455,8 @@ object FaceBiometricVerificationEngine {
     fun evaluateLiveVectorAgainstEnrollment(
         liveEmbedding: FloatArray,
         livenessScore: Float,
-        lookupResult: EnrollmentLookupResult
+        lookupResult: EnrollmentLookupResult,
+        neuralModelActive: Boolean = true
     ): BiometricMatchResult {
         if (!isValidEmbeddingVector(liveEmbedding)) {
             return BiometricMatchResult.Error("Invalid live facial vector captured. Please retry verification.")
@@ -453,11 +468,17 @@ object FaceBiometricVerificationEngine {
                 } else {
                     val rawSim = computeCosineSimilaritySafe(liveEmbedding, lookupResult.embedding)
                     if (rawSim >= COSINE_MATCH_THRESHOLD) {
+                        val suffix = if (neuralModelActive) {
+                            ""
+                        } else {
+                            " [Secondary Factor PIN/BiometricPrompt Required: mobilefacenet.tflite absent]"
+                        }
                         BiometricMatchResult.Verified(
                             cosineSimilarity = rawSim,
                             livenessConfidence = livenessScore,
                             newlyEnrolled = false,
-                            message = "Biometric Match Verified (Cosine=${"%.4f".format(rawSim)}, Liveness=${"%.0f".format(livenessScore * 100)}%)"
+                            message = "Biometric Match Verified (Cosine=${"%.4f".format(rawSim)}, Liveness=${"%.0f".format(livenessScore * 100)}%)$suffix",
+                            requiresSecondaryFactor = !neuralModelActive
                         )
                     } else {
                         BiometricMatchResult.Mismatch(
@@ -537,10 +558,42 @@ object FaceBiometricVerificationEngine {
                 )
             }
 
+            val spoofAudit = BiometricScreenSpoofDetector.analyzeFrameForScreenOrPrintSpoof(
+                faceCropBitmap = liveFrameBitmap,
+                context = context
+            )
+            if (!spoofAudit.isGenuinePhysicalFace) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(spoofAudit.reason)
+            }
+
             val livenessScore = ((leftEye + rightEye) * 0.5f).coerceIn(0f, 1f)
-            val liveEmbedding = extract128DFacialEmbedding(face, context)
+            val aligned112 = alignAndCropFace112x112(liveFrameBitmap, face)
+            val neuralEmbedding = extractNeuralMobileFaceNetEmbedding(context, aligned112)
+            val neuralActive = neuralEmbedding != null
+            if (!neuralActive) {
+                Log.w(
+                    TAG,
+                    "mobilefacenet.tflite not bundled in APK assets; falling back to geometric CS-LBP embedding with requiresSecondaryFactor=true."
+                )
+            }
+            val liveEmbedding = neuralEmbedding
+                ?: extractUnified128DFaceIdentityEmbedding(liveFrameBitmap, face)
+                    .takeIf { isValidEmbeddingVector(it) }
+                ?: extract128DFacialEmbedding(face, context)
+            val quantumAndLivenessOk = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator
+                .verifyBiometricFrameWithQuantumAndLiveness(liveFrameBitmap, liveEmbedding, teacherUid)
+            if (!quantumAndLivenessOk) {
+                return@withContext BiometricMatchResult.SpoofOrLivenessFailed(
+                    "Quantum/Liveness frame integrity check failed. Please retry in natural lighting."
+                )
+            }
             val lookupResult = resolveEnrolledEmbeddingResult(context, teacherUid, teacherName)
-            evaluateLiveVectorAgainstEnrollment(liveEmbedding, livenessScore, lookupResult)
+            evaluateLiveVectorAgainstEnrollment(
+                liveEmbedding = liveEmbedding,
+                livenessScore = livenessScore,
+                lookupResult = lookupResult,
+                neuralModelActive = neuralActive
+            )
         } catch (e: Exception) {
             BiometricMatchResult.Error("Biometric verification error: ${e.localizedMessage ?: "Camera frame processing failed"}")
         }
@@ -732,7 +785,14 @@ object FaceBiometricVerificationEngine {
         }
     }
 
+    private const val TAG = "FaceBiometricEngine"
     const val MOBILEFACENET_MODEL_ASSET = "mobilefacenet.tflite"
+
+    @Volatile
+    private var cachedTfliteInterpreter: Interpreter? = null
+
+    @Volatile
+    private var tfliteLoadAttempted: Boolean = false
 
     fun isNeuralModelAssetAvailable(context: android.content.Context?): Boolean {
         val ctx = context?.applicationContext ?: context ?: return false
@@ -741,6 +801,263 @@ object FaceBiometricVerificationEngine {
                 stream.available() > 0
             }
         }.getOrDefault(false)
+    }
+
+    private fun loadModelMappedBuffer(context: android.content.Context): MappedByteBuffer? {
+        return runCatching {
+            context.assets.openFd(MOBILEFACENET_MODEL_ASSET).use { afd ->
+                FileInputStream(afd.fileDescriptor).use { fis ->
+                    fis.channel.map(FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.declaredLength)
+                }
+            }
+        }.getOrNull()
+    }
+
+    private fun getOrCreateNeuralInterpreter(context: android.content.Context?): Interpreter? {
+        cachedTfliteInterpreter?.let { return it }
+        val appCtx = context?.applicationContext ?: context ?: return null
+        if (tfliteLoadAttempted) return null
+        synchronized(this) {
+            cachedTfliteInterpreter?.let { return it }
+            if (tfliteLoadAttempted) return null
+            tfliteLoadAttempted = true
+            val modelBuffer = loadModelMappedBuffer(appCtx) ?: return null
+            val options = Interpreter.Options().apply { setNumThreads(2) }
+            val created = runCatching { Interpreter(modelBuffer, options) }.getOrNull()
+            cachedTfliteInterpreter = created
+            return created
+        }
+    }
+
+    /**
+     * Runs real TensorFlow Lite `mobilefacenet.tflite` (`112x112x3` float32 RGB -> `128-D` L2 vector)
+     * when the model asset is bundled. Returns `null` cleanly if `mobilefacenet.tflite` is absent.
+     */
+    fun extractNeuralMobileFaceNetEmbedding(
+        context: android.content.Context?,
+        aligned112Bitmap: Bitmap
+    ): FloatArray? {
+        val interpreter = getOrCreateNeuralInterpreter(context) ?: return null
+        return runCatching {
+            val scaled = if (aligned112Bitmap.width == 112 && aligned112Bitmap.height == 112) {
+                aligned112Bitmap
+            } else {
+                Bitmap.createScaledBitmap(aligned112Bitmap, 112, 112, true)
+            }
+            val inputBuffer = ByteBuffer.allocateDirect(1 * 112 * 112 * 3 * 4).order(ByteOrder.nativeOrder())
+            val pixels = IntArray(112 * 112)
+            scaled.getPixels(pixels, 0, 112, 0, 0, 112, 112)
+            for (px in pixels) {
+                val r = (((px shr 16) and 0xFF) - 127.5f) / 128.0f
+                val g = (((px shr 8) and 0xFF) - 127.5f) / 128.0f
+                val b = ((px and 0xFF) - 127.5f) / 128.0f
+                inputBuffer.putFloat(r)
+                inputBuffer.putFloat(g)
+                inputBuffer.putFloat(b)
+            }
+            inputBuffer.rewind()
+            val output = Array(1) { FloatArray(EMBEDDING_DIMENSION) }
+            interpreter.run(inputBuffer, output)
+            val raw = output[0]
+            runCatching { nativeNormalizeEmbedding(raw) }.getOrElse {
+                var sumSq = 0.0
+                for (v in raw) sumSq += v * v
+                val inv = if (sumSq > 1e-12) (1.0 / sqrt(sumSq)).toFloat() else 1f
+                FloatArray(raw.size) { i -> raw[i] * inv }
+            }.takeIf { isValidEmbeddingVector(it) }
+        }.getOrNull()
+    }
+
+    /**
+     * Loads a student or staff bitmap from a `data:image/...;base64,...` URI, `content://` URI, or file path.
+     */
+    fun loadStudentBitmapFromUri(context: android.content.Context, photoUri: String): Bitmap? {
+        val clean = photoUri.trim()
+        if (clean.isBlank()) return null
+        if (clean.startsWith("data:", ignoreCase = true) || clean.contains("base64,")) {
+            return decodeDataUriToBitmap(clean)
+        }
+        return runCatching {
+            val uri = android.net.Uri.parse(clean)
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                android.graphics.BitmapFactory.decodeStream(stream)
+            } ?: android.graphics.BitmapFactory.decodeFile(clean)
+        }.getOrNull() ?: decodeDataUriToBitmap(clean)
+    }
+
+    /**
+     * Runs ML Kit Face Detection on [bitmap] and extracts the unified 128-D face identity embedding.
+     */
+    suspend fun extractEmbeddingFromBitmapSuspend(
+        bitmap: Bitmap,
+        context: android.content.Context? = null
+    ): FloatArray? = withContext(Dispatchers.Default) {
+        runCatching {
+            val detector = FaceDetection.getClient(highPrecisionOptions)
+            val faces = detector.process(InputImage.fromBitmap(bitmap, 0)).await()
+            val primaryFace = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                ?: return@withContext null
+            extractUnified128DFaceIdentityEmbedding(bitmap, primaryFace).takeIf { isValidEmbeddingVector(it) }
+                ?: extract128DFacialEmbedding(primaryFace, context).takeIf { isValidEmbeddingVector(it) }
+        }.getOrNull()
+    }
+
+    /**
+     * Aligns the detected face by compensating eye-line roll angle (`atan2(dy, dx)`) and cropping
+     * the canonical facial region to `112 x 112` pixels.
+     */
+    fun alignAndCropFace112x112(source: Bitmap, face: Face): Bitmap {
+        val box = face.boundingBox
+        val srcW = source.width.coerceAtLeast(1)
+        val srcH = source.height.coerceAtLeast(1)
+        val left = box.left.coerceIn(0, (srcW - 1).coerceAtLeast(0))
+        val top = box.top.coerceIn(0, (srcH - 1).coerceAtLeast(0))
+        val width = box.width().coerceIn(1, (srcW - left).coerceAtLeast(1))
+        val height = box.height().coerceIn(1, (srcH - top).coerceAtLeast(1))
+
+        val rawCrop = runCatching {
+            Bitmap.createBitmap(source, left, top, width, height)
+        }.getOrDefault(source)
+
+        val leftEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rightEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+        val alignedCrop = if (leftEye != null && rightEye != null) {
+            val dx = rightEye.x - leftEye.x
+            val dy = rightEye.y - leftEye.y
+            val rollDeg = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+            if (abs(rollDeg) in 1.0f..35.0f) {
+                runCatching {
+                    val matrix = android.graphics.Matrix().apply {
+                        postRotate(-rollDeg, rawCrop.width / 2f, rawCrop.height / 2f)
+                    }
+                    Bitmap.createBitmap(rawCrop, 0, 0, rawCrop.width, rawCrop.height, matrix, true)
+                }.getOrDefault(rawCrop)
+            } else {
+                rawCrop
+            }
+        } else {
+            rawCrop
+        }
+        return runCatching {
+            Bitmap.createScaledBitmap(alignedCrop, 112, 112, true)
+        }.getOrDefault(alignedCrop)
+    }
+
+    /**
+     * Unified 128-D Face Identity Embedding Extractor (FIX-01):
+     * 1. Aligns & crops the face to a canonical `112 x 112` grid (`8 x 8` blocks of `14 x 14` px).
+     * 2. Computes Center-Symmetric Local Binary Pattern (CS-LBP) texture energy + Oriented Sobel
+     *    Gradient magnitude for all 64 spatial cells (`64 * 2 = 128` channels).
+     * 3. Embeds Z-score standardized craniofacial geometric ratios into channels `120..123`.
+     * 4. Zero-mean centers and L2-normalizes (`||v||_2 = 1.0`) via C++20 JNI (`nativeNormalizeEmbedding`).
+     */
+    fun extractUnified128DFaceIdentityEmbedding(sourceBitmap: Bitmap, face: Face): FloatArray {
+        val aligned = alignAndCropFace112x112(sourceBitmap, face)
+        val w = aligned.width.coerceAtLeast(1)
+        val h = aligned.height.coerceAtLeast(1)
+        if (w < 16 || h < 16) {
+            return extract128DFacialEmbedding(face, null)
+        }
+
+        val pixels = IntArray(w * h)
+        aligned.getPixels(pixels, 0, w, 0, 0, w, h)
+        val gray = FloatArray(w * h)
+        var meanLum = 0f
+        for (i in pixels.indices) {
+            val px = pixels[i]
+            val r = (px shr 16) and 0xFF
+            val g = (px shr 8) and 0xFF
+            val b = px and 0xFF
+            val lum = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+            gray[i] = lum
+            meanLum += lum
+        }
+        meanLum = (meanLum / gray.size.coerceAtLeast(1)).coerceAtLeast(0.05f)
+
+        val grid = 8
+        val cellW = (w / grid).coerceAtLeast(1)
+        val cellH = (h / grid).coerceAtLeast(1)
+        val raw = FloatArray(EMBEDDING_DIMENSION)
+        var outIdx = 0
+
+        for (gy in 0 until grid) {
+            for (gx in 0 until grid) {
+                var csLbpAcc = 0f
+                var sobelAcc = 0f
+                var count = 0
+                val yStart = (gy * cellH).coerceAtLeast(1)
+                val yEnd = ((gy + 1) * cellH).coerceAtMost(h - 1)
+                val xStart = (gx * cellW).coerceAtLeast(1)
+                val xEnd = ((gx + 1) * cellW).coerceAtMost(w - 1)
+
+                for (y in yStart until yEnd) {
+                    for (x in xStart until xEnd) {
+                        val n0 = gray[(y - 1) * w + (x - 1)]
+                        val n1 = gray[(y - 1) * w + x]
+                        val n2 = gray[(y - 1) * w + (x + 1)]
+                        val n3 = gray[y * w + (x + 1)]
+                        val n4 = gray[(y + 1) * w + (x + 1)]
+                        val n5 = gray[(y + 1) * w + x]
+                        val n6 = gray[(y + 1) * w + (x - 1)]
+                        val n7 = gray[y * w + (x - 1)]
+
+                        // 4-bit Center-Symmetric Local Binary Pattern (CS-LBP)
+                        var csCode = 0
+                        if (n0 - n4 > 0.01f) csCode = csCode or 1
+                        if (n1 - n5 > 0.01f) csCode = csCode or 2
+                        if (n2 - n6 > 0.01f) csCode = csCode or 4
+                        if (n3 - n7 > 0.01f) csCode = csCode or 8
+                        csLbpAcc += (csCode / 15f)
+
+                        // Oriented Sobel gradient magnitude normalized by mean luminance
+                        val gxSobel = (n2 + 2f * n3 + n4) - (n0 + 2f * n7 + n6)
+                        val gySobel = (n6 + 2f * n5 + n4) - (n0 + 2f * n1 + n2)
+                        sobelAcc += hypot(gxSobel, gySobel) / meanLum
+                        count++
+                    }
+                }
+                val inv = 1f / count.coerceAtLeast(1)
+                if (outIdx < EMBEDDING_DIMENSION) raw[outIdx++] = csLbpAcc * inv
+                if (outIdx < EMBEDDING_DIMENSION) raw[outIdx++] = sobelAcc * inv
+            }
+        }
+
+        // Overlay Z-score standardized craniofacial ratios in slots 120..123 when landmarks exist
+        val box = face.boundingBox
+        val bw = box.width().toFloat().coerceAtLeast(1f)
+        val bh = box.height().toFloat().coerceAtLeast(1f)
+        val lEye = face.getLandmark(FaceLandmark.LEFT_EYE)?.position
+        val rEye = face.getLandmark(FaceLandmark.RIGHT_EYE)?.position
+        val nose = face.getLandmark(FaceLandmark.NOSE_BASE)?.position
+        val mLeft = face.getLandmark(FaceLandmark.MOUTH_LEFT)?.position
+        val mRight = face.getLandmark(FaceLandmark.MOUTH_RIGHT)?.position
+
+        if (lEye != null && rEye != null && nose != null && mLeft != null && mRight != null) {
+            val interOcular = hypot(rEye.x - lEye.x, rEye.y - lEye.y) / bw
+            val eyeMidX = (lEye.x + rEye.x) * 0.5f
+            val eyeMidY = (lEye.y + rEye.y) * 0.5f
+            val eyeToNose = hypot(nose.x - eyeMidX, nose.y - eyeMidY) / bh
+            val mouthWidth = hypot(mRight.x - mLeft.x, mRight.y - mLeft.y) / bw
+            val aspect = bw / bh
+
+            raw[120] = ((interOcular - 0.36f) / 0.06f).coerceIn(-2.5f, 2.5f)
+            raw[121] = ((eyeToNose - 0.22f) / 0.05f).coerceIn(-2.5f, 2.5f)
+            raw[122] = ((mouthWidth - 0.32f) / 0.06f).coerceIn(-2.5f, 2.5f)
+            raw[123] = ((aspect - 0.85f) / 0.10f).coerceIn(-2.5f, 2.5f)
+        }
+
+        // Zero-mean center before L2 normalization to maximize inter-identity separability
+        var vecMean = 0f
+        for (v in raw) vecMean += v
+        vecMean /= EMBEDDING_DIMENSION.toFloat()
+        for (i in raw.indices) raw[i] -= vecMean
+
+        return runCatching { nativeNormalizeEmbedding(raw) }.getOrElse {
+            var sumSq = 0.0
+            for (v in raw) sumSq += v * v
+            val inv = if (sumSq > 1e-12) (1.0 / sqrt(sumSq)).toFloat() else 1f
+            FloatArray(raw.size) { i -> raw[i] * inv }
+        }
     }
 
     /**

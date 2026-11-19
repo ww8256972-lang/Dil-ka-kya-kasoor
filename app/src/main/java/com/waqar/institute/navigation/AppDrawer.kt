@@ -21,6 +21,10 @@ object AppDrawer {
     const val TITLE_ACADEMIC_PRO_SUITE: String = "QR+Face, Lab PC, ID PDF & Typing Arena"
     const val SHORT_LABEL_ACADEMIC_PRO_SUITE: String = "Pro Lab"
 
+    const val ROUTE_UPI_EMI_COMMAND: String = "M27_UPI_EMI_COMMAND"
+    const val TITLE_UPI_EMI_COMMAND: String = "Zero-Fee UPI & Auto-EMI Vault"
+    const val SHORT_LABEL_UPI_EMI_COMMAND: String = "UPI & EMI"
+
     val codingSandboxDestination: ModuleDestination = ModuleDestination(
         routeId = ROUTE_CODING_SANDBOX,
         title = TITLE_CODING_SANDBOX_HINDI,
@@ -39,6 +43,16 @@ object AppDrawer {
         icon = Icons.Default.VerifiedUser,
         accentStart = WciColors.Info,
         accentEnd = WciColors.SuccessNeon
+    )
+
+    val upiAutoEmiVaultDestination: ModuleDestination = ModuleDestination(
+        routeId = ROUTE_UPI_EMI_COMMAND,
+        title = TITLE_UPI_EMI_COMMAND,
+        shortLabel = SHORT_LABEL_UPI_EMI_COMMAND,
+        category = "Finance",
+        icon = Icons.Default.VerifiedUser,
+        accentStart = WciColors.SuccessNeon,
+        accentEnd = WciColors.PurpleVibrant
     )
 
     val supportedRoles: Set<PortalRole> = setOf(

@@ -72,7 +72,10 @@ object DocumentExportHelper {
             y += 30f
         }
 
-        drawFooter(canvas, "VERIFIED DIGITAL FEE RECEIPT • ${invoice.receiptNo}")
+        val receiptCanonical = "RECEIPT|${invoice.receiptNo}|${invoice.studentId}|${invoice.paidAmountPaise}|${invoice.paymentMode}|${invoice.paidAtIso}"
+        val receiptSig = com.waqar.institute.security.Ed25519DocumentSigner
+            .signDocumentWithInstituteKey(context, receiptCanonical)
+        drawFooter(canvas, "ED25519 SEAL: ${receiptSig.take(28)}... • ${invoice.receiptNo}")
         pdf.finishPage(page)
 
         saveAndShareFile(
@@ -107,7 +110,8 @@ object DocumentExportHelper {
             certSerialNo = cert.serialNo,
             enrollmentNo = resolvedRoll,
             grade = cert.grade,
-            percentage = resolvedPct
+            percentage = resolvedPct,
+            context = context
         )
         exportOfficialTemplatePdf(
             context = context,
@@ -251,13 +255,19 @@ object DocumentExportHelper {
             color = Color.rgb(20, 22, 43)
             textSize = 14f
         }
+        val pctDisplay = if (result.formattedPercentage.isNotBlank()) {
+            result.formattedPercentage
+        } else {
+            val pctVal = (result.marksObtained.toDouble() * 100.0) / result.totalMarks.coerceAtLeast(1).toDouble()
+            "${kotlin.math.round(pctVal * 100.0) / 100.0}%"
+        }
         var y = 170f
         listOf(
             "Examination" to result.examTitle,
             "Student Name" to result.studentName,
             "Student ID" to result.studentId,
             "Marks Obtained" to "${result.marksObtained} / ${result.totalMarks}",
-            "Percentage" to "${(result.marksObtained * 100) / result.totalMarks.coerceAtLeast(1)}%",
+            "Exact Percentage" to pctDisplay,
             "Grade" to result.grade,
             "Batch Rank" to "#${result.rank}",
             "Result Status" to result.status,
@@ -267,7 +277,11 @@ object DocumentExportHelper {
             canvas.drawText(v, 250f, y, paint)
             y += 34f
         }
-        drawFooter(canvas, "EXAMINATION CONTROLLER • WAQAR COMPUTER INSTITUTE")
+        val marksheetSig = com.waqar.institute.security.Ed25519DocumentSigner.signDocumentWithInstituteKey(
+            context = context,
+            canonicalPayload = "MARKSHEET|${result.examId}|${result.studentId}|${result.marksObtained}|${result.totalMarks}|${result.grade}"
+        )
+        drawFooter(canvas, "ED25519 SEAL: ${marksheetSig.take(28)}... • EXAM CONTROLLER WAQAR INSTITUTE")
         pdf.finishPage(page)
 
         saveAndShareFile(
@@ -351,7 +365,9 @@ object DocumentExportHelper {
                 s.attendancePercent.toString()
             ).joinToString(",")
         }
-        val csvContent = (header + rows).toByteArray(Charsets.UTF_8)
+        val watermarkedCsv = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator
+            .embedForensicExportWatermark(header + rows, "admin_csv_export")
+        val csvContent = watermarkedCsv.toByteArray(Charsets.UTF_8)
         saveAndShareFile(
             context = context,
             fileName = "WCI_Students_Export_${System.currentTimeMillis()}.csv",
@@ -365,11 +381,13 @@ object DocumentExportHelper {
         mimeType: String = "application/json",
         content: String
     ) {
+        val watermarked = com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator
+            .embedForensicExportWatermark(content, "admin_json_export")
         saveAndShareFile(
             context = context,
             fileName = fileName,
             mimeType = mimeType
-        ) { out -> out.write(content.toByteArray(Charsets.UTF_8)) }
+        ) { out -> out.write(watermarked.toByteArray(Charsets.UTF_8)) }
     }
 
     private fun drawHeader(canvas: Canvas, instituteName: String, subtitle: String) {

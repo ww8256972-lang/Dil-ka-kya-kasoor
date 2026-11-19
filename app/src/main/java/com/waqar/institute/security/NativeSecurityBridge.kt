@@ -90,6 +90,18 @@ object NativeSecurityBridge {
     @Keep
     external fun verifyReleaseSigningCertPin(runtimeCertHex: String): Boolean
 
+    @Keep
+    external fun nativeArmAntiMemoryDumpVault(): Boolean
+
+    /**
+     * [A2] Arms kernel-level anti-dump protection (`PR_SET_DUMPABLE=0`, `PR_SET_PTRACER=0`,
+     * and `MADV_DONTDUMP` guard page verification) inside `libwaqar_native_security.so`.
+     */
+    fun armAntiMemoryDumpVault(): Boolean {
+        if (!isNativeLibraryLoaded) return false
+        return runCatching { nativeArmAntiMemoryDumpVault() }.getOrDefault(false)
+    }
+
     /**
      * Arms or disarms the continuous C++20 2-second anti-Frida / ptrace / /proc/self/maps
      * watchdog loop during active proctored CBT exams and biometric gates.

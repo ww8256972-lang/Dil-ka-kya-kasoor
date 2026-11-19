@@ -135,6 +135,8 @@ fun CoursesAndBatchesModuleScreen(
                 }
             } else {
                 items(state.batches, key = { it.id }) { batch ->
+                    val batchAdminLabel = batch.batchAdminTeacherName.ifBlank { batch.teacherName }.ifBlank { "Unassigned" }
+                    val liveBatchCount = viewModel.getStudentCountForBatch(batch, state.students)
                     GlassCard(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -144,17 +146,25 @@ fun CoursesAndBatchesModuleScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("${batch.code} • ${batch.name}", style = MaterialTheme.typography.titleMedium.copy(color = WciColors.textPrimary, fontWeight = FontWeight.ExtraBold))
                                 Text(
-                                    "${batch.courseName} • Batch Admin / Faculty: ${batch.teacherName}",
+                                    "${batch.courseName} • Batch Admin: $batchAdminLabel",
                                     style = MaterialTheme.typography.bodySmall.copy(color = WciColors.Info, fontWeight = FontWeight.Bold)
                                 )
                                 Text(
                                     "${batch.daysOfWeek} (${batch.startTime}–${batch.endTime}) • Room: ${batch.roomName}",
                                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMono, color = WciColors.textSecondary)
                                 )
+                                Text(
+                                    text = buildString {
+                                        append("Permissions: ")
+                                        if (batch.canBatchAdminTakeAttendance) append("Attendance ✓ ")
+                                        if (batch.canBatchAdminScheduleExams) append("• Exams ✓")
+                                    },
+                                    style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Success)
+                                )
                                 if (isAdmin && state.staff.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        "Make Teacher Batch Admin (1-Tap):",
+                                        "Assign Batch-Admin Teacher (1-Tap):",
                                         style = MaterialTheme.typography.labelSmall.copy(color = WciColors.Warning)
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -163,12 +173,14 @@ fun CoursesAndBatchesModuleScreen(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         state.staff.forEach { teacherStaff ->
-                                            val isAssigned = batch.teacherName.contains(teacherStaff.fullName, ignoreCase = true)
+                                            val isAssigned =
+                                                batch.batchAdminTeacherId.equals(teacherStaff.id, ignoreCase = true) ||
+                                                    batchAdminLabel.contains(teacherStaff.fullName, ignoreCase = true)
                                             LiquidPill(
                                                 text = if (isAssigned) "★ ${teacherStaff.fullName}" else teacherStaff.fullName,
                                                 selected = isAssigned,
                                                 onClick = {
-                                                    viewModel.assignBatchAdminTeacher(batch, teacherStaff.fullName)
+                                                    viewModel.assignBatchAdminTeacher(batch.id, teacherStaff)
                                                 }
                                             )
                                         }
@@ -181,8 +193,12 @@ fun CoursesAndBatchesModuleScreen(
                                     style = MaterialTheme.typography.labelLarge.copy(color = WciColors.Success)
                                 )
                                 Text(
-                                    text = "Cap: ${batch.capacity} seats",
-                                    style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
+                                    text = "$liveBatchCount / ${batch.capacity} students",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = JetBrainsMono,
+                                        color = WciColors.Info,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 )
                             }
                         }
@@ -797,14 +813,44 @@ fun AttendanceModuleScreen(
                             "ABSENT" -> WciColors.Danger
                             else -> WciColors.Warning
                         }
-                        Text(
-                            text = att.status,
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontFamily = JetBrainsMono,
-                                fontWeight = FontWeight.Bold,
-                                color = statusColor
+                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = att.status,
+                                style = MaterialTheme.typography.labelLarge.copy(
+                                    fontFamily = JetBrainsMono,
+                                    fontWeight = FontWeight.Bold,
+                                    color = statusColor
+                                )
                             )
-                        )
+                            if (canMarkAttendance && att.status == "ABSENT" && att.targetType == "STUDENT") {
+                                val waContext = LocalContext.current
+                                val studentPhone = state.students.firstOrNull {
+                                    it.id == att.targetId || it.fullName.equals(att.targetName, ignoreCase = true)
+                                }?.let { stu -> stu.guardianPhone.ifBlank { stu.phone } }.orEmpty()
+                                LiquidPill(
+                                    text = "WhatsApp Alert",
+                                    selected = false,
+                                    icon = Icons.AutoMirrored.Filled.Send,
+                                    onClick = {
+                                        if (studentPhone.isBlank()) {
+                                            viewModel.postMessage("No parent/student phone number saved for ${att.targetName}.")
+                                        } else {
+                                            val launched = com.waqar.institute.communication.WhatsAppInstituteAlertHelper.sendAbsentAlert(
+                                                context = waContext,
+                                                guardianPhone = studentPhone,
+                                                studentName = att.targetName,
+                                                batchName = att.batchName.ifBlank { "General" },
+                                                dateIso = att.dateIso
+                                            )
+                                            if (!launched) {
+                                                viewModel.postMessage("Unable to open WhatsApp on this device.")
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("whatsapp_absent_alert_${att.id}")
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1356,6 +1402,12 @@ fun FinanceAndPayrollModuleScreen(
 
         when (activeTab) {
             0 -> {
+                item(key = "zero_fee_upi_auto_emi_vault") {
+                    com.waqar.institute.upi.UpiAndAutoEmiEmbeddedSection(
+                        uiState = state,
+                        viewModel = viewModel
+                    )
+                }
                 if (state.fees.isEmpty()) {
                     item {
                         EmptyStateCard(

@@ -82,4 +82,23 @@ class AdminSecurityAlertsViewModel(
         violationType = violationType,
         details = details
     )
+
+    /**
+     * Unlocks a student's 24-hour AI Tutor Security Cage in Firestore `ai_tutor_locks/{studentUid}`
+     * and local monotonic storage (Admin-only action from Admin Security Alerts).
+     */
+    fun unlockStudentAiTutor(
+        context: Context,
+        studentUid: String,
+        onComplete: (Result<Unit>) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val res = com.waqar.institute.ai.AiRateLimiterManager.unlockStudentAiTutorByAdmin(
+                context = context,
+                studentUid = studentUid
+            )
+            onComplete(res)
+        }
+    }
 }
+

@@ -1,18 +1,28 @@
 package quantum_physical_shield
 
+import android.content.Context
+import com.example.security.TinkMaterialVault
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.hypot
 import kotlin.math.tanh
 
 /**
  * 4. `quantum_physical_shield/PoincareHyperbolicVault.kt`
- * Non-Euclidean Poincaré Disk Coordinate Space Vault with Dynamic Möbius Transformations:
- *   f(z) = (a * z + b) / (c * z + d), where ad - bc != 0 and |z| < 1.
+ * Google Tink AES-256-GCM AEAD Vault (backed by Android Keystore) with Poincaré Unit Disk
+ * Möbius Coordinate Projection.
  *
- * Encodes sensitive session keys and biometric hashes into hyperbolic disk coordinates so
- * raw memory dumps only observe transformed non-Euclidean complex trajectories.
+ * Replaces toy floating-point reversibility as the cryptographic primitive with real Google Tink
+ * AES-256-GCM authenticated encryption while preserving exact public method signatures and
+ * hyperbolic coordinate projection APIs.
  */
 object PoincareHyperbolicVault {
+
+    @Volatile
+    private var appContext: Context? = null
+
+    fun bindContext(context: Context) {
+        appContext = context.applicationContext ?: context
+    }
 
     data class ComplexPoint(val re: Double, val im: Double) {
         fun magnitude(): Double = hypot(re, im)
@@ -33,12 +43,6 @@ object PoincareHyperbolicVault {
         fun conjugate() = ComplexPoint(re, -im)
     }
 
-    /**
-     * Automorphism of the Poincaré unit disk:
-     *   M(z) = (z - w0) / (1 - conj(w0) * z), with |w0| < 1
-     * Inverse automorphism:
-     *   M^-1(u) = (u + w0) / (1 + conj(w0) * u)
-     */
     data class MobiusDiskKey(val w0: ComplexPoint) {
         init {
             require(w0.magnitude() < 0.99) { "Poincaré disk anchor |w0| must be strictly < 1." }
@@ -48,7 +52,8 @@ object PoincareHyperbolicVault {
     data class HyperbolicVaultEntry(
         val keyAlias: String,
         val transformedPoints: List<ComplexPoint>,
-        val originalByteLength: Int
+        val originalByteLength: Int,
+        val tinkAeadCiphertext: ByteArray = ByteArray(0)
     )
 
     private val vaultStorage = ConcurrentHashMap<String, HyperbolicVaultEntry>()
@@ -67,15 +72,23 @@ object PoincareHyperbolicVault {
         return numerator / denominator
     }
 
+    private fun buildAad(keyAlias: String, mobiusKey: MobiusDiskKey): ByteArray =
+        "poincare_tink_v2|$keyAlias|${"%.6f".format(mobiusKey.w0.re)}|${"%.6f".format(mobiusKey.w0.im)}"
+            .toByteArray(Charsets.UTF_8)
+
     fun sealSecretInPoincareDisk(
         keyAlias: String,
         secretText: String,
         mobiusKey: MobiusDiskKey = MobiusDiskKey(ComplexPoint(0.35, -0.28))
     ): HyperbolicVaultEntry {
-        val bytes = secretText.toByteArray(Charsets.UTF_8)
-        val points = bytes.mapIndexed { idx, b ->
+        val plainBytes = secretText.toByteArray(Charsets.UTF_8)
+        val aad = buildAad(keyAlias, mobiusKey)
+        // Real Google Tink AES-256-GCM AEAD encryption backed by Android Keystore
+        val ciphertext = TinkMaterialVault.encryptBytes(appContext, plainBytes, aad)
+
+        // Project AEAD ciphertext bytes (never plaintext!) onto the Poincaré unit disk
+        val points = ciphertext.mapIndexed { idx, b ->
             val unsigned = b.toInt() and 0xFF
-            // Map byte [0..255] inside open unit disk |z| < 0.85
             val r = (unsigned.toDouble() - 128.0) / 256.0
             val theta = ((idx % 16) - 8) / 32.0
             val z = ComplexPoint(tanh(r) * 0.75, tanh(theta) * 0.35)
@@ -84,7 +97,8 @@ object PoincareHyperbolicVault {
         val entry = HyperbolicVaultEntry(
             keyAlias = keyAlias,
             transformedPoints = points,
-            originalByteLength = bytes.size
+            originalByteLength = plainBytes.size,
+            tinkAeadCiphertext = ciphertext
         )
         vaultStorage[keyAlias] = entry
         return entry
@@ -94,13 +108,18 @@ object PoincareHyperbolicVault {
         entry: HyperbolicVaultEntry,
         mobiusKey: MobiusDiskKey = MobiusDiskKey(ComplexPoint(0.35, -0.28))
     ): String {
-        val out = ByteArray(entry.originalByteLength)
-        for (i in 0 until entry.originalByteLength) {
-            val z = invertMobiusTransform(entry.transformedPoints[i], mobiusKey)
-            val atanhVal = 0.5 * kotlin.math.ln((1.0 + (z.re / 0.75).coerceIn(-0.999, 0.999)) / (1.0 - (z.re / 0.75).coerceIn(-0.999, 0.999)))
-            val recovered = kotlin.math.round(atanhVal * 256.0 + 128.0).toInt().coerceIn(0, 255)
-            out[i] = recovered.toByte()
+        val aad = buildAad(entry.keyAlias, mobiusKey)
+        val ciphertext = if (entry.tinkAeadCiphertext.isNotEmpty()) {
+            entry.tinkAeadCiphertext
+        } else {
+            ByteArray(entry.transformedPoints.size) { i ->
+                val z = invertMobiusTransform(entry.transformedPoints[i], mobiusKey)
+                val clamped = (z.re / 0.75).coerceIn(-0.999, 0.999)
+                val atanhVal = 0.5 * kotlin.math.ln((1.0 + clamped) / (1.0 - clamped))
+                kotlin.math.round(atanhVal * 256.0 + 128.0).toInt().coerceIn(0, 255).toByte()
+            }
         }
-        return String(out, Charsets.UTF_8)
+        val decrypted = TinkMaterialVault.decryptBytes(appContext, ciphertext, aad)
+        return String(decrypted, Charsets.UTF_8)
     }
 }

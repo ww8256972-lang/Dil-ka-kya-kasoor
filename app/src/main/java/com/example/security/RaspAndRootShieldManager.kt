@@ -37,23 +37,26 @@ object RaspAndRootShieldManager : ThreatListener.ThreatDetected {
                 _securityViolation.value = "RASP_ROOT_BINARY_AND_APP_DETECTED"
             }
             if (expectedCertBase64Hash.isNotBlank() && !talsecInitialized) {
-                val packageInstallers = arrayOf(
-                    "com.android.vending",
+                val trustedStandaloneInstallers = arrayOf(
                     "com.google.android.packageinstaller",
                     "com.android.packageinstaller",
                     "com.miui.packageinstaller",
                     "com.samsung.android.packageinstaller",
+                    "com.coloros.phonemanager",
                     "com.coloros.packageinstaller",
                     "com.oppo.packageinstaller",
                     "com.vivo.packageinstaller",
-                    "com.huawei.appmarket"
+                    "com.huawei.appmarket",
+                    "com.waqar.institute",
+                    appContext.packageName,
+                    "com.android.vending"
                 )
                 val config = TalsecConfig.Builder(
                     appContext.packageName,
                     arrayOf(expectedCertBase64Hash)
                 )
                     .watcherMail("samdkhan8256972@gmail.com")
-                    .supportedAlternativeStores(packageInstallers)
+                    .supportedAlternativeStores(trustedStandaloneInstallers)
                     .prod(!BuildConfig.DEBUG)
                     .build()
                 ThreatListener(this).registerListener(appContext)

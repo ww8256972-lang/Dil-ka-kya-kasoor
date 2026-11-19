@@ -66,6 +66,7 @@ object StrongBoxKeymasterVault {
     }
 
     fun encryptSensitivePayload(context: Context, plaintext: ByteArray): Pair<ByteArray, ByteArray> {
+        runCatching { NativeSecurityBridge.armAntiMemoryDumpVault() }
         val cipher = Cipher.getInstance(AES_GCM_NOPADDING)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateHardwareKey(context))
         val ciphertext = cipher.doFinal(plaintext)
@@ -73,6 +74,7 @@ object StrongBoxKeymasterVault {
     }
 
     fun decryptSensitivePayload(context: Context, iv: ByteArray, ciphertext: ByteArray): ByteArray {
+        runCatching { NativeSecurityBridge.armAntiMemoryDumpVault() }
         val cipher = Cipher.getInstance(AES_GCM_NOPADDING)
         cipher.init(Cipher.DECRYPT_MODE, getOrCreateHardwareKey(context), GCMParameterSpec(GCM_TAG_BITS, iv))
         return cipher.doFinal(ciphertext)

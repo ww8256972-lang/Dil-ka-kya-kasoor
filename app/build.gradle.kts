@@ -1,5 +1,7 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.io.File
+import java.security.KeyStore
+import java.security.MessageDigest
 import java.time.Duration
 
 plugins {
@@ -9,6 +11,7 @@ plugins {
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.secrets)
   alias(libs.plugins.google.services)
+  alias(libs.plugins.lsparanoid)
 }
 
 android {
@@ -19,16 +22,57 @@ android {
     applicationId = "com.aistudio.waqarinstitute.wciapp"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    val resolvedVersionCode = (
+      System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        ?: project.findProperty("appVersionCode")?.toString()?.toIntOrNull()
+        ?: 1
+      ).coerceAtLeast(1)
+    val resolvedVersionName = (
+      System.getenv("GITHUB_REF_NAME")?.takeIf { it.startsWith("v") }?.removePrefix("v")
+        ?: project.findProperty("appVersionName")?.toString()?.takeIf { it.isNotBlank() }
+        ?: "1.0"
+      )
+    versionCode = resolvedVersionCode
+    versionName = resolvedVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+    val resolveCertSha256FromKeystore: () -> String? = {
+      runCatching<String?> {
+        val injectedStore = project.findProperty("android.injected.signing.store.file")?.toString()?.takeIf { it.isNotBlank() }
+        val envStore = System.getenv("KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+        val defaultStore = "${rootDir}/my-upload-key.jks"
+        val candidatePath = injectedStore ?: envStore ?: defaultStore
+        val storeFile = file(candidatePath)
+        if (!storeFile.exists() || !storeFile.isFile) {
+          null
+        } else {
+          val storePass = (
+            project.findProperty("android.injected.signing.store.password")?.toString()?.takeIf { it.isNotBlank() }
+              ?: System.getenv("STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+              ?: "waqar_release_pass"
+            ).toCharArray()
+          val preferredAlias = project.findProperty("android.injected.signing.key.alias")?.toString()?.takeIf { it.isNotBlank() }
+            ?: "upload"
+          val ks = KeyStore.getInstance(KeyStore.getDefaultType())
+          storeFile.inputStream().use { ks.load(it, storePass) }
+          val cert = ks.getCertificate(preferredAlias)
+            ?: ks.aliases().iterator().asSequence().mapNotNull { ks.getCertificate(it) }.firstOrNull()
+          cert?.encoded?.let { encoded ->
+            MessageDigest.getInstance("SHA-256")
+              .digest(encoded)
+              .joinToString("") { b -> "%02x".format(b) }
+          }
+        }
+      }.getOrNull()
+    }
+
     val expectedCertSha256 = (
-      System.getenv("EXPECTED_CERT_SHA256")?.takeIf { it.isNotBlank() }
+      resolveCertSha256FromKeystore()?.takeIf { it.length == 64 }
+        ?: System.getenv("EXPECTED_CERT_SHA256")?.takeIf { it.isNotBlank() }
         ?: project.findProperty("EXPECTED_CERT_SHA256")?.toString()?.takeIf { it.isNotBlank() }
         ?: "2a92dc2ca40d67a8edbe6740e3ddcd288a0f7c3e5b7a62e0133a2ce986f111d5"
-      ).replace(":", "").lowercase()
+      ).replace(":", "").trim().lowercase()
     buildConfigField("String", "EXPECTED_RELEASE_CERT_SHA256", "\"$expectedCertSha256\"")
 
     val expectedDexCrc32 = (
@@ -36,6 +80,13 @@ android {
         ?: project.findProperty("EXPECTED_DEX_CRC32")?.toString()?.takeIf { it.isNotBlank() }
         ?: ""
       ).trim().lowercase().let { if (it == "unset" || it == "auto_baseline") "" else it }
+
+    val portalAuthTokenEndpointUrl = (
+      System.getenv("PORTAL_AUTH_TOKEN_ENDPOINT_URL")?.takeIf { it.isNotBlank() }
+        ?: project.findProperty("PORTAL_AUTH_TOKEN_ENDPOINT_URL")?.toString()?.takeIf { it.isNotBlank() }
+        ?: "https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/issuePortalCustomToken"
+      ).trim()
+    buildConfigField("String", "PORTAL_AUTH_TOKEN_ENDPOINT_URL", "\"$portalAuthTokenEndpointUrl\"")
 
     ndk {
       abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -46,8 +97,8 @@ android {
         cppFlags("-std=c++20 -fvisibility=hidden -fvisibility-inlines-hidden -ffunction-sections -fdata-sections -fstack-protector-strong -O2")
         arguments(
           "-DANDROID_STL=c++_shared",
-          "-DWCI_EXPECTED_CERT_SHA256=\"$expectedCertSha256\"",
-          "-DWCI_EXPECTED_DEX_CRC32=\"$expectedDexCrc32\""
+          "-DWCI_EXPECTED_CERT_SHA256=$expectedCertSha256",
+          "-DWCI_EXPECTED_DEX_CRC32=$expectedDexCrc32"
         )
       }
     }
@@ -122,8 +173,8 @@ android {
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   lint {
-    abortOnError = false
-    checkReleaseBuilds = false
+    abortOnError = true
+    checkReleaseBuilds = true
   }
   dependenciesInfo {
     includeInApk = false
@@ -137,6 +188,10 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  ignoreList.add("PORTAL_AUTH_TOKEN_ENDPOINT_URL")
+  ignoreList.add("GROQ_API_KEY")
+  ignoreList.add("CF_AI_GATEWAY_URL")
+  ignoreList.add("CF_AI_TOKEN")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
@@ -181,7 +236,7 @@ dependencies {
   implementation(libs.androidx.credentials)
   implementation(libs.androidx.credentials.play.services)
   implementation(libs.googleid)
-  implementation(libs.firebase.appcheck.debug)
+  debugImplementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.okhttp)
@@ -193,6 +248,7 @@ dependencies {
   implementation(libs.agora.full.sdk)
   implementation(libs.mlkit.face.detection)
   implementation(libs.mlkit.barcode.scanning)
+  implementation(libs.tensorflow.lite)
   implementation(libs.google.play.integrity)
 
   // Enterprise Security & Performance Libraries (9-Library Blueprint):

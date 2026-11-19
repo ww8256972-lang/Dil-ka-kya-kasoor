@@ -17,8 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.security.HardwareKeystoreVault
 import java.util.Arrays
 import kotlinx.coroutines.flow.Flow
-import net.sqlcipher.database.SQLiteDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Entity(
     tableName = "offline_attendance_queue",
@@ -222,10 +221,10 @@ abstract class InstituteLocalDatabase : RoomDatabase() {
                 val appCtx = context.applicationContext ?: context
 
                 val instance = runCatching {
-                    SQLiteDatabase.loadLibs(appCtx)
+                    System.loadLibrary("sqlcipher")
                     val passphraseBytes = HardwareKeystoreVault.getOrCreateSqlCipherPassphrase(appCtx)
                     val passphraseCopy = passphraseBytes.copyOf()
-                    val supportFactory = SupportFactory(passphraseCopy, null, false)
+                    val supportFactory = SupportOpenHelperFactory(passphraseCopy)
                     val encryptedDb = Room.databaseBuilder(
                         appCtx,
                         InstituteLocalDatabase::class.java,

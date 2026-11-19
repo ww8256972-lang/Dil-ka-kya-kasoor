@@ -20,21 +20,44 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 /**
- * Zero-Trust Firebase Cloud Functions Server-Sent Events (SSE) Streaming Client
- * (`OpenAiCloudFunctionSseClient.kt`).
+ * Zero-Bill Institute AI Cloud Functions Server-Sent Events (SSE) Streaming Client.
  *
- * Security Guarantees:
- * - Zero OpenAI API keys (`sk-proj-...`) are stored in the APK, BuildConfig, or client memory.
- * - Attaches a live Firebase App Check attestation token (`X-Firebase-AppCheck`) to every request
- *   so the Cloud Function proxy (`streamOpenAiTutor`) verifies client authenticity before calling OpenAI.
- * - Streams real-time SSE chunks (`text/event-stream`) line-by-line for instant progressive rendering.
+ * Security & Cost Guarantees:
+ * - Zero paid API usage and zero API keys (`GROQ_API_KEY`, `CF_AI_GATEWAY_URL`, `CF_AI_TOKEN`)
+ *   are ever stored in the Android APK, BuildConfig, or client memory.
+ * - Attaches BOTH a verified Firebase Auth ID token (`Authorization: Bearer`) AND a live
+ *   Firebase App Check attestation token (`X-Firebase-AppCheck`) to every request sent to
+ *   `streamInstituteAiTutor` (asia-east1).
+ * - Routes through Groq Free Plan (3,000 RPD + 14,400 RPD Llama Prompt Guard) via Cloudflare
+ *   AI Gateway + Cloudflare Workers AI fallback (`@cf/google/gemma-4-26b-a4b-it`).
+ * - Throws [GroqAndCloudflareExhaustedException] ONLY when the server explicitly returns
+ *   `{ "fallbackEligible": "GEMINI_FREE_LAST_RESORT", "reason": "GROQ_AND_CLOUDFLARE_EXHAUSTED" }`.
  */
 @Obfuscate
 object OpenAiCloudFunctionSseClient {
 
     const val DEFAULT_CLOUD_FUNCTION_SSE_URL =
-        "https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/streamOpenAiTutor"
-    const val PROXY_MODEL_NAME = "gpt-4o-mini"
+        "https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/streamInstituteAiTutor"
+    const val PROXY_MODEL_NAME = "groq/gpt-oss-120b"
+    const val LAST_RESORT_EXHAUSTED_REASON = "GROQ_AND_CLOUDFLARE_EXHAUSTED"
+    const val LAST_RESORT_ELIGIBLE_FLAG = "GEMINI_FREE_LAST_RESORT"
+
+    class GroqAndCloudflareExhaustedException(
+        val reason: String = LAST_RESORT_EXHAUSTED_REASON,
+        message: String = "Groq and Cloudflare Workers AI free quotas are exhausted."
+    ) : IllegalStateException(message)
+
+    class ProxySecurityViolationException(
+        val strikeCount: Int,
+        val locked: Boolean,
+        val lockedUntilMs: Long,
+        override val message: String
+    ) : SecurityException(message)
+
+    class ProxyRateLimitException(
+        val retryAfterSeconds: Long,
+        override val message: String
+    ) : IllegalStateException(message)
 
     private val sseHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -46,15 +69,18 @@ object OpenAiCloudFunctionSseClient {
     }
 
     sealed class SseFrame {
-        data class Delta(val text: String) : SseFrame()
+        data class Delta(val text: String, val model: String? = null) : SseFrame()
+        data class FallbackEligible(val reason: String, val message: String) : SseFrame()
         object Done : SseFrame()
         data class Error(val message: String) : SseFrame()
         object Ignored : SseFrame()
     }
 
     /**
-     * Parses a single Server-Sent Events (`data: ...`) line from either our Firebase Cloud Function
-     * SSE proxy (`{"delta":"..."}`) or standard OpenAI SSE format (`{"choices":[{"delta":{"content":"..."}}]}`).
+     * Parses a single Server-Sent Events (`data: ...`) line from the Zero-Bill
+     * `streamInstituteAiTutor` proxy (`{"delta":"..."}`, `{"choices":[...]}`,
+     * `{"fallbackEligible":"GEMINI_FREE_LAST_RESORT","reason":"GROQ_AND_CLOUDFLARE_EXHAUSTED"}`,
+     * `{"error":"..."}`, or `[DONE]`).
      */
     fun parseSseDataLine(rawLine: String): SseFrame {
         val trimmed = rawLine.trim()
@@ -67,13 +93,20 @@ object OpenAiCloudFunctionSseClient {
 
         return try {
             val json = JSONObject(payload)
+            if (isExhaustionFallbackPayload(json)) {
+                return SseFrame.FallbackEligible(
+                    reason = json.optString("reason", LAST_RESORT_EXHAUSTED_REASON),
+                    message = json.optString("error", "Primary free AI quotas exhausted.")
+                )
+            }
             if (json.has("error")) {
                 val errVal = json.optString("error").ifBlank { "Proxy SSE error" }
                 return SseFrame.Error(errVal)
             }
             if (json.has("delta")) {
                 val deltaText = json.optString("delta", "")
-                return if (deltaText.isNotEmpty()) SseFrame.Delta(deltaText) else SseFrame.Ignored
+                val modelTag = json.optString("model", "").takeIf { it.isNotBlank() }
+                return if (deltaText.isNotEmpty()) SseFrame.Delta(deltaText, modelTag) else SseFrame.Ignored
             }
             val choices = json.optJSONArray("choices")
             if (choices != null && choices.length() > 0) {
@@ -88,6 +121,13 @@ object OpenAiCloudFunctionSseClient {
         } catch (_: Exception) {
             SseFrame.Ignored
         }
+    }
+
+    fun isExhaustionFallbackPayload(json: JSONObject): Boolean {
+        val eligible = json.optString("fallbackEligible", "").trim()
+        val reason = json.optString("reason", "").trim()
+        return eligible.equals(LAST_RESORT_ELIGIBLE_FLAG, ignoreCase = true) &&
+            reason.equals(LAST_RESORT_EXHAUSTED_REASON, ignoreCase = true)
     }
 
     private suspend fun fetchAppCheckTokenSafe(): String? {
@@ -107,44 +147,77 @@ object OpenAiCloudFunctionSseClient {
     }
 
     /**
-     * Streams progressive AI completion text from the Firebase Cloud Functions SSE proxy
-     * protected by Firebase App Check.
+     * Streams progressive AI completion text from `streamInstituteAiTutor` (asia-east1)
+     * protected by Firebase Auth ID Token + Firebase App Check.
      */
     fun streamFromCloudFunctionProxy(
         systemPrompt: String,
         userPrompt: String,
         role: String,
-        endpointUrl: String = DEFAULT_CLOUD_FUNCTION_SSE_URL
+        endpointUrl: String = DEFAULT_CLOUD_FUNCTION_SSE_URL,
+        featureType: String = "TUTOR_CHAT",
+        languageCode: String = "EN"
     ): Flow<String> = flow {
-        val appCheckToken = fetchAppCheckTokenSafe()
-            ?: throw IllegalStateException("App Check token unavailable for Cloud Function SSE proxy.")
         val idToken = fetchIdTokenSafe()
+            ?: throw IllegalStateException("Firebase Auth session required for AI Tutor.")
+        val appCheckToken = fetchAppCheckTokenSafe()
+            ?: throw IllegalStateException("App Check attestation token unavailable for AI Tutor.")
 
         val requestJson = JSONObject().apply {
-            put("model", PROXY_MODEL_NAME)
             put("systemPrompt", systemPrompt)
             put("userPrompt", userPrompt)
+            put("featureType", featureType)
+            put("languageCode", languageCode)
             put("role", role)
         }
 
         val reqBuilder = Request.Builder()
             .url(endpointUrl)
-            .header("Accept", "text/event-stream")
+            .header("Accept", "text/event-stream, application/json")
             .header("Cache-Control", "no-cache")
+            .header("Authorization", "Bearer $idToken")
             .header("X-Firebase-AppCheck", appCheckToken)
             .header("X-WCI-Portal-Role", role)
             .post(requestJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
 
-        if (!idToken.isNullOrBlank()) {
-            reqBuilder.header("Authorization", "Bearer $idToken")
-        }
-
         val accumulated = StringBuilder()
         sseHttpClient.newCall(reqBuilder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("SSE proxy returned HTTP ${response.code}")
+            val contentType = response.header("Content-Type").orEmpty().lowercase()
+            val body = response.body ?: throw IllegalStateException("Empty AI proxy response body")
+
+            // Handle JSON control responses (200/403/429 exhaustion, security strikes, or quota errors)
+            if (!response.isSuccessful || contentType.contains("application/json")) {
+                val rawBody = body.string()
+                val parsed = runCatching { JSONObject(rawBody) }.getOrNull()
+                if (parsed != null) {
+                    if (isExhaustionFallbackPayload(parsed)) {
+                        throw GroqAndCloudflareExhaustedException(
+                            reason = parsed.optString("reason", LAST_RESORT_EXHAUSTED_REASON),
+                            message = parsed.optString("error", "Groq and Cloudflare quotas exhausted.")
+                        )
+                    }
+                    if (response.code == 403 && (parsed.has("securityStrike") || parsed.optBoolean("locked", false))) {
+                        throw ProxySecurityViolationException(
+                            strikeCount = parsed.optInt("securityStrike", 1),
+                            locked = parsed.optBoolean("locked", false),
+                            lockedUntilMs = parsed.optLong("lockedUntilMs", 0L),
+                            message = parsed.optString("error", "Security violation blocked.")
+                        )
+                    }
+                    if (response.code == 429 && parsed.optBoolean("quotaExceeded", false)) {
+                        throw ProxyRateLimitException(
+                            retryAfterSeconds = parsed.optLong("retryAfterSeconds", 10L),
+                            message = parsed.optString("error", "Daily AI quota reached.")
+                        )
+                    }
+                    val errMsg = parsed.optString("error", "").takeIf { it.isNotBlank() }
+                    if (errMsg != null) {
+                        throw IllegalStateException(errMsg)
+                    }
+                }
+                throw IllegalStateException("AI Tutor proxy returned HTTP ${response.code}")
             }
-            val body = response.body ?: throw IllegalStateException("Empty SSE proxy stream")
+
             BufferedReader(InputStreamReader(body.byteStream(), StandardCharsets.UTF_8)).use { reader ->
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
@@ -152,6 +225,12 @@ object OpenAiCloudFunctionSseClient {
                         is SseFrame.Delta -> {
                             accumulated.append(frame.text)
                             emit(accumulated.toString())
+                        }
+                        is SseFrame.FallbackEligible -> {
+                            throw GroqAndCloudflareExhaustedException(
+                                reason = frame.reason,
+                                message = frame.message
+                            )
                         }
                         is SseFrame.Done -> break
                         is SseFrame.Error -> throw IllegalStateException(frame.message)
@@ -162,7 +241,7 @@ object OpenAiCloudFunctionSseClient {
         }
 
         if (accumulated.isEmpty()) {
-            throw IllegalStateException("No SSE tokens received from Cloud Function proxy.")
+            throw IllegalStateException("No SSE tokens received from Zero-Bill AI proxy.")
         }
     }.flowOn(Dispatchers.IO)
 }

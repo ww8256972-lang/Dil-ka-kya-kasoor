@@ -14,7 +14,7 @@ import javax.crypto.spec.SecretKeySpec
 object ShamirMemoryVault {
 
     // 521-bit Mersenne Prime p = 2^521 - 1
-    private val PRIME_FIELD: BigInteger = BigInteger.TWO.pow(521).subtract(BigInteger.ONE)
+    private val PRIME_FIELD: BigInteger = BigInteger.valueOf(2L).pow(521).subtract(BigInteger.ONE)
 
     data class SecretShare(
         val indexX: Int,

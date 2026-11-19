@@ -138,6 +138,37 @@ object TamperProofExamClock {
     }
 
     /**
+     * [B1] Computes a tamper-proof monotonic deadline supporting BOTH seconds (e.g. 30s)
+     * and minutes (e.g. 45 * 60 = 2700s).
+     */
+    fun elapsedDeadlineAfterDurationSeconds(
+        durationSeconds: Int,
+        currentElapsedRealtimeMs: Long = SystemClock.elapsedRealtime()
+    ): Long {
+        val safeSeconds = durationSeconds.coerceIn(10, 360 * 60)
+        return currentElapsedRealtimeMs + (safeSeconds * 1_000L)
+    }
+
+    /**
+     * [B1] Parses a strict 24-hour date + time (`YYYY-MM-DD` + `HH:mm`, 00:00..23:59) to UTC epoch ms.
+     */
+    fun parse24HourScheduleEpochMs(dateIso: String, startTime24h: String = ""): Long {
+        val cleanDate = dateIso.trim()
+        val cleanTime = startTime24h.trim()
+        val combined = when {
+            cleanDate.length >= 16 && cleanDate.contains(":") -> cleanDate.take(16)
+            cleanDate.length >= 10 && cleanTime.matches(Regex("""^([01]\d|2[0-3]):[0-5]\d$""")) ->
+                "${cleanDate.take(10)} $cleanTime"
+            else -> return 0L
+        }
+        return runCatching {
+            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
+                isLenient = false
+            }.parse(combined)?.time ?: 0L
+        }.getOrDefault(0L)
+    }
+
+    /**
      * Computes remaining exam seconds strictly from a monotonic `elapsedRealtime()` deadline.
      */
     fun computeRemainingSeconds(

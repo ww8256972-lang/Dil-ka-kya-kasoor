@@ -98,7 +98,8 @@ val AllDrawerDestinations = listOf(
         WciColors.Info
     ),
     com.waqar.institute.navigation.AppDrawer.codingSandboxDestination,
-    com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination
+    com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination,
+    com.waqar.institute.navigation.AppDrawer.upiAutoEmiVaultDestination
 )
 
 fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> {
@@ -137,7 +138,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M21_HELPDESK",
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND
         )
         PortalRole.PARENT -> setOf(
             "M01_DASHBOARD",
@@ -151,7 +153,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M21_HELPDESK",
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND
         )
     }
     return AllDrawerDestinations.filter { it.routeId in allowedIds }.map { dest ->
@@ -281,6 +284,16 @@ private fun PortalShellBody(
     var showProfileSheet by remember { mutableStateOf(false) }
     var showSignOutConfirmation by remember { mutableStateOf(false) }
     val sessionExpiredMsg by ConcurrentSessionManager.sessionExpiredMessage.collectAsState()
+
+    LaunchedEffect(activeRole, currentRoute, state.userProfile?.uid) {
+        runCatching {
+            com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.verifyPortalRouteAndAction(
+                userId = state.userProfile?.uid ?: state.userProfile?.username.orEmpty(),
+                activeRole = activeRole.key,
+                routeId = currentRoute
+            )
+        }
+    }
 
     val activeRoutePalette = remember(currentRoute, activeRole) {
         WciColors.paletteForRoute(currentRoute, activeRole)
@@ -798,6 +811,12 @@ private fun PortalShellBody(
                                 com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE -> {
                                     com.waqar.institute.academic.AcademicProSuiteScreen(
                                         state = state,
+                                        viewModel = viewModel
+                                    )
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND -> {
+                                    com.waqar.institute.upi.UpiAndAutoEmiVaultScreen(
+                                        uiState = state,
                                         viewModel = viewModel
                                     )
                                 }

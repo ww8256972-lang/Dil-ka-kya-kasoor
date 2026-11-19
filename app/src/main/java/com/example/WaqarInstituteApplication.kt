@@ -4,15 +4,17 @@ import android.app.Application
 import android.content.Context
 import com.example.security.ensureFirebaseInitialized
 import com.waqar.institute.utils.GlobalExceptionHandler
-import kotlinx.coroutines.launch
 
 /**
- * Application entry point for Waqar Computer Institute ERP.
+ * Legacy Application class kept solely for backward source compatibility.
  *
- * Guarantees that `FirebaseApp` and `GlobalExceptionHandler` are initialized
- * before any Activity, WorkManager CoroutineWorker, Service, or BroadcastReceiver starts,
- * even when built via GitHub Actions CI without a bundled `google-services.json`.
+ * The active Application declared in `AndroidManifest.xml` is
+ * [com.waqar.institute.universal.WaqarUniversalAppBootstrapper].
  */
+@Deprecated(
+    message = "Use com.waqar.institute.universal.WaqarUniversalAppBootstrapper declared in AndroidManifest.xml.",
+    replaceWith = ReplaceWith("com.waqar.institute.universal.WaqarUniversalAppBootstrapper")
+)
 class WaqarInstituteApplication : Application() {
 
     override fun attachBaseContext(base: Context?) {
@@ -27,12 +29,5 @@ class WaqarInstituteApplication : Application() {
         super.onCreate()
         runCatching { GlobalExceptionHandler.install() }
         runCatching { ensureFirebaseInitialized(this) }
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-            runCatching {
-                com.waqar.institute.biometric.AdminFaceConversionAndGateManager.ensureMasterAdminPhotoEnrolled(
-                    this@WaqarInstituteApplication
-                )
-            }
-        }
     }
 }

@@ -53,7 +53,7 @@ class ExamFaceAuthViewModel : ViewModel() {
             )
             result.fold(
                 onSuccess = { similarity ->
-                    val pct = (similarity * 100f).toInt().coerceIn(85, 100)
+                    val pct = (similarity * 100f).toInt().coerceIn(0, 100)
                     _status.value = FaceVerificationGateStatus.VerifiedMatch(similarityPercent = pct)
                     onVerifiedSuccess()
                 },

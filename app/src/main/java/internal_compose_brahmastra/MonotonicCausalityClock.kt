@@ -5,8 +5,9 @@ import kotlin.math.abs
 
 /**
  * 5. `internal_compose_brahmastra/MonotonicCausalityClock.kt`
- * Hardware Uptime (`SystemClock.elapsedRealtimeNanos()`) Cryptographic Ticker that detects
- * and blocks device wall-clock rollback or time-travel tampering during Exams and Fee Deadlines.
+ * Hardware Uptime (`SystemClock.elapsedRealtimeNanos()`) Cryptographic Ticker anchored to
+ * Firestore Server Timestamps (`syncServerTimestampOffset`) that detects and blocks device
+ * wall-clock rollback or time-travel tampering during Exams and Fee Deadlines.
  */
 object MonotonicCausalityClock {
 
@@ -20,6 +21,10 @@ object MonotonicCausalityClock {
     private var anchorWallEpochMs: Long = System.currentTimeMillis()
     @Volatile
     private var anchorElapsedNs: Long = nowElapsedNanos()
+    @Volatile
+    private var serverAnchored: Boolean = false
+    @Volatile
+    private var lastMeasuredServerOffsetMs: Long = 0L
 
     fun nowElapsedNanos(): Long {
         val sysElapsed = runCatching { SystemClock.elapsedRealtimeNanos() }.getOrDefault(0L)
@@ -36,8 +41,28 @@ object MonotonicCausalityClock {
     }
 
     /**
+     * Anchors the hardware monotonic clock to an authoritative Firestore/Cloud Function server epoch.
+     */
+    @Synchronized
+    fun syncServerTimestampOffset(
+        serverEpochMs: Long,
+        elapsedNs: Long = nowElapsedNanos(),
+        localWallEpochMs: Long = System.currentTimeMillis()
+    ) {
+        if (serverEpochMs <= 0L) return
+        anchorWallEpochMs = serverEpochMs
+        anchorElapsedNs = elapsedNs
+        lastMeasuredServerOffsetMs = serverEpochMs - localWallEpochMs
+        serverAnchored = true
+    }
+
+    fun isServerAnchored(): Boolean = serverAnchored
+
+    fun lastServerOffsetMs(): Long = lastMeasuredServerOffsetMs
+
+    /**
      * Compares elapsed hardware monotonic nanoseconds against current `System.currentTimeMillis()`
-     * to detect if the user rolled the Android system clock backward or forward (> 15 seconds drift).
+     * (and server anchor when synced) to detect device wall-clock rollback or forward tampering.
      */
     fun verifyWallClockCausality(
         currentWallEpochMs: Long = System.currentTimeMillis(),

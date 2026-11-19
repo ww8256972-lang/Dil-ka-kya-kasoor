@@ -38,14 +38,14 @@ object CertificatePinningClient {
         "securetoken.googleapis.com",
         "firebaseinstallations.googleapis.com",
         "firebaseremoteconfig.googleapis.com",
-        "api.openai.com"
+        "cloudfunctions.net"
     )
 
     fun buildCertificatePinner(): CertificatePinner {
         return CertificatePinner.Builder()
             .add("*.googleapis.com", GTS_ROOT_R1_PIN, GTS_ROOT_R2_PIN, GTS_CA_1C3_PIN, GTS_WR2_PIN)
             .add("*.firebaseio.com", GTS_ROOT_R1_PIN, GTS_ROOT_R2_PIN, GTS_CA_1C3_PIN, GTS_WR2_PIN)
-            .add("api.openai.com", GTS_ROOT_R1_PIN, DIGICERT_GLOBAL_ROOT_G2_PIN)
+            .add("*.cloudfunctions.net", GTS_ROOT_R1_PIN, GTS_ROOT_R2_PIN, GTS_CA_1C3_PIN, GTS_WR2_PIN, DIGICERT_GLOBAL_ROOT_G2_PIN)
             .build()
     }
 

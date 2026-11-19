@@ -1,4 +1,4 @@
-name: Deploy OpenAI SSE Proxy — Firebase Cloud Functions
+name: Deploy Zero-Bill AI Tutor & Auth Proxy — Firebase Cloud Functions
 
 on:
   workflow_dispatch:
@@ -17,8 +17,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy-openai-sse-proxy:
-    name: Secret Sync & Deploy streamOpenAiTutor
+  deploy-zero-bill-ai-tutor-proxy:
+    name: Secret Sync & Deploy streamInstituteAiTutor
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -46,7 +46,9 @@ jobs:
       - name: Verify Firebase Project & Required GitHub Secrets
         id: check_secrets
         env:
-          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_GROQ_KEY: ${{ secrets.GROQ_API_KEY != '' }}
+          HAS_CF_GATEWAY: ${{ secrets.CF_AI_GATEWAY_URL != '' }}
+          HAS_CF_TOKEN: ${{ secrets.CF_AI_TOKEN != '' }}
           HAS_PRIMARY_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
           HAS_PROJECT_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247 != '' }}
         run: |
@@ -55,23 +57,25 @@ jobs:
             exit 1
           fi
 
-          if [ "$HAS_OPENAI_KEY" != "true" ] || ( [ "$HAS_PRIMARY_SA" != "true" ] && [ "$HAS_PROJECT_SA" != "true" ] ); then
+          if [ "$HAS_GROQ_KEY" != "true" ] || [ "$HAS_CF_GATEWAY" != "true" ] || [ "$HAS_CF_TOKEN" != "true" ] || ( [ "$HAS_PRIMARY_SA" != "true" ] && [ "$HAS_PROJECT_SA" != "true" ] ); then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "::error::Missing required GitHub Repository Secrets. Please set OPENAI_API_KEY and FIREBASE_SERVICE_ACCOUNT in Settings -> Secrets and variables -> Actions."
+              echo "::error::Missing required GitHub Repository Secrets. Please set GROQ_API_KEY, CF_AI_GATEWAY_URL, CF_AI_TOKEN, and FIREBASE_SERVICE_ACCOUNT in Settings -> Secrets and variables -> Actions."
               exit 1
             else
-              echo "::notice title=Cloud Function Deploy Skipped::Set OPENAI_API_KEY and FIREBASE_SERVICE_ACCOUNT in GitHub Repository Secrets to deploy streamOpenAiTutor automatically."
+              echo "::notice title=Cloud Function Deploy Skipped::Set GROQ_API_KEY, CF_AI_GATEWAY_URL, CF_AI_TOKEN, and FIREBASE_SERVICE_ACCOUNT in GitHub Repository Secrets to deploy streamInstituteAiTutor automatically."
               exit 0
             fi
           fi
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Authenticate Service Account, Sync OPENAI_API_KEY Secret & Deploy streamOpenAiTutor
+      - name: Authenticate Service Account, Sync Zero-Bill AI Secrets & Deploy streamInstituteAiTutor
         if: steps.check_secrets.outputs.ready == 'true'
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CF_AI_GATEWAY_URL: ${{ secrets.CF_AI_GATEWAY_URL }}
+          CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
           FIREBASE_SA_RAW: ${{ secrets.FIREBASE_SERVICE_ACCOUNT || secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247 }}
           PROJECT_ID: gen-lang-client-0309263247
         run: |
@@ -88,16 +92,28 @@ jobs:
           chmod 600 "$SA_FILE"
           export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
 
-          # Store/rotate OPENAI_API_KEY securely in Google Cloud Secret Manager (never printed to logs)
-          printf '%s' "$OPENAI_API_KEY" | npx --yes firebase-tools@latest functions:secrets:set OPENAI_API_KEY \
+          # Store/rotate Zero-Bill AI secrets securely in Google Cloud Secret Manager (never printed to logs)
+          printf '%s' "$GROQ_API_KEY" | npx --yes firebase-tools@latest functions:secrets:set GROQ_API_KEY \
             --project "$PROJECT_ID" \
             --data-file=- \
             --force \
             --non-interactive
 
-          # Deploy strictly the OpenAI SSE proxy function without touching Hosting or Firestore rules
+          printf '%s' "$CF_AI_GATEWAY_URL" | npx --yes firebase-tools@latest functions:secrets:set CF_AI_GATEWAY_URL \
+            --project "$PROJECT_ID" \
+            --data-file=- \
+            --force \
+            --non-interactive
+
+          printf '%s' "$CF_AI_TOKEN" | npx --yes firebase-tools@latest functions:secrets:set CF_AI_TOKEN \
+            --project "$PROJECT_ID" \
+            --data-file=- \
+            --force \
+            --non-interactive
+
+          # Deploy all three production Cloud Functions in asia-east1 without touching Hosting or Firestore rules
           npx --yes firebase-tools@latest deploy \
-            --only functions:streamOpenAiTutor \
+            --only functions:streamInstituteAiTutor,functions:gradeExamSubmission,functions:issuePortalCustomToken \
             --project "$PROJECT_ID" \
             --force \
             --non-interactive

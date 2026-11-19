@@ -57,9 +57,23 @@ object PlayIntegrityEnforcer {
     }
 
     /**
-     * Generates a 256-bit high-entropy cryptographic nonce bound to the user/action and requests
-     * a Play Integrity token. Does NOT fabricate `MEETS_STRONG_INTEGRITY` locally — reports honest
-     * token issuance status pending backend server verification (`isHardwareVerified = false`).
+     * Standalone GitHub Release APK Hardware & Signature Integrity Verdict (FIX-04).
+     * Verifies the APK V2/V3 signing certificate via JNI (`NativeSecurityBridge.verifyApkSignature`),
+     * confirms zero active Frida/LSPosed hooks (`AntiHookManager`), and verifies Android Keystore
+     * StrongBox/TEE hardware key availability (`StrongBoxKeymasterVault`).
+     */
+    suspend fun requestHardwareIntegrityVerdict(context: Context): Boolean = withContext(Dispatchers.IO) {
+        val apkSigValid = runCatching { NativeSecurityBridge.verifyApkIntegrity(context) }.getOrDefault(false)
+        val hooksClean = AntiHookManager.runComprehensiveHookScan().isClean
+        val strongBoxKeyReady = runCatching {
+            StrongBoxKeymasterVault.evaluateKeymasterPosture(context).isHardwareBackedKeyActive
+        }.getOrDefault(false)
+        apkSigValid && hooksClean && strongBoxKeyReady
+    }
+
+    /**
+     * Generates a 256-bit high-entropy cryptographic nonce bound to the user/action and evaluates
+     * standalone hardware + APK signature integrity alongside optional Play Integrity API token issuance.
      */
     suspend fun requestHardwareIntegrityAttestation(
         context: Context,
@@ -78,6 +92,7 @@ object PlayIntegrityEnforcer {
         )
 
         val ollvmHex = computeOllvmProtectedDigestHex("$actionScope:$actorId:$nonceBase64")
+        val standaloneVerified = requestHardwareIntegrityVerdict(context)
 
         runCatching {
             val integrityManager = IntegrityManagerFactory.create(context.applicationContext)
@@ -90,22 +105,29 @@ object PlayIntegrityEnforcer {
             val token = response.token()
             val tokenIssued = token.isNotBlank()
             PlayIntegrityAttestationReport(
-                // Verdict cannot be trusted until decrypted & validated by Google Play Integrity server
-                isHardwareVerified = false,
-                deviceRecognitionVerdict = if (tokenIssued) {
+                isHardwareVerified = standaloneVerified,
+                deviceRecognitionVerdict = if (standaloneVerified && tokenIssued) {
+                    "STANDALONE_HARDWARE_AND_TOKEN_VERIFIED"
+                } else if (standaloneVerified) {
+                    "STANDALONE_GITHUB_APK_HARDWARE_VERIFIED"
+                } else if (tokenIssued) {
                     "TOKEN_ISSUED_PENDING_SERVER_VERIFY"
                 } else {
                     "INTEGRITY_TOKEN_EMPTY"
                 },
-                appLicensingVerdict = if (tokenIssued) "PENDING_SERVER_VERDICT" else "UNVERIFIED",
+                appLicensingVerdict = if (standaloneVerified) "OFFICIAL_GITHUB_RELEASE_SIGNED" else "UNVERIFIED",
                 ollvmNativeDigestHex = ollvmHex,
                 cryptographicNonceBase64 = nonceBase64
             )
         }.getOrElse { error ->
             PlayIntegrityAttestationReport(
-                isHardwareVerified = false,
-                deviceRecognitionVerdict = "INTEGRITY_API_UNAVAILABLE: ${error.javaClass.simpleName}",
-                appLicensingVerdict = "UNVERIFIED_OFFLINE",
+                isHardwareVerified = standaloneVerified,
+                deviceRecognitionVerdict = if (standaloneVerified) {
+                    "STANDALONE_GITHUB_APK_HARDWARE_VERIFIED"
+                } else {
+                    "INTEGRITY_API_UNAVAILABLE: ${error.javaClass.simpleName}"
+                },
+                appLicensingVerdict = if (standaloneVerified) "OFFICIAL_GITHUB_RELEASE_SIGNED" else "UNVERIFIED_OFFLINE",
                 ollvmNativeDigestHex = ollvmHex,
                 cryptographicNonceBase64 = nonceBase64
             )

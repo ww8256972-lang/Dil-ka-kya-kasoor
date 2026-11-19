@@ -4,82 +4,86 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // =========================================================================
-    // GLOBAL HELPER FUNCTIONS (Zero-Trust Validation & Role-Scoped Access)
+    // GLOBAL HELPER FUNCTIONS (Strict Zero-Trust — ZERO request.auth == null)
     // =========================================================================
 
-    function isAuthenticated() {
+    function isSignedIn() {
       return request.auth != null;
     }
 
+    function isAuthenticated() {
+      return isSignedIn();
+    }
+
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isPortalCredentialSessionUid(uid) {
-      return uid is string && (
-        uid.matches('^admin_.*') ||
-        uid.matches('^cred_.*')
-      );
-    }
-
-    function isAdminCredentialSessionUid(uid) {
-      return uid is string && (
-        uid.matches('^admin_.*') ||
-        uid in ['cred_admin', 'cred_waqar', 'cred_waqar_admin'] ||
-        (exists(/databases/$(database)/documents/users/$(uid)) &&
-          get(/databases/$(database)/documents/users/$(uid)).data.get('isAdmin', false) == true)
-      );
+    function role() {
+      return (isSignedIn() && 'role' in request.auth.token && request.auth.token.role is string)
+        ? request.auth.token.role.lower()
+        : '';
     }
 
     function isBootstrappedAdminEmail() {
-      return isAuthenticated() &&
-        request.auth.token.email == "samdkhan8256972@gmail.com" &&
+      return isSignedIn() &&
+        request.auth.token.email == 'samdkhan8256972@gmail.com' &&
         request.auth.token.email_verified == true;
     }
 
     function userDocExists() {
-      return isAuthenticated() &&
+      return isSignedIn() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    function sessionDocExists() {
-      return isAuthenticated() &&
-        exists(/databases/$(database)/documents/sessions/$(request.auth.uid));
-    }
-
-    // 1. Custom Claims + User Profile + Session Fallback Role Resolution
     function currentUserRole() {
-      return (request.auth != null && 'role' in request.auth.token && request.auth.token.role is string)
-        ? request.auth.token.role
-        : (userDocExists()
-            ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
-            : (sessionDocExists() && ('role' in get(/databases/$(database)/documents/sessions/$(request.auth.uid)).data)
-                ? get(/databases/$(database)/documents/sessions/$(request.auth.uid)).data.role
-                : (isBootstrappedAdminEmail() ? 'admin' : 'student')));
-    }
-
-    function currentRole() {
-      return currentUserRole();
+      return role() != ''
+        ? role()
+        : (isBootstrappedAdminEmail()
+            ? 'admin'
+            : (userDocExists() && ('role' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+                ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role.lower()
+                : 'student'));
     }
 
     function isAdmin() {
-      return isBootstrappedAdminEmail() || (isAuthenticated() && (
-        currentUserRole() == 'admin' ||
-        currentUserRole() == 'ADMIN' ||
-        (userDocExists() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isAdmin', false) == true)
-      ));
+      return isSignedIn() && (
+        role() == 'admin' ||
+        isBootstrappedAdminEmail() ||
+        (userDocExists() && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isAdmin', false) == true ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin'
+        ))
+      );
     }
 
     function isTeacher() {
-      return isAuthenticated() && (currentUserRole() == 'teacher' || currentUserRole() == 'TEACHER' || isAdmin());
+      return isSignedIn() && (
+        isAdmin() ||
+        role() == 'teacher' ||
+        currentUserRole() == 'teacher'
+      );
     }
 
-    function isStaffOrAdmin() {
+    function isStaff() {
       return isAdmin() || isTeacher();
     }
 
-    function isAuthorizedWriterForOwnerUid(ownerUid) {
-      return isStaffOrAdmin() || (request.auth == null && isPortalCredentialSessionUid(ownerUid));
+    function isStaffOrAdmin() {
+      return isStaff();
+    }
+
+    function linkedEntityId() {
+      return (isSignedIn() && 'linkedEntityId' in request.auth.token && request.auth.token.linkedEntityId is string)
+        ? request.auth.token.linkedEntityId
+        : '';
+    }
+
+    function matchesAuthenticatedIdentity(entityOrUid) {
+      return isSignedIn() && entityOrUid is string && entityOrUid.size() > 0 && (
+        request.auth.uid == entityOrUid ||
+        (linkedEntityId() != '' && linkedEntityId() == entityOrUid)
+      );
     }
 
     function isValidString(val, minLen, maxLen) {
@@ -90,7 +94,7 @@ service cloud.firestore {
       return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
     }
 
-    // 2. Server Timestamp Clock-Drift Lock
+    // Server Timestamp Clock-Drift Lock
     function isValidTimestamp(ts) {
       return (ts is timestamp && ts <= request.time + duration.value(5, 'm')) ||
         (ts is int && ts >= (request.time.toMillis() - 300000) && ts <= (request.time.toMillis() + 300000));
@@ -143,15 +147,17 @@ service cloud.firestore {
         isValidTimestamp(data.createdAt);
     }
 
-    // Zero-Trust Cloud Credential Store for Admin-Provisioned Portal Logins
     function isValidPortalCredential(data) {
       let requiredKeys = ['username', 'passwordHash', 'passwordSalt', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'createdAt'];
-      let allowedKeys = ['username', 'passwordHash', 'passwordSalt', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'isStudent', 'isTeacher', 'isParent', 'isAdmin', 'portalRoles', 'createdAt'];
+      let allowedKeys = ['username', 'passwordHash', 'passwordSalt', 'pbkdf2ParityHash', 'pbkdf2ParitySalt', 'portalUid', 'role', 'linkedEntityId', 'displayName', 'assignedByUid', 'active', 'isStudent', 'isTeacher', 'isParent', 'isAdmin', 'portalRoles', 'createdAt'];
       return data.keys().hasAll(requiredKeys) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.username, 2, 80) &&
         isValidString(data.passwordHash, 16, 256) &&
         isValidString(data.passwordSalt, 8, 128) &&
+        isValidOptionalString(data, 'pbkdf2ParityHash', 256) &&
+        isValidOptionalString(data, 'pbkdf2ParitySalt', 128) &&
+        isValidOptionalString(data, 'portalUid', 128) &&
         data.role in ['admin', 'student', 'teacher', 'parent'] &&
         isValidString(data.linkedEntityId, 1, 128) &&
         isValidString(data.displayName, 1, 100) &&
@@ -180,7 +186,7 @@ service cloud.firestore {
     }
 
     function isValidBatchRecord(data) {
-      let allowedKeys = ['id', 'code', 'name', 'courseId', 'courseName', 'teacherId', 'teacherName', 'roomName', 'daysOfWeek', 'startTime', 'endTime', 'schedule', 'capacity', 'enrolledCount', 'studentCount', 'status', 'ownerUid', 'createdAt'];
+      let allowedKeys = ['id', 'code', 'name', 'courseId', 'courseName', 'teacherId', 'teacherName', 'batchAdminTeacherId', 'batchAdminTeacherName', 'canBatchAdminTakeAttendance', 'canBatchAdminScheduleExams', 'roomName', 'daysOfWeek', 'startTime', 'endTime', 'schedule', 'capacity', 'enrolledCount', 'studentCount', 'status', 'ownerUid', 'createdAt'];
       return data.keys().hasAll(['id', 'code', 'name', 'courseName', 'roomName', 'daysOfWeek', 'startTime', 'endTime', 'capacity', 'enrolledCount', 'createdAt']) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.id, 1, 80) &&
@@ -254,7 +260,7 @@ service cloud.firestore {
     }
 
     function isValidFeeInvoice(data) {
-      let allowedKeys = ['id', 'receiptNo', 'studentId', 'studentName', 'courseName', 'title', 'installmentLabel', 'totalAmountPaise', 'paidAmountPaise', 'discountPaise', 'finePaise', 'paymentMode', 'status', 'dueDateIso', 'paidAtIso', 'ownerUid', 'createdByUid', 'createdAt'];
+      let allowedKeys = ['id', 'receiptNo', 'studentId', 'studentUid', 'studentName', 'courseName', 'title', 'installmentLabel', 'totalAmountPaise', 'paidAmountPaise', 'discountPaise', 'finePaise', 'paymentMode', 'status', 'dueDateIso', 'paidAtIso', 'ownerUid', 'createdByUid', 'createdAt'];
       return data.keys().hasAll(['id', 'receiptNo', 'studentId', 'studentName', 'courseName', 'totalAmountPaise', 'paidAmountPaise', 'discountPaise', 'finePaise', 'paymentMode', 'status', 'dueDateIso', 'createdAt']) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.id, 1, 80) &&
@@ -285,23 +291,24 @@ service cloud.firestore {
     }
 
     function isValidExamPaper(data) {
-      let allowedKeys = ['id', 'title', 'courseId', 'courseName', 'batchName', 'examType', 'durationMinutes', 'totalMarks', 'passingMarks', 'scheduledDateIso', 'questionsJson', 'status', 'published', 'ownerUid', 'createdAt'];
+      let allowedKeys = ['id', 'title', 'courseId', 'courseName', 'batchId', 'batchName', 'examType', 'durationMinutes', 'durationSeconds', 'startTime24h', 'scheduledStartEpochMs', 'autoAssignLabPcSeats', 'createdByRole', 'totalMarks', 'passingMarks', 'scheduledDateIso', 'questionsJson', 'status', 'published', 'ownerUid', 'createdAt'];
       return data.keys().hasAll(['id', 'title', 'courseName', 'batchName', 'durationMinutes', 'totalMarks', 'passingMarks', 'scheduledDateIso', 'questionsJson', 'createdAt']) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.id, 1, 80) &&
         isValidString(data.title, 2, 140) &&
         isValidString(data.courseName, 1, 120) &&
         isValidString(data.batchName, 0, 100) &&
-        data.durationMinutes is int && data.durationMinutes >= 5 && data.durationMinutes <= 360 &&
+        data.durationMinutes is int && data.durationMinutes >= 0 && data.durationMinutes <= 360 &&
+        (!('durationSeconds' in data) || (data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 21600)) &&
         data.totalMarks is int && data.totalMarks >= 1 && data.totalMarks <= 1000 &&
         data.passingMarks is int && data.passingMarks >= 0 && data.passingMarks <= data.totalMarks &&
         isValidString(data.scheduledDateIso, 0, 30) &&
-        isValidString(data.questionsJson, 2, 20000) &&
+        isValidString(data.questionsJson, 2, 250000) &&
         isValidTimestamp(data.createdAt);
     }
 
     function isValidExamSubmission(data) {
-      let allowedKeys = ['id', 'examId', 'examTitle', 'studentId', 'studentName', 'marksObtained', 'totalMarks', 'grade', 'rank', 'status', 'remarks', 'violationCount', 'ownerUid', 'submittedAt', 'createdAt'];
+      let allowedKeys = ['id', 'examId', 'examTitle', 'studentId', 'studentName', 'marksObtained', 'totalMarks', 'exactPercentage', 'formattedPercentage', 'correctCount', 'totalQuestions', 'grade', 'rank', 'status', 'remarks', 'violationCount', 'paperWatermark', 'hashChainHead', 'ownerUid', 'submittedAt', 'gradedAt', 'createdAt'];
       return data.keys().hasAll(['id', 'examId', 'examTitle', 'studentId', 'studentName', 'marksObtained', 'totalMarks', 'grade', 'rank']) &&
         data.keys().hasOnly(allowedKeys) &&
         isValidString(data.id, 1, 80) &&
@@ -444,70 +451,65 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // COLLECTION ACCESS RULES (Zero-Trust Role & Session Scoping)
+    // COLLECTION ACCESS RULES (Strict Zero-Trust — JWT Role Claims Enforced)
     // =========================================================================
 
     match /users/{userId} {
-      allow get: if isOwner(userId) || isStaffOrAdmin() || isPortalCredentialSessionUid(userId);
-      allow list: if isStaffOrAdmin() || (request.auth == null && request.query.limit <= 5);
-      allow create, update: if isValidUserProfile(request.resource.data) &&
-        (isAdmin() ||
-         (isOwner(userId) &&
-           (request.resource.data.role != 'admin' || !exists(/databases/$(database)/documents/portalCredentials/admin)) &&
-           (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false || !exists(/databases/$(database)/documents/portalCredentials/admin))) ||
-         (request.auth == null &&
-           isPortalCredentialSessionUid(userId) &&
-           request.resource.data.uid == userId &&
-           (userId in ['cred_admin', 'cred_waqar', 'cred_waqar_admin', 'admin_root', 'admin_waqar_root'] ||
-            (request.resource.data.role != 'admin' && request.resource.data.get('isAdmin', false) == false))));
+      allow get: if isOwner(userId) || isStaffOrAdmin();
+      allow list: if isStaffOrAdmin();
+      allow create, update: if isSignedIn() && isValidUserProfile(request.resource.data) && (
+        isAdmin() ||
+        (isOwner(userId) &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.role != 'admin' &&
+          request.resource.data.get('isAdmin', false) == false)
+      );
       allow delete: if isAdmin();
     }
 
     match /usernames/{username} {
-      allow read: if isAuthenticated();
-      allow create, update: if isValidUsernameAlias(request.resource.data) &&
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidUsernameAlias(request.resource.data) &&
         request.resource.data.username == username &&
         (isAdmin() || isOwner(request.resource.data.uid));
       allow delete: if isAdmin();
     }
 
-    // Direct single-document lookup by normalized username for portal login;
-    // collection-wide listing or deletion restricted strictly to Admin.
+    // Strictly Admin-only: Login verification is handled server-side by `issuePortalCustomToken`.
     match /portalCredentials/{username} {
-      allow get: if true;
-      allow list: if isAdmin();
-      allow create: if isValidPortalCredential(request.resource.data) &&
-        request.resource.data.username == username &&
-        (isAdmin() ||
-         (username in ['admin', 'waqar', 'waqar_admin'] && !exists(/databases/$(database)/documents/portalCredentials/$(username))) ||
-         (request.auth == null &&
-          isPortalCredentialSessionUid(request.resource.data.assignedByUid) &&
-          !(username in ['admin', 'waqar', 'waqar_admin'])));
-      allow update: if isValidPortalCredential(request.resource.data) &&
-        request.resource.data.username == username &&
-        (isAdmin() ||
-         (request.auth == null &&
-          isPortalCredentialSessionUid(request.resource.data.assignedByUid) &&
-          (!(username in ['admin', 'waqar', 'waqar_admin']) ||
-           request.resource.data.assignedByUid in ['admin_root', 'admin_waqar_root', 'cred_admin', 'cred_waqar', 'cred_waqar_admin'])));
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() &&
+        isValidPortalCredential(request.resource.data) &&
+        request.resource.data.username == username;
       allow delete: if isAdmin();
     }
 
+    // Dedicated Admin-only biometric face vault (replaces bundled APK JPG & open teachers collection)
+    match /adminFaces/{adminUid} {
+      allow read, write: if isAdmin();
+    }
+
     match /sessions/{sessionId} {
-      allow read: if isAuthenticated() ||
-        isPortalCredentialSessionUid(sessionId) ||
-        sessionId.matches('^single_dev_.*') ||
-        (resource != null && isPortalCredentialSessionUid(resource.data.uid));
-      allow create, update: if request.resource.data.keys().hasAll(['uid', 'actorId', 'username', 'role', 'expiresAt']) ||
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        sessionId == request.auth.uid ||
+        (resource != null && (resource.data.get('uid', '') == request.auth.uid || resource.data.get('userId', '') == request.auth.uid))
+      ));
+      allow create, update: if isSignedIn() && (
+        isAdmin() ||
+        request.resource.data.get('uid', '') == request.auth.uid ||
+        request.resource.data.get('userId', '') == request.auth.uid
+      ) && (
+        request.resource.data.keys().hasAll(['uid', 'actorId', 'username', 'role', 'expiresAt']) ||
         request.resource.data.keys().hasAll(['sessionId', 'uid', 'deviceName', 'platform', 'active', 'createdAt']) ||
         request.resource.data.keys().hasAll(['userId', 'role', 'activeDeviceToken', 'deviceModel', 'updatedAt']) ||
-        request.resource.data.keys().hasAll(['sessionId', 'uid', 'activeSessionToken', 'activeDeviceId', 'active']);
+        request.resource.data.keys().hasAll(['sessionId', 'uid', 'activeSessionToken', 'activeDeviceId', 'active'])
+      );
       allow delete: if isAdmin();
     }
 
     match /nonces/{nonceId} {
       allow get, list: if false;
-      allow create: if isAuthenticated()
+      allow create: if isSignedIn()
         && !exists(/databases/$(database)/documents/nonces/$(nonceId))
         && request.resource.data.uid == request.auth.uid
         && isValidTimestamp(request.resource.data.createdAt);
@@ -515,249 +517,440 @@ service cloud.firestore {
     }
 
     match /courses/{courseId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidCourseRecord(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidCourseRecord(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /batches/{batchId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidBatchRecord(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidBatchRecord(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /students/{studentId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create: if isValidStudentRecord(request.resource.data) &&
-        isAuthorizedWriterForOwnerUid(request.resource.data.ownerUid);
-      allow update: if isValidStudentRecord(request.resource.data) && (
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        request.auth.uid == studentId ||
+        matchesAuthenticatedIdentity(studentId) ||
+        resource.data.get('ownerUid', '') == request.auth.uid
+      ));
+      allow create: if isStaffOrAdmin() && isValidStudentRecord(request.resource.data);
+      allow update: if isStaffOrAdmin() && isValidStudentRecord(request.resource.data) && (
         isAdmin() ||
-        (request.auth == null && isPortalCredentialSessionUid(request.resource.data.ownerUid)) ||
-        (isTeacher() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['totalFeePaise', 'paidFeePaise', 'ownerUid'])) ||
-        (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'photoUri', 'attachmentName', 'attendancePercent']))
+        (isTeacher() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['totalFeePaise', 'paidFeePaise', 'ownerUid']))
       );
       allow delete: if isAdmin();
     }
 
     match /enquiries/{enquiryId} {
-      allow read: if isStaffOrAdmin() || request.auth == null;
-      allow create, update: if isValidEnquiryRecord(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isStaffOrAdmin() && isValidEnquiryRecord(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /attendance/{attendanceId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidAttendanceRecord(request.resource.data) &&
-        (isStaffOrAdmin() ||
-         (isAuthenticated() && request.resource.data.method in ['QR', 'QR_SCAN']) ||
-         (request.auth == null && isPortalCredentialSessionUid(request.resource.data.markedByUid)));
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        matchesAuthenticatedIdentity(resource.data.get('targetId', '')) ||
+        resource.data.get('markedByUid', '') == request.auth.uid
+      ));
+      allow create, update: if isSignedIn() && isValidAttendanceRecord(request.resource.data) && (
+        isStaffOrAdmin() ||
+        (request.resource.data.method in ['QR', 'QR_SCAN'] && request.resource.data.markedByUid == request.auth.uid)
+      );
       allow delete: if isAdmin();
     }
 
     match /fees/{invoiceId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidFeeInvoice(request.resource.data) &&
-        (isAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        matchesAuthenticatedIdentity(resource.data.get('studentId', '')) ||
+        resource.data.get('studentUid', '') == request.auth.uid ||
+        resource.data.get('ownerUid', '') == request.auth.uid
+      ));
+      allow create, update: if isAdmin() && isValidFeeInvoice(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /feeInvoices/{invoiceId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
-      allow delete: if isAdmin();
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        resource.data.get('studentUid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('studentId', ''))
+      ));
+      allow create, update, delete: if isAdmin();
     }
 
     match /feeTransactions/{txnId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create: if isAdmin() || request.auth == null;
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        resource.data.get('studentUid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('studentId', ''))
+      ));
+      allow create: if isAdmin();
       allow update, delete: if false;
     }
 
     match /ledger/{entryId} {
-      allow read: if isAdmin() || request.auth == null;
-      allow create, update: if isValidLedgerEntry(request.resource.data) &&
-        (isAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isAdmin();
+      allow create, update: if isAdmin() && isValidLedgerEntry(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /exams/{examId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidExamPaper(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidExamPaper(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /examResults/{submissionId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create: if isValidExamSubmission(request.resource.data) &&
-        (isAuthenticated() || (request.auth == null && (!('ownerUid' in request.resource.data) || isPortalCredentialSessionUid(request.resource.data.ownerUid))));
-      allow update: if isValidExamSubmission(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && request.resource.data.ownerUid.matches('^admin_.*')));
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        resource.data.get('studentId', '') == request.auth.uid ||
+        resource.data.get('ownerUid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('studentId', ''))
+      ));
+      // Authoritative student exam writes come from `gradeExamSubmission` Cloud Function (Admin SDK)
+      allow create, update: if isStaffOrAdmin() && isValidExamSubmission(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /examMarks/{markId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isStaffOrAdmin() || request.auth == null;
+      allow read: if isStaffOrAdmin() || (isSignedIn() && matchesAuthenticatedIdentity(resource.data.get('studentId', '')));
+      allow create, update: if isStaffOrAdmin();
       allow delete: if isAdmin();
     }
 
     match /materials/{materialId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidStudyMaterial(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidStudyMaterial(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /certificates/{certificateId} {
-      allow get: if true;
-      allow list: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidCertificateRecord(request.resource.data) &&
-        (isAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow get: if true; // Public QR verification by exact ID ONLY
+      allow list: if isAdmin();
+      allow create, update: if isAdmin() && isValidCertificateRecord(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /staff/{staffId} {
-      allow read: if isStaffOrAdmin() || request.auth == null;
-      allow create, update: if isValidStaffMember(request.resource.data) &&
-        (isAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isAdmin() && isValidStaffMember(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /payroll/{payrollId} {
-      allow read: if isStaffOrAdmin() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
-      allow delete: if isAdmin();
+      allow read: if isStaffOrAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /teachers/{teacherId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAdmin() || (
-        request.auth == null &&
-        ('enrolledByAdminUid' in request.resource.data) &&
-        isAdminCredentialSessionUid(request.resource.data.enrolledByAdminUid) &&
-        (!('faceEmbedding' in request.resource.data) ||
-          (request.resource.data.faceEmbedding is list &&
-           request.resource.data.faceEmbedding.size() >= 12 &&
-           request.resource.data.faceEmbedding.size() <= 256))
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isAdmin() && (
+        !('faceEmbedding' in request.resource.data) ||
+        (request.resource.data.faceEmbedding is list &&
+         request.resource.data.faceEmbedding.size() >= 12 &&
+         request.resource.data.faceEmbedding.size() <= 256)
       );
       allow delete: if isAdmin();
     }
 
     match /guardians/{noteId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidGuardianPtmNote(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        matchesAuthenticatedIdentity(resource.data.get('studentId', '')) ||
+        resource.data.get('ownerUid', '') == request.auth.uid
+      ));
+      allow create, update: if isStaffOrAdmin() && isValidGuardianPtmNote(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /announcements/{announcementId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isStaffOrAdmin() || request.auth == null;
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin();
       allow delete: if isAdmin();
     }
 
     match /notices/{noticeId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidNoticeBroadcast(request.resource.data) &&
-        (isStaffOrAdmin() || request.auth == null);
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidNoticeBroadcast(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isStaffOrAdmin() || request.auth == null;
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin();
       allow delete: if isAdmin();
     }
 
     match /liveClasses/{sessionId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidLiveClassSession(request.resource.data) &&
-        (isStaffOrAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isSignedIn();
+      allow create, update: if isStaffOrAdmin() && isValidLiveClassSession(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /assets/{assetId} {
-      allow read: if isStaffOrAdmin() || request.auth == null;
-      allow create, update: if isValidInventoryAsset(request.resource.data) &&
-        (isAdmin() || (request.auth == null && ('ownerUid' in request.resource.data) && isPortalCredentialSessionUid(request.resource.data.ownerUid)));
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isAdmin() && isValidInventoryAsset(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /inventory/{assetId} {
-      allow read: if isStaffOrAdmin() || request.auth == null;
-      allow create, update: if isValidInventoryAsset(request.resource.data) &&
-        (isAdmin() || request.auth == null);
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isAdmin() && isValidInventoryAsset(request.resource.data);
       allow delete: if isAdmin();
     }
 
     match /tickets/{ticketId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isValidSupportTicket(request.resource.data) &&
-        (isAuthenticated() || (request.auth == null && isPortalCredentialSessionUid(request.resource.data.requesterUid)));
+      allow read: if isStaffOrAdmin() || (isSignedIn() && resource.data.get('requesterUid', '') == request.auth.uid);
+      allow create, update: if isSignedIn() && isValidSupportTicket(request.resource.data) && (
+        isStaffOrAdmin() ||
+        request.resource.data.requesterUid == request.auth.uid
+      );
       allow delete: if isAdmin();
     }
 
     match /aiLogs/{logId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAuthenticated() || request.auth == null;
+      allow read: if isStaffOrAdmin() || (isSignedIn() && resource.data.get('userId', '') == request.auth.uid);
+      allow create, update: if isSignedIn() && (isStaffOrAdmin() || request.resource.data.get('userId', '') == request.auth.uid);
       allow delete: if isAdmin();
     }
 
     match /backups/{backupId} {
-      allow read: if isAdmin() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
-      allow delete: if isAdmin();
+      allow read, write: if isAdmin();
     }
 
     match /auditLogs/{logId} {
-      allow read: if isAdmin() || request.auth == null;
-      allow create: if isValidSecurityAuditLog(request.resource.data);
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && isValidSecurityAuditLog(request.resource.data) &&
+        (isAdmin() || request.resource.data.actorUid == request.auth.uid);
       allow update, delete: if false;
     }
 
     match /securityAlerts/{alertId} {
       allow read: if isAdmin();
-      allow create: if isValidSecurityAlert(request.resource.data);
+      allow create: if isSignedIn() && isValidSecurityAlert(request.resource.data);
       allow update, delete: if isAdmin();
     }
 
     match /feesLedger/{ledgerId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
-      allow delete: if isAdmin();
+      allow read: if isStaffOrAdmin() || (isSignedIn() && matchesAuthenticatedIdentity(resource.data.get('studentId', '')));
+      allow create, update, delete: if isAdmin();
     }
 
     match /staffPayroll/{payrollId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAdmin() || request.auth == null;
-      allow delete: if isAdmin();
+      allow read: if isStaffOrAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /teacherAttendance/{recordId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create, update: if isAuthenticated() || request.auth == null;
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isStaffOrAdmin();
       allow delete: if isAdmin();
     }
 
     match /immutableLedger/{eventId} {
-      allow read: if isAuthenticated() || request.auth == null;
-      allow create: if isValidImmutableLedgerEntry(request.resource.data);
+      allow read: if isStaffOrAdmin();
+      allow create: if isSignedIn() && isValidImmutableLedgerEntry(request.resource.data) &&
+        (isAdmin() || request.resource.data.get('actorId', '') == request.auth.uid);
       allow update, delete: if false;
     }
 
     match /rateLimits/{bucketId} {
-      allow read: if isAdmin();
-      allow create, update: if bucketId.size() >= 3 && bucketId.size() <= 140 &&
-        request.resource.data.keys().hasAll(['count', 'windowStartMs', 'blockedUntilMs']) &&
-        request.resource.data.count is int && request.resource.data.count >= 1 &&
-        request.resource.data.windowStartMs is int && request.resource.data.windowStartMs >= 0 &&
-        request.resource.data.blockedUntilMs is int && request.resource.data.blockedUntilMs >= 0 &&
-        (resource == null || request.resource.data.blockedUntilMs >= resource.data.blockedUntilMs);
+      allow read, write: if isAdmin();
+    }
+
+    // ===============================================================
+    // Zero-Fee Direct UPI Intent + 4-Month Overdue Auto-EMI Rules
+    // ===============================================================
+
+    function isValidUpiTransaction(data) {
+      return data.keys().hasAll([
+        'id', 'student_id', 'student_name', 'course_name',
+        'amount', 'amount_paise', 'payment_type',
+        'tr_ref', 'tn_note', 'signal_nonce', 'intent_hash',
+        'utr_number', 'upi_package', 'device_fingerprint', 'apk_signature_sha256',
+        'timestamp', 'expires_at_ms', 'status', 'verified_by_uid', 'createdAt'
+      ]) &&
+      isValidString(data.id, 3, 120) &&
+      isValidString(data.student_id, 1, 120) &&
+      isValidOptionalString(data, 'student_uid', 128) &&
+      isValidString(data.student_name, 1, 160) &&
+      isValidString(data.course_name, 0, 140) &&
+      (data.amount is int || data.amount is float) && data.amount > 0 &&
+      data.amount_paise is int && data.amount_paise > 0 && data.amount_paise <= 1000000000 &&
+      data.payment_type in ['MONTHLY_FEE', 'AUTO_EMI', 'FULL_FEE'] &&
+      isValidString(data.tr_ref, 6, 120) &&
+      isValidString(data.tn_note, 4, 240) &&
+      isValidString(data.signal_nonce, 6, 128) &&
+      isValidString(data.intent_hash, 16, 128) &&
+      isValidString(data.utr_number, 0, 80) &&
+      isValidString(data.upi_package, 0, 140) &&
+      isValidString(data.device_fingerprint, 4, 160) &&
+      isValidString(data.apk_signature_sha256, 8, 128) &&
+      data.timestamp is int && data.timestamp > 0 &&
+      data.expires_at_ms is int && data.expires_at_ms >= data.timestamp &&
+      data.status in ['CHALLENGE_ISSUED', 'DISPATCHED', 'PENDING_APPROVAL', 'VERIFIED_PAID', 'REJECTED_FRAUD', 'EXPIRED'] &&
+      isValidString(data.verified_by_uid, 0, 128) &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidStudentFeesLedger(data) {
+      return data.keys().hasAll([
+        'id', 'student_id', 'student_name', 'enrollment_no',
+        'course_name', 'batch_name',
+        'total_fee_paise', 'paid_fee_paise', 'monthly_fee_paise', 'emi_installment_paise',
+        'monthly_payment_status', 'overdue_months', 'auto_emi_active', 'emi_billing_date',
+        'next_due_date_iso', 'last_emi_notice_iso', 'last_utr_number',
+        'owner_uid', 'updatedAt', 'createdAt'
+      ]) &&
+      isValidString(data.id, 1, 120) &&
+      isValidString(data.student_id, 1, 120) &&
+      isValidString(data.student_name, 1, 160) &&
+      isValidString(data.enrollment_no, 0, 80) &&
+      isValidString(data.course_name, 0, 140) &&
+      isValidString(data.batch_name, 0, 140) &&
+      data.total_fee_paise is int && data.total_fee_paise >= 0 &&
+      data.paid_fee_paise is int && data.paid_fee_paise >= 0 &&
+      data.monthly_fee_paise is int && data.monthly_fee_paise >= 0 &&
+      data.emi_installment_paise is int && data.emi_installment_paise >= 0 &&
+      data.monthly_payment_status in ['PAID', 'PENDING', 'OVERDUE', 'EMI_ACTIVE'] &&
+      data.overdue_months is int && data.overdue_months >= 0 && data.overdue_months <= 120 &&
+      data.auto_emi_active is bool &&
+      data.emi_billing_date is int && data.emi_billing_date >= 1 && data.emi_billing_date <= 28 &&
+      isValidString(data.next_due_date_iso, 0, 40) &&
+      isValidString(data.last_emi_notice_iso, 0, 160) &&
+      isValidString(data.last_utr_number, 0, 80) &&
+      isValidString(data.owner_uid, 1, 128) &&
+      data.updatedAt is int && data.updatedAt >= 0 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidInstituteAuditLog(data) {
+      return data.keys().hasAll([
+        'id', 'actor_uid', 'actor_name', 'student_id',
+        'event_type', 'severity', 'utr_number', 'intent_hash',
+        'device_fingerprint', 'details', 'timestamp', 'createdAt'
+      ]) &&
+      isValidString(data.id, 3, 120) &&
+      isValidString(data.actor_uid, 1, 128) &&
+      isValidString(data.actor_name, 0, 160) &&
+      isValidString(data.student_id, 0, 120) &&
+      isValidString(data.event_type, 2, 120) &&
+      data.severity in ['INFO', 'WARNING', 'CRITICAL'] &&
+      isValidString(data.utr_number, 0, 80) &&
+      isValidString(data.intent_hash, 0, 128) &&
+      isValidString(data.device_fingerprint, 0, 160) &&
+      isValidString(data.details, 1, 2000) &&
+      data.timestamp is int && data.timestamp > 0 &&
+      data.createdAt is timestamp;
+    }
+
+    match /upi_transactions/{txnId} {
+      allow read: if isAdmin() || (isSignedIn() && (
+        resource.data.get('student_uid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('student_id', ''))
+      ));
+      allow create: if isSignedIn() &&
+        isValidUpiTransaction(request.resource.data) &&
+        request.resource.data.id == txnId &&
+        (
+          isAdmin() ||
+          (
+            request.resource.data.status in ['CHALLENGE_ISSUED', 'DISPATCHED', 'PENDING_APPROVAL'] &&
+            (
+              request.resource.data.get('student_uid', '') == request.auth.uid ||
+              matchesAuthenticatedIdentity(request.resource.data.student_id)
+            )
+          )
+        );
+      allow update: if isSignedIn() &&
+        isValidUpiTransaction(request.resource.data) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.student_id == resource.data.student_id &&
+        request.resource.data.amount_paise == resource.data.amount_paise &&
+        request.resource.data.tr_ref == resource.data.tr_ref &&
+        request.resource.data.intent_hash == resource.data.intent_hash &&
+        (
+          isAdmin() ||
+          (
+            (
+              resource.data.get('student_uid', '') == request.auth.uid ||
+              matchesAuthenticatedIdentity(resource.data.student_id)
+            ) &&
+            resource.data.status in ['CHALLENGE_ISSUED', 'DISPATCHED'] &&
+            request.resource.data.status in ['DISPATCHED', 'PENDING_APPROVAL', 'EXPIRED'] &&
+            request.resource.data.utr_number.size() >= 0
+          )
+        );
       allow delete: if isAdmin();
+    }
+
+    match /used_utr_locks/{utrNumber} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        !exists(/databases/$(database)/documents/used_utr_locks/$(utrNumber)) &&
+        utrNumber.size() >= 6 && utrNumber.size() <= 64 &&
+        request.resource.data.keys().hasAll(['utr_number', 'txn_id', 'student_id', 'amount_paise', 'locked_at_ms']) &&
+        request.resource.data.utr_number == utrNumber &&
+        request.resource.data.txn_id is string && request.resource.data.txn_id.size() >= 3 &&
+        request.resource.data.student_id is string && request.resource.data.student_id.size() >= 1 &&
+        request.resource.data.amount_paise is int && request.resource.data.amount_paise > 0 &&
+        request.resource.data.locked_at_ms is int && request.resource.data.locked_at_ms > 0;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /student_fees_ledger/{studentId} {
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        matchesAuthenticatedIdentity(studentId) ||
+        resource.data.get('owner_uid', '') == request.auth.uid
+      ));
+      allow create, update: if isStaffOrAdmin() && isValidStudentFeesLedger(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /institute_audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn() && isValidInstituteAuditLog(request.resource.data) &&
+        (isAdmin() || request.resource.data.actor_uid == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    // ===============================================================
+    // [A5] Server/Admin-Only Exam Master Answer Keys (Strictly Denied to Students)
+    // ===============================================================
+    function isValidExamAnswerKeyDoc(data) {
+      let allowedKeys = ['id', 'examId', 'examTitle', 'batchId', 'answersByMasterQId', 'questionCount', 'ownerUid', 'updatedAt', 'createdAt'];
+      return data.keys().hasAll(['id', 'examId', 'answersByMasterQId', 'ownerUid']) &&
+        data.keys().hasOnly(allowedKeys) &&
+        isValidString(data.id, 1, 80) &&
+        isValidString(data.examId, 1, 80) &&
+        data.answersByMasterQId is map &&
+        isValidString(data.ownerUid, 1, 128);
+    }
+
+    match /examAnswerKeys/{examId} {
+      allow read: if isStaffOrAdmin();
+      allow create, update: if isStaffOrAdmin() &&
+        isValidExamAnswerKeyDoc(request.resource.data) &&
+        request.resource.data.examId == examId;
+      allow delete: if isAdmin();
+    }
+
+    // ===============================================================
+    // [ZERO-BILL AI TUTOR] Shared Cache, Authoritative Quotas & 24h Security Cage Locks
+    // Cloud Functions update via Admin SDK; clients obey strict Zero-Trust RBAC.
+    // ===============================================================
+    match /ai_shared_cache/{hash} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
+    match /ai_student_quotas/{uid} {
+      allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    match /ai_tutor_locks/{uid} {
+      allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow write: if isAdmin();
     }
   }
 }
+

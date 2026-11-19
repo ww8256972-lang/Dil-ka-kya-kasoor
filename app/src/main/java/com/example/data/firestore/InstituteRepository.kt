@@ -810,6 +810,33 @@ class InstituteRepository(
         }
     }
 
+    /**
+     * [A5 + B2] Writes Master Answer Keys to Admin/Server-only `/examAnswerKeys/{examId}`.
+     */
+    suspend fun saveExamAnswerKey(
+        examId: String,
+        examTitle: String,
+        batchId: String,
+        answersByMasterQId: Map<String, Int>,
+        ownerUid: String
+    ) {
+        val path = "examAnswerKeys/$examId"
+        try {
+            val payload = mapOf(
+                "examId" to examId,
+                "examTitle" to examTitle,
+                "batchId" to batchId,
+                "answers" to answersByMasterQId,
+                "totalQuestions" to answersByMasterQId.size,
+                "ownerUid" to ownerUid,
+                "updatedAt" to com.google.firebase.Timestamp.now()
+            )
+            db.collection("examAnswerKeys").document(examId).set(payload).await()
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, path, auth)
+        }
+    }
+
     // =========================================================================
     // M11: Study Material, Assignments & Homework
     // =========================================================================

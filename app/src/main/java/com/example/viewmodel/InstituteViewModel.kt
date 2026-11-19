@@ -27,6 +27,10 @@ import com.example.security.RaspSecurityReport
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
+import com.waqar.institute.upi.InstituteAuditLogRecord
+import com.waqar.institute.upi.StudentFeesLedgerRecord
+import com.waqar.institute.upi.UpiTransactionRecord
+import com.waqar.institute.upi.ZeroFeeUpiPaymentEngine
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -88,7 +92,10 @@ data class InstituteUiState(
     val assets: List<InventoryAsset> = emptyList(),
     val tickets: List<SupportTicket> = emptyList(),
     val auditLogs: List<SecurityAuditLog> = emptyList(),
-    val backupsAndConfigs: List<InstituteBackupOrConfig> = emptyList()
+    val backupsAndConfigs: List<InstituteBackupOrConfig> = emptyList(),
+    val upiTransactions: List<UpiTransactionRecord> = emptyList(),
+    val studentFeesLedger: List<StudentFeesLedgerRecord> = emptyList(),
+    val instituteAuditLogs: List<InstituteAuditLogRecord> = emptyList()
 )
 
 class InstituteViewModel(
@@ -111,11 +118,15 @@ class InstituteViewModel(
     private var rawTeacherAttendance: List<TeacherAttendanceRecord> = emptyList()
     private var rawStaff: List<StaffMember> = emptyList()
     private var rawFees: List<FeeInvoice> = emptyList()
+    private var rawExams: List<ExamRecord> = emptyList()
     private var rawExamResults: List<ExamResult> = emptyList()
     private var rawCertificates: List<CertificateRecord> = emptyList()
     private var rawGuardians: List<GuardianLink> = emptyList()
     private var rawPayroll: List<PayrollEntry> = emptyList()
     private var rawPortalCredentials: List<PortalCredential> = emptyList()
+    private var rawUpiTransactions: List<UpiTransactionRecord> = emptyList()
+    private var rawStudentFeesLedger: List<StudentFeesLedgerRecord> = emptyList()
+    private var rawInstituteAuditLogs: List<InstituteAuditLogRecord> = emptyList()
 
     private val studentSearchQuery = MutableStateFlow("")
 
@@ -402,6 +413,26 @@ class InstituteViewModel(
         }
 
         val allowedStudentNames = scopedStudents.map { it.fullName.trim().lowercase() }.toSet()
+        val allowedStudentBatchIds = scopedStudents.map { normKey(it.batchId) }.filter { it.isNotBlank() }.toSet()
+        val allowedStudentBatchNames = scopedStudents.map { normKey(it.batchName) }.filter { it.isNotBlank() }.toSet()
+        val allowedStudentCourseNames = scopedStudents.map { normKey(it.courseName) }.filter { it.isNotBlank() }.toSet()
+
+        // [Group D1] Strict Batch Isolation for Exams
+        val scopedExams = when (role) {
+            PortalRole.ADMIN -> rawExams
+            PortalRole.TEACHER -> rawExams.filter { ex ->
+                (ex.batchId.isNotBlank() && normKey(ex.batchId) in teacherBatchIds) ||
+                    (ex.batchName.isNotBlank() && normKey(ex.batchName) in teacherBatchNames) ||
+                    (ex.batchId.isBlank() && ex.batchName.equals("All Batches", ignoreCase = true))
+            }
+            PortalRole.STUDENT, PortalRole.PARENT -> rawExams.filter { ex ->
+                val isGlobal = ex.batchId.isBlank() && (ex.batchName.isBlank() || ex.batchName.equals("All Batches", ignoreCase = true))
+                val matchesBatchId = ex.batchId.isNotBlank() && normKey(ex.batchId) in allowedStudentBatchIds
+                val matchesBatchName = ex.batchName.isNotBlank() && normKey(ex.batchName) in allowedStudentBatchNames
+                val matchesCourseFallback = ex.batchId.isBlank() && ex.batchName.isBlank() && normKey(ex.courseName) in allowedStudentCourseNames
+                isGlobal || matchesBatchId || matchesBatchName || matchesCourseFallback
+            }
+        }
 
         val scopedExamResults = when (role) {
             PortalRole.ADMIN -> rawExamResults
@@ -455,6 +486,48 @@ class InstituteViewModel(
         val allKnownCredentials = (InstituteRepository.localCredentialsCache.values + rawPortalCredentials).distinctBy { it.username.lowercase() }
         val scopedCredentials = if (role == PortalRole.ADMIN) allKnownCredentials else emptyList()
 
+        // Synthesize StudentFeesLedgerRecord for every visible student so Monthly Fee & 4-Month Overdue Auto-EMI are always ready
+        val ledgerByStudentId = (ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache.values + rawStudentFeesLedger)
+            .distinctBy { it.student_id }
+            .associateBy { it.student_id }
+
+        val syncedLedgersForAllStudents = allKnownStudents.map { stu ->
+            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(
+                student = stu,
+                existing = ledgerByStudentId[stu.id] ?: ledgerByStudentId[stu.enrollmentNo]
+            )
+        }
+        val scopedFeesLedger = when (role) {
+            PortalRole.ADMIN -> syncedLedgersForAllStudents.sortedWith(
+                compareByDescending<StudentFeesLedgerRecord> { it.overdue_months }
+                    .thenByDescending { it.auto_emi_active }
+                    .thenBy { it.student_name }
+            )
+            PortalRole.TEACHER -> emptyList()
+            PortalRole.STUDENT, PortalRole.PARENT -> syncedLedgersForAllStudents.filter { led ->
+                led.student_id.lowercase() in allowedStudentIds ||
+                    led.enrollment_no.lowercase() in allowedStudentIds ||
+                    (displayNameKey.isNotEmpty() && led.student_name.equals(displayNameKey, ignoreCase = true))
+            }
+        }
+
+        val allUpiTxns = (ZeroFeeUpiPaymentEngine.localUpiTransactionsCache.values + rawUpiTransactions)
+            .distinctBy { it.id }
+            .sortedByDescending { it.timestamp }
+        val scopedUpiTransactions = when (role) {
+            PortalRole.ADMIN -> allUpiTxns
+            PortalRole.TEACHER -> emptyList()
+            PortalRole.STUDENT, PortalRole.PARENT -> allUpiTxns.filter { txn ->
+                txn.student_id.lowercase() in allowedStudentIds ||
+                    (displayNameKey.isNotEmpty() && txn.student_name.equals(displayNameKey, ignoreCase = true))
+            }
+        }
+
+        val allInstituteAuditLogs = (ZeroFeeUpiPaymentEngine.localInstituteAuditLogsCache.values + rawInstituteAuditLogs)
+            .distinctBy { it.id }
+            .sortedByDescending { it.timestamp }
+        val scopedInstituteAuditLogs = if (role == PortalRole.ADMIN) allInstituteAuditLogs else emptyList()
+
         _uiState.update {
             it.copy(
                 students = scopedStudents,
@@ -463,12 +536,26 @@ class InstituteViewModel(
                 attendance = scopedAttendance,
                 teacherAttendance = scopedTeacherAttendance,
                 fees = scopedFees,
+                exams = scopedExams,
                 examResults = scopedExamResults,
                 certificates = scopedCertificates,
                 guardians = scopedGuardians,
                 payroll = scopedPayroll,
-                portalCredentials = scopedCredentials
+                portalCredentials = scopedCredentials,
+                upiTransactions = scopedUpiTransactions,
+                studentFeesLedger = scopedFeesLedger,
+                instituteAuditLogs = scopedInstituteAuditLogs
             )
+        }
+        runCatching {
+            if (scopedFees.isNotEmpty()) {
+                val paidPaise = scopedFees.map { it.paidAmountPaise.coerceAtLeast(0L) }.toLongArray()
+                val totalPaise = scopedFees.sumOf { it.totalAmountPaise.coerceAtLeast(0L) }
+                com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.guardFeeLedgerBatch(
+                    installmentsPaise = paidPaise,
+                    totalExpectedFeePaise = totalPaise.coerceAtLeast(paidPaise.sum())
+                )
+            }
         }
         com.waqar.institute.cache.PortalStateCacheManager.updateRoleSnapshot(
             role = role,
@@ -549,6 +636,12 @@ class InstituteViewModel(
                             authLockoutUntilEpochMs = 0L
                             com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
                             val effectiveRole = result.session.role
+                            com.waqar.institute.upi.WciUpiMerchantNotificationService
+                                .setMerchantNotificationServiceEnabled(
+                                    activityContext.applicationContext,
+                                    effectiveRole == PortalRole.ADMIN
+                                )
+                            internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
                             prefsManager.setSelectedPortalRole(effectiveRole.key)
                             _uiState.update {
                                 it.copy(
@@ -664,6 +757,12 @@ class InstituteViewModel(
                         is AuthPortalResult.Success -> {
                             failedAuthAttempts = 0
                             authLockoutUntilEpochMs = 0L
+                            com.waqar.institute.upi.WciUpiMerchantNotificationService
+                                .setMerchantNotificationServiceEnabled(
+                                    activityContext.applicationContext,
+                                    true
+                                )
+                            internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
                             prefsManager.setSelectedPortalRole(PortalRole.ADMIN.key)
                             _uiState.update {
                                 it.copy(
@@ -1052,7 +1151,8 @@ class InstituteViewModel(
         }
         streamJobs += viewModelScope.launch {
             repository.observeExams().catch { }.collect { list ->
-                _uiState.update { it.copy(exams = list) }
+                rawExams = list
+                recomputeRoleScopedData()
             }
         }
         streamJobs += viewModelScope.launch {
@@ -1124,6 +1224,24 @@ class InstituteViewModel(
         streamJobs += viewModelScope.launch {
             repository.observeBackupsAndConfigs().catch { }.collect { list ->
                 _uiState.update { it.copy(backupsAndConfigs = list) }
+            }
+        }
+        streamJobs += viewModelScope.launch {
+            ZeroFeeUpiPaymentEngine.observeUpiTransactions(repository.firestoreDb()).catch { }.collect { list ->
+                rawUpiTransactions = list
+                recomputeRoleScopedData()
+            }
+        }
+        streamJobs += viewModelScope.launch {
+            ZeroFeeUpiPaymentEngine.observeStudentFeesLedger(repository.firestoreDb()).catch { }.collect { list ->
+                rawStudentFeesLedger = list
+                recomputeRoleScopedData()
+            }
+        }
+        streamJobs += viewModelScope.launch {
+            ZeroFeeUpiPaymentEngine.observeInstituteAuditLogs(repository.firestoreDb()).catch { }.collect { list ->
+                rawInstituteAuditLogs = list
+                recomputeRoleScopedData()
             }
         }
     }
@@ -1208,6 +1326,11 @@ class InstituteViewModel(
     }
 
     fun signOut(reasonMessage: String? = null) {
+        appContext?.let {
+            com.waqar.institute.upi.WciUpiMerchantNotificationService
+                .setMerchantNotificationServiceEnabled(it, false)
+        }
+        internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(null)
         com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
         com.waqar.institute.session.ConcurrentSessionManager.stopWatchingSession()
         authServiceProvider.signOut(appContext)
@@ -1670,7 +1793,7 @@ class InstituteViewModel(
     }
 
     /**
-     * Designates a Teacher as the Batch Admin / Lead Instructor for the given batch in Cloud Firestore.
+     * [Group D2] Designates a Teacher as the Batch Admin / Lead Instructor for the given batch in Cloud Firestore.
      */
     fun assignBatchAdminTeacher(batch: BatchRecord, teacherName: String) {
         if (!ensureActiveSessionOrSignOut()) return
@@ -1682,9 +1805,14 @@ class InstituteViewModel(
         }
         viewModelScope.launch {
             runCatching {
+                val resolvedId = matchedStaff?.id ?: batch.teacherId.ifBlank { cleanTeacherName }
                 val updated = batch.copy(
-                    teacherId = matchedStaff?.id ?: batch.teacherId,
-                    teacherName = "$cleanTeacherName (Batch Admin)"
+                    teacherId = resolvedId,
+                    teacherName = "$cleanTeacherName (Batch Admin)",
+                    batchAdminTeacherId = resolvedId,
+                    batchAdminTeacherName = cleanTeacherName,
+                    canBatchAdminTakeAttendance = true,
+                    canBatchAdminScheduleExams = true
                 )
                 repository.saveBatch(updated)
                 recordAudit(
@@ -1692,11 +1820,53 @@ class InstituteViewModel(
                     module = "M06_BATCHES",
                     targetId = batch.id,
                     severity = "INFO",
-                    details = "Assigned $cleanTeacherName as Batch Admin for ${batch.name}"
+                    details = "Assigned $cleanTeacherName as Batch Admin for ${batch.name} (Attendance & Exams Enabled)"
                 )
-                postMessage("Assigned $cleanTeacherName as Batch Admin for ${batch.name}")
+                postMessage("$cleanTeacherName is now Batch Admin for ${batch.name} (Attendance & Exams Enabled) ✓")
             }.onFailure { postMessage("Batch update error: ${it.localizedMessage}") }
         }
+    }
+
+    /**
+     * [Group D2] Typed overload to promote a [StaffMember] directly as Batch Admin for `batchId`.
+     */
+    fun assignBatchAdminTeacher(batchId: String, teacher: StaffMember) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val target = rawBatches.firstOrNull { it.id == batchId }
+            ?: _uiState.value.batches.firstOrNull { it.id == batchId }
+            ?: return
+        val updated = target.copy(
+            teacherId = teacher.id,
+            teacherName = "${teacher.fullName} (Batch Admin)",
+            batchAdminTeacherId = teacher.id,
+            batchAdminTeacherName = teacher.fullName,
+            canBatchAdminTakeAttendance = true,
+            canBatchAdminScheduleExams = true
+        )
+        viewModelScope.launch {
+            runCatching {
+                repository.saveBatch(updated)
+                recordAudit(
+                    action = "ASSIGN_BATCH_ADMIN",
+                    module = "M06_BATCHES",
+                    targetId = updated.id,
+                    severity = "INFO",
+                    details = "Assigned ${teacher.fullName} (${teacher.id}) as Batch Admin for ${updated.name}"
+                )
+                postMessage("${teacher.fullName} is now Batch Admin for ${updated.name} (Attendance & Exams Enabled) ✓")
+            }.onFailure { postMessage("Batch update error: ${it.localizedMessage}") }
+        }
+    }
+
+    /**
+     * [Group D3] Returns live enrolled student count for a specific batch (used in Exam Batch Selector UI).
+     */
+    fun getStudentCountForBatch(
+        batch: BatchRecord,
+        allStudents: List<StudentRecord> = _uiState.value.students
+    ): Int = allStudents.count { stu ->
+        (stu.batchId.isNotBlank() && stu.batchId.equals(batch.id, ignoreCase = true)) ||
+            (stu.batchName.isNotBlank() && stu.batchName.equals(batch.name, ignoreCase = true))
     }
 
     /**
@@ -1939,6 +2109,342 @@ class InstituteViewModel(
         }
     }
 
+    // =========================================================================
+    // Option B: Zero-Fee Direct UPI Intent + 4-Month Overdue Auto-EMI Controls
+    // =========================================================================
+
+    fun recordVerifiedPendingUpiTransaction(record: UpiTransactionRecord) {
+        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[record.id] = record
+        rawUpiTransactions = listOf(record) + rawUpiTransactions.filterNot { it.id == record.id }
+        recomputeRoleScopedData()
+        postMessage("UTR ${record.utr_number} auto-captured! Sent to Admin Portal for 1-Tap Approval.")
+    }
+
+    /**
+     * Admin 1-Tap Confirm for a `PENDING_APPROVAL` UPI transaction:
+     * 1. Marks `upi_transactions/{txnId}` as `VERIFIED_PAID` with Admin's UID.
+     * 2. Credits `StudentRecord.paidFeePaise` and `student_fees_ledger/{studentId}`.
+     * 3. Decrements/resets `overdue_months` if paid via Auto-EMI or Monthly Fee.
+     * 4. Generates an official GST `FeeInvoice` receipt (`WCI-UPI-...`).
+     * 5. Logs an immutable verification entry to `institute_audit_logs`.
+     */
+    fun adminApproveUpiTransaction(txn: UpiTransactionRecord) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val adminUid = currentActorUid() ?: "admin_root"
+        val approvedTxn = txn.copy(
+            status = "VERIFIED_PAID",
+            verified_by_uid = adminUid
+        )
+        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[approvedTxn.id] = approvedTxn
+        rawUpiTransactions = listOf(approvedTxn) + rawUpiTransactions.filterNot { it.id == approvedTxn.id }
+
+        // Update StudentRecord paidFeePaise
+        val targetStudent = (InstituteRepository.localStudentsCache.values + rawStudents)
+            .firstOrNull {
+                it.id.equals(txn.student_id, ignoreCase = true) ||
+                    it.enrollmentNo.equals(txn.student_id, ignoreCase = true) ||
+                    it.fullName.equals(txn.student_name, ignoreCase = true)
+            }
+
+        val updatedStudent = targetStudent?.let { stu ->
+            val newPaid = (stu.paidFeePaise + txn.amount_paise).coerceAtMost(stu.totalFeePaise.coerceAtLeast(stu.paidFeePaise + txn.amount_paise))
+            stu.copy(paidFeePaise = newPaid)
+        }
+        if (updatedStudent != null) {
+            InstituteRepository.localStudentsCache[updatedStudent.id] = updatedStudent
+            rawStudents = listOf(updatedStudent) + rawStudents.filterNot { it.id == updatedStudent.id }
+        }
+
+        // Update StudentFeesLedgerRecord
+        val existingLedger = _uiState.value.studentFeesLedger.firstOrNull {
+            it.student_id.equals(txn.student_id, ignoreCase = true) ||
+                it.enrollment_no.equals(txn.student_id, ignoreCase = true)
+        }
+        val baseLedger = if (updatedStudent != null) {
+            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(updatedStudent, existingLedger)
+        } else {
+            existingLedger
+        }
+        val updatedLedger = baseLedger?.let { led ->
+            val newPaidPaise = updatedStudent?.paidFeePaise ?: (led.paid_fee_paise + txn.amount_paise)
+            val newOverdue = (led.overdue_months - 1).coerceAtLeast(0)
+            val remainingPaise = (led.total_fee_paise - newPaidPaise).coerceAtLeast(0L)
+            val newStatus = when {
+                remainingPaise <= 0L && led.total_fee_paise > 0L -> "PAID"
+                led.auto_emi_active && newOverdue > 0 -> "EMI_ACTIVE"
+                else -> "PAID"
+            }
+            led.copy(
+                paid_fee_paise = newPaidPaise,
+                overdue_months = newOverdue,
+                monthly_payment_status = newStatus,
+                last_utr_number = txn.utr_number,
+                last_emi_notice_iso = "Verified Paid ₹${txn.amount_paise / 100} (UTR: ${txn.utr_number}) on ${todayIso()}",
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+        if (updatedLedger != null) {
+            ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updatedLedger.student_id] = updatedLedger
+            rawStudentFeesLedger = listOf(updatedLedger) + rawStudentFeesLedger.filterNot { it.student_id == updatedLedger.student_id }
+        }
+
+        // Generate Official GST Fee Receipt
+        val receiptNo = "WCI-UPI-${txn.utr_number.takeLast(6).ifBlank { "1001" }}"
+        val feeInvoice = FeeInvoice(
+            id = "fee_upi_${txn.id.takeLast(8)}",
+            receiptNo = receiptNo,
+            studentId = updatedStudent?.id ?: txn.student_id,
+            studentName = txn.student_name,
+            courseName = txn.course_name.ifBlank { updatedStudent?.courseName ?: "Computer Course" },
+            title = "${txn.payment_type} • Direct UPI Intent (UTR: ${txn.utr_number})",
+            totalAmountPaise = txn.amount_paise,
+            paidAmountPaise = txn.amount_paise,
+            discountPaise = 0L,
+            finePaise = 0L,
+            dueDateIso = todayIso(),
+            paidAtIso = todayIso(),
+            paymentMode = "UPI (${txn.utr_number})",
+            status = "PAID",
+            ownerUid = adminUid,
+            createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
+        )
+        rawFees = listOf(feeInvoice) + rawFees.filterNot { it.id == feeInvoice.id }
+        recomputeRoleScopedData()
+
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val db = repository.firestoreDb()
+                    db.collection("upi_transactions").document(approvedTxn.id)
+                        .set(approvedTxn.toFirestoreMap())
+                    if (updatedStudent != null) {
+                        repository.saveStudent(updatedStudent)
+                    }
+                    if (updatedLedger != null) {
+                        db.collection("student_fees_ledger").document(updatedLedger.student_id)
+                            .set(updatedLedger.toFirestoreMap())
+                    }
+                    repository.saveFeeInvoice(feeInvoice)
+                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
+                        context = appContext,
+                        actorUid = adminUid,
+                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
+                        studentId = txn.student_id,
+                        eventType = "ADMIN_1TAP_UPI_APPROVED",
+                        severity = "INFO",
+                        utrNumber = txn.utr_number,
+                        intentHash = txn.intent_hash,
+                        details = "Admin 1-Tap Confirmed UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name} • Receipt $receiptNo"
+                    )
+                }
+            }
+            recordAudit(
+                action = "APPROVE_UPI_PAYMENT",
+                module = "M08_FEES",
+                targetId = txn.id,
+                severity = "INFO",
+                details = "1-Tap Confirmed UPI UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name}"
+            )
+            postMessage("Verified UTR ${txn.utr_number} • Credited ₹${txn.amount_paise / 100} & Generated Receipt $receiptNo ✓")
+        }
+    }
+
+    /**
+     * Admin 1-Tap Reject for a spoofed or invalid UPI transaction.
+     */
+    fun adminRejectUpiTransaction(txn: UpiTransactionRecord, reason: String = "UTR not found in bank statement") {
+        if (!ensureActiveSessionOrSignOut()) return
+        val adminUid = currentActorUid() ?: "admin_root"
+        val rejectedTxn = txn.copy(
+            status = "REJECTED_FRAUD",
+            verified_by_uid = adminUid
+        )
+        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[rejectedTxn.id] = rejectedTxn
+        rawUpiTransactions = listOf(rejectedTxn) + rawUpiTransactions.filterNot { it.id == rejectedTxn.id }
+        recomputeRoleScopedData()
+
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    repository.firestoreDb().collection("upi_transactions").document(rejectedTxn.id)
+                        .set(rejectedTxn.toFirestoreMap())
+                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
+                        context = appContext,
+                        actorUid = adminUid,
+                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
+                        studentId = txn.student_id,
+                        eventType = "ADMIN_REJECTED_UPI_FRAUD",
+                        severity = "CRITICAL",
+                        utrNumber = txn.utr_number,
+                        intentHash = txn.intent_hash,
+                        details = "Rejected UPI transaction ${txn.id} (UTR: ${txn.utr_number}): $reason"
+                    )
+                }
+            }
+            recordAudit("REJECT_UPI_FRAUD", "M08_FEES", txn.id, "CRITICAL", "Rejected UTR ${txn.utr_number}: $reason")
+            postMessage("Rejected UPI transaction ${txn.utr_number} & logged fraud alert.")
+        }
+    }
+
+    /**
+     * Layer 4: Parses pasted Paytm Business / PhonePe Business / Bank SMS or Notification text
+     * and auto-approves the matching `PENDING_APPROVAL` UPI transaction.
+     */
+    fun adminReconcileMerchantAlertText(rawAlertText: String) {
+        val parsed = ZeroFeeUpiPaymentEngine.extractMerchantAlertUtrAndAmount(rawAlertText)
+        if (parsed == null) {
+            postMessage("Could not find a valid 12-digit UTR in the notification text.")
+            return
+        }
+        val (utr, amountPaise) = parsed
+        val matchedTxn = _uiState.value.upiTransactions.firstOrNull {
+            it.status == "PENDING_APPROVAL" &&
+                it.utr_number.equals(utr, ignoreCase = true) &&
+                (amountPaise <= 0L || it.amount_paise == amountPaise)
+        }
+        if (matchedTxn == null) {
+            postMessage("No pending transaction found matching UTR $utr" + if (amountPaise > 0) " (₹${amountPaise / 100})" else "")
+            return
+        }
+        adminApproveUpiTransaction(matchedTxn)
+    }
+
+    /**
+     * Admin Master Control for a student's Monthly Fee, Overdue Months (`>= 4` triggers Auto-EMI),
+     * Auto-EMI Master Toggle (`auto_emi_active`), and Monthly Billing Date (`1..28`).
+     */
+    fun configureStudentAutoEmiAndMonthlyFee(
+        studentId: String,
+        monthlyFeeInr: Long,
+        emiInstallmentInr: Long,
+        overdueMonths: Int,
+        autoEmiActive: Boolean,
+        billingDayOfMonth: Int
+    ) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val uid = currentActorUid() ?: "admin_root"
+        val existingLedger = _uiState.value.studentFeesLedger.firstOrNull { it.student_id == studentId }
+        val student = (InstituteRepository.localStudentsCache.values + rawStudents).firstOrNull { it.id == studentId }
+        if (existingLedger == null && student == null) {
+            postMessage("Student not found for Auto-EMI configuration.")
+            return
+        }
+
+        val cleanDay = billingDayOfMonth.coerceIn(1, 28)
+        val cleanOverdue = overdueMonths.coerceIn(0, 120)
+        val monthlyPaise = (monthlyFeeInr.coerceAtLeast(100L)) * 100L
+        val emiPaise = (emiInstallmentInr.coerceAtLeast(100L)) * 100L
+        val nextDueIso = ZeroFeeUpiPaymentEngine.computeNextBillingDateIso(cleanDay)
+
+        val base = if (student != null) {
+            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(student, existingLedger, monthlyPaise)
+        } else {
+            existingLedger!!
+        }
+
+        val status = when {
+            base.balancePaise <= 0L && base.total_fee_paise > 0L -> "PAID"
+            autoEmiActive -> "EMI_ACTIVE"
+            cleanOverdue > 0 -> "OVERDUE"
+            else -> "PENDING"
+        }
+
+        val noticeText = if (autoEmiActive) {
+            "Auto-EMI Active (Overdue: $cleanOverdue mo) • ₹${emiPaise / 100}/mo auto-scheduled on Day $cleanDay ($nextDueIso)"
+        } else if (cleanOverdue >= 4) {
+            "4+ Months Overdue ($cleanOverdue mo) • Ready for Admin Auto-EMI Activation (Day $cleanDay)"
+        } else {
+            "Monthly Fee ₹${monthlyPaise / 100}/mo • Billing Day $cleanDay ($nextDueIso)"
+        }
+
+        val updated = base.copy(
+            monthly_fee_paise = monthlyPaise,
+            emi_installment_paise = emiPaise,
+            overdue_months = cleanOverdue,
+            auto_emi_active = autoEmiActive,
+            emi_billing_date = cleanDay,
+            monthly_payment_status = status,
+            next_due_date_iso = nextDueIso,
+            last_emi_notice_iso = noticeText.take(155),
+            owner_uid = uid,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updated.student_id] = updated
+        rawStudentFeesLedger = listOf(updated) + rawStudentFeesLedger.filterNot { it.student_id == updated.student_id }
+        recomputeRoleScopedData()
+
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    repository.firestoreDb().collection("student_fees_ledger")
+                        .document(updated.student_id)
+                        .set(updated.toFirestoreMap())
+                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
+                        context = appContext,
+                        actorUid = uid,
+                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
+                        studentId = updated.student_id,
+                        eventType = if (autoEmiActive) "AUTO_EMI_ACTIVATED_BY_ADMIN" else "MONTHLY_FEE_LEDGER_UPDATED",
+                        severity = "INFO",
+                        utrNumber = "",
+                        intentHash = "",
+                        details = "Updated ${updated.student_name}: overdue=${cleanOverdue}m, autoEmi=$autoEmiActive, billingDay=$cleanDay, emi=₹${emiPaise / 100}"
+                    )
+                }
+            }
+            postMessage(
+                if (autoEmiActive) {
+                    "Auto-EMI Enabled for ${updated.student_name} (₹${emiPaise / 100} on Day $cleanDay of every month) ✓"
+                } else {
+                    "Updated Monthly Fee & Overdue Ledger for ${updated.student_name} ✓"
+                }
+            )
+        }
+    }
+
+    /**
+     * Dispatches an instant Auto-EMI Billing Deduction Alert to the Student & Parent portals
+     * when the student's monthly billing date arrives (or when triggered by Admin).
+     */
+    fun triggerMonthlyEmiDeductionNotice(ledger: StudentFeesLedgerRecord) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val uid = currentActorUid() ?: "admin_root"
+        val installmentInr = (ledger.emi_installment_paise / 100L).coerceAtLeast(100L)
+        val noticeMsg = "Auto-EMI Deduction Due Today (Day ${ledger.emi_billing_date}): Please complete ₹$installmentInr UPI Intent payment to ${ZeroFeeUpiPaymentEngine.MERCHANT_NAME} (${ZeroFeeUpiPaymentEngine.MERCHANT_VPA})."
+        val updated = ledger.copy(
+            last_emi_notice_iso = noticeMsg.take(155),
+            updatedAt = System.currentTimeMillis()
+        )
+        ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updated.student_id] = updated
+        rawStudentFeesLedger = listOf(updated) + rawStudentFeesLedger.filterNot { it.student_id == updated.student_id }
+        recomputeRoleScopedData()
+
+        val announcement = AnnouncementItem(
+            id = "ann_emi_${UUID.randomUUID().toString().take(8)}",
+            title = "Auto-EMI Installment Alert • ${ledger.student_name}",
+            body = noticeMsg,
+            targetAudience = "ALL",
+            channel = "IN_APP",
+            priority = "URGENT",
+            senderName = "WCI Auto-EMI Billing Engine",
+            ownerUid = uid,
+            createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
+        )
+
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    repository.firestoreDb().collection("student_fees_ledger")
+                        .document(updated.student_id)
+                        .set(updated.toFirestoreMap())
+                    repository.saveAnnouncement(announcement)
+                }
+            }
+            postMessage("Sent Auto-EMI Deduction Alert (₹$installmentInr) to ${ledger.student_name} & Parent Portal ✓")
+        }
+    }
+
     fun addLedgerEntry(
         entryType: String,
         category: String,
@@ -1989,22 +2495,51 @@ class InstituteViewModel(
         totalMarks: Int,
         passingMarks: Int,
         scheduledDateIso: String,
-        questionsJson: String
+        questionsJson: String,
+        batchId: String = "",
+        startTime24h: String = "10:00",
+        durationSeconds: Int = 0,
+        autoAssignLabPcSeats: Boolean = true
     ) {
         if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
         val id = "exm_${UUID.randomUUID().toString().take(8)}"
+        val resolvedBatch = _uiState.value.batches.firstOrNull { b ->
+            (batchId.isNotBlank() && b.id.equals(batchId, ignoreCase = true)) ||
+                b.name.equals(batchName.trim(), ignoreCase = true)
+        }
+        val effectiveDurationSecs = if (durationSeconds > 0) {
+            durationSeconds.coerceAtLeast(10)
+        } else {
+            durationMinutes.coerceIn(1, 360) * 60
+        }
+        val effectiveDurationMins = if (durationSeconds > 0) {
+            ((effectiveDurationSecs + 59) / 60).coerceAtLeast(1)
+        } else {
+            durationMinutes.coerceIn(1, 360)
+        }
+        val cleanStartTime24h = startTime24h.trim().ifBlank { "10:00" }
+        val cleanDate = scheduledDateIso.trim().ifBlank { todayIso() }
+        val startEpochMs = com.example.exam.TamperProofExamClock.parse24HourScheduleEpochMs(cleanDate, cleanStartTime24h)
+        val roleTag = if (_uiState.value.activePortalRole == PortalRole.TEACHER) "batch_admin_teacher" else "admin"
+
         val exam = ExamRecord(
             id = id,
             title = title.trim(),
-            courseId = "crs_${courseName.take(6).lowercase()}",
+            courseId = resolvedBatch?.courseId?.ifBlank { null } ?: "crs_${courseName.take(6).lowercase()}",
             courseName = courseName.trim(),
+            batchId = batchId.ifBlank { resolvedBatch?.id.orEmpty() },
             batchName = batchName.trim(),
             examType = examType,
-            durationMinutes = durationMinutes.coerceIn(5, 360),
+            durationMinutes = effectiveDurationMins,
+            durationSeconds = effectiveDurationSecs,
+            startTime24h = cleanStartTime24h,
+            scheduledStartEpochMs = startEpochMs,
+            autoAssignLabPcSeats = autoAssignLabPcSeats,
+            createdByRole = roleTag,
             totalMarks = totalMarks.coerceIn(1, 1000),
             passingMarks = passingMarks.coerceIn(0, totalMarks),
-            scheduledDateIso = scheduledDateIso.ifBlank { todayIso() },
+            scheduledDateIso = cleanDate,
             questionsJson = questionsJson.ifBlank { "[]" },
             status = "PUBLISHED",
             ownerUid = uid,
@@ -2013,8 +2548,22 @@ class InstituteViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.saveExam(exam)
-                recordAudit("PUBLISH_EXAM", "M10_EXAMS", id, "INFO", "Published exam ${exam.title}")
-                postMessage("Published exam ${exam.title}")
+                // [A5 + B2] Sync canonical Master Answer Keys to Admin/Server-only `/examAnswerKeys/{examId}`
+                val parsedCustom = com.example.exam.PdfMcqBankParser.parseCustomExamBank(exam.questionsJson, exam.courseName)
+                if (parsedCustom.questions.isNotEmpty()) {
+                    val masterMap = parsedCustom.questions.associate { it.id to it.correctOptionIndex }
+                    runCatching {
+                        repository.saveExamAnswerKey(
+                            examId = exam.id,
+                            examTitle = exam.title,
+                            batchId = exam.batchId,
+                            answersByMasterQId = masterMap,
+                            ownerUid = uid
+                        )
+                    }
+                }
+                recordAudit("PUBLISH_EXAM", "M10_EXAMS", id, "INFO", "Published exam ${exam.title} for ${exam.batchName} (${exam.startTime24h}, ${exam.effectiveDurationSeconds}s)")
+                postMessage("Published exam ${exam.title} (${exam.startTime24h} • ${exam.effectiveDurationSeconds}s)")
             }.onFailure { postMessage("Exam error: ${it.localizedMessage}") }
         }
     }
@@ -2032,21 +2581,25 @@ class InstituteViewModel(
     ) {
         if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
-        val pct = (marksObtained * 100) / totalMarks.coerceAtLeast(1)
+        val safeTotal = totalMarks.coerceAtLeast(1)
+        val exactPct = (marksObtained.toDouble() * 100.0) / safeTotal.toDouble()
+        val roundedPct = kotlin.math.round(exactPct * 100.0) / 100.0
+        val formattedPct = "$roundedPct%"
         val grade = when {
-            pct >= 90 -> "A+"
-            pct >= 80 -> "A"
-            pct >= 70 -> "B+"
-            pct >= 60 -> "B"
-            pct >= 40 -> "C"
+            exactPct >= 90.0 -> "A+"
+            exactPct >= 80.0 -> "A"
+            exactPct >= 70.0 -> "B+"
+            exactPct >= 60.0 -> "B"
+            exactPct >= 50.0 -> "C"
+            exactPct >= 40.0 -> "D"
             else -> "F"
         }
         if (isOnlineCbtAttempt && _uiState.value.activePortalRole == PortalRole.ADMIN) {
-            postMessage("Admin Preview Mode: Score $marksObtained/$totalMarks ($grade) — Not saved to Student Results.")
+            postMessage("Admin Preview Mode: Score $marksObtained/$totalMarks ($formattedPct • $grade) — Not saved to Student Results.")
             return
         }
         val id = "res_${UUID.randomUUID().toString().take(8)}"
-        val status = if (pct >= 40) "PASSED" else "FAILED"
+        val status = if (exactPct >= 40.0) "PASSED" else "FAILED"
         val computedRank = if (rank > 1) {
             rank
         } else {
@@ -2060,7 +2613,9 @@ class InstituteViewModel(
             studentId = studentId.ifBlank { "stu_general" },
             studentName = studentName.trim(),
             marksObtained = marksObtained.coerceAtLeast(0),
-            totalMarks = totalMarks.coerceAtLeast(1),
+            totalMarks = safeTotal,
+            exactPercentage = roundedPct,
+            formattedPercentage = formattedPct,
             grade = grade,
             rank = computedRank.coerceAtLeast(1),
             status = status,
@@ -2131,7 +2686,7 @@ class InstituteViewModel(
                 it.fullName.equals(studentName.trim(), ignoreCase = true)
         }
         val cleanRollOrId = enrollmentNo.trim().ifBlank {
-            matchedStu?.enrollmentNo?.ifBlank { null } ?: studentId.ifBlank { "WCI-2026-1001" }
+            matchedStu?.enrollmentNo?.ifBlank { null } ?: studentId.ifBlank { "UNASSIGNED" }
         }
         val cleanStudentName = studentName.trim().ifBlank { matchedStu?.fullName ?: "Enrolled Student" }
         val cleanCourseName = courseName.trim().ifBlank { matchedStu?.courseName ?: "ADCA" }
@@ -2522,7 +3077,8 @@ class InstituteViewModel(
                     languageCode = state.preferences.languageCode,
                     featureType = featureType,
                     userPrompt = promptText,
-                    instituteContextSummary = contextSummary
+                    instituteContextSummary = contextSummary,
+                    userId = uid
                 ).collect { partial ->
                     finalResponse = partial
                     _uiState.update { it.copy(currentAiStreamText = partial) }
@@ -2535,11 +3091,11 @@ class InstituteViewModel(
                     userUid = uid,
                     userRole = state.activePortalRole.key,
                     featureType = featureType,
-                    modelName = GeminiInstituteService.MODEL_NAME,
+                    modelName = com.example.ai.OpenAiCloudFunctionSseClient.PROXY_MODEL_NAME,
                     promptText = promptText.take(3500),
                     responseText = finalResponse.ifBlank { "Completed." }.take(7500),
                     tokensUsed = (promptText.length + finalResponse.length) / 4,
-                    safetyFlagged = false,
+                    safetyFlagged = finalResponse.contains("SECURITY WARNING") || finalResponse.contains("SECURITY LOCKOUT"),
                     createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
                 )
                 repository.saveAiLog(log)
@@ -2556,12 +3112,14 @@ class InstituteViewModel(
         val uid = currentActorUid() ?: return
         val state = _uiState.value
         viewModelScope.launch {
-            _uiState.update { it.copy(isAiStreaming = true, currentAiStreamText = "Analyzing image with Gemini...") }
+            _uiState.update { it.copy(isAiStreaming = true, currentAiStreamText = "Analyzing computer lab image...") }
             runCatching {
                 val answer = geminiService.analyzeMultimodalDoubt(
                     bitmap = bitmap,
                     question = question.ifBlank { "Explain this computer science diagram or code problem." },
-                    languageCode = state.preferences.languageCode
+                    languageCode = state.preferences.languageCode,
+                    role = state.activePortalRole,
+                    userId = uid
                 )
                 _uiState.update { it.copy(currentAiStreamText = answer) }
                 val log = AiInteractionLog(
@@ -2573,7 +3131,7 @@ class InstituteViewModel(
                     promptText = "[Multimodal Image] $question",
                     responseText = answer.take(7500),
                     tokensUsed = (question.length + answer.length) / 4 + 258,
-                    safetyFlagged = false,
+                    safetyFlagged = answer.contains("SECURITY WARNING") || answer.contains("SECURITY LOCKOUT"),
                     createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
                 )
                 repository.saveAiLog(log)
@@ -2697,6 +3255,185 @@ class InstituteViewModel(
             }.onFailure { postMessage("Backup error: ${it.localizedMessage}") }
         }
         return summaryJson
+    }
+
+    /**
+     * [C5] Builds a full JSON backup payload of all core institute collections and encrypts it
+     * using `PBKDF2WithHmacSHA256` + `AES-256-GCM` into a `.wci` archive shared via `FileProvider`.
+     */
+    fun exportEncryptedWciBackup(context: Context, passphrase: String) {
+        if (!ensureActiveSessionOrSignOut()) return
+        if (passphrase.length < 6) {
+            postMessage("Backup password must be at least 6 characters.")
+            return
+        }
+        val s = _uiState.value
+        runCatching {
+            val root = org.json.JSONObject().apply {
+                put("version", "WCI_BACKUP_V1")
+                put("instituteName", s.preferences.instituteName)
+                put("exportedAtIso", todayIso())
+                put("students", org.json.JSONArray().apply {
+                    s.students.forEach { stu ->
+                        put(org.json.JSONObject().apply {
+                            put("id", stu.id)
+                            put("enrollmentNo", stu.enrollmentNo)
+                            put("fullName", stu.fullName)
+                            put("phone", stu.phone)
+                            put("guardianName", stu.guardianName)
+                            put("guardianPhone", stu.guardianPhone)
+                            put("courseId", stu.courseId)
+                            put("courseName", stu.courseName)
+                            put("batchId", stu.batchId)
+                            put("batchName", stu.batchName)
+                            put("totalFeePaise", stu.totalFeePaise)
+                            put("paidFeePaise", stu.paidFeePaise)
+                            put("status", stu.status)
+                        })
+                    }
+                })
+                put("batches", org.json.JSONArray().apply {
+                    s.batches.forEach { b ->
+                        put(org.json.JSONObject().apply {
+                            put("id", b.id)
+                            put("code", b.code)
+                            put("name", b.name)
+                            put("courseId", b.courseId)
+                            put("courseName", b.courseName)
+                            put("teacherId", b.teacherId)
+                            put("teacherName", b.teacherName)
+                            put("batchAdminTeacherId", b.batchAdminTeacherId)
+                            put("batchAdminTeacherName", b.batchAdminTeacherName)
+                            put("roomName", b.roomName)
+                            put("startTime", b.startTime)
+                            put("endTime", b.endTime)
+                            put("capacity", b.capacity)
+                        })
+                    }
+                })
+                put("courses", org.json.JSONArray().apply {
+                    s.courses.forEach { c ->
+                        put(org.json.JSONObject().apply {
+                            put("id", c.id)
+                            put("code", c.code)
+                            put("title", c.title)
+                            put("category", c.category)
+                            put("durationMonths", c.durationMonths)
+                            put("totalFeePaise", c.totalFeePaise)
+                        })
+                    }
+                })
+            }
+            val file = com.waqar.institute.security.InstituteEncryptedBackupManager.exportEncryptedBackupFile(
+                context = context,
+                jsonPayload = root.toString(),
+                passphrase = passphrase,
+                shareViaChooser = true
+            )
+            recordAudit("EXPORT_ENCRYPTED_WCI_BACKUP", "M23_BACKUP", file.name, "INFO", "Exported AES-256-GCM .wci backup (${file.length()} bytes)")
+            postMessage("Exported AES-256-GCM encrypted backup: ${file.name} (${file.length()} bytes) ✓")
+        }.onFailure { err ->
+            postMessage("Encrypted backup failed: ${err.localizedMessage}")
+        }
+    }
+
+    /**
+     * [C5] Decrypts a `.wci` AES-256-GCM backup archive and idempotently restores missing students,
+     * batches, and courses into Cloud Firestore without duplicating existing IDs.
+     */
+    fun restoreEncryptedWciBackup(encryptedBytes: ByteArray, passphrase: String) {
+        if (!ensureActiveSessionOrSignOut()) return
+        val uid = currentActorUid() ?: return
+        viewModelScope.launch {
+            runCatching {
+                val jsonStr = com.waqar.institute.security.InstituteEncryptedBackupManager
+                    .decryptFullBackupPayload(encryptedBytes, passphrase)
+                val root = com.waqar.institute.security.InstituteEncryptedBackupManager.parseBackupSummary(jsonStr)
+                val existingStudentIds = rawStudents.map { it.id }.toSet()
+                val existingBatchIds = rawBatches.map { it.id }.toSet()
+                val existingCourseIds = _uiState.value.courses.map { it.id }.toSet()
+                var restoredCount = 0
+
+                root.optJSONArray("courses")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val cid = o.optString("id")
+                        if (cid.isNotBlank() && cid !in existingCourseIds) {
+                            repository.saveCourse(
+                                CourseRecord(
+                                    id = cid,
+                                    code = o.optString("code"),
+                                    title = o.optString("title"),
+                                    category = o.optString("category"),
+                                    durationMonths = o.optInt("durationMonths", 6),
+                                    totalFeePaise = o.optLong("totalFeePaise", 0L),
+                                    ownerUid = uid
+                                )
+                            )
+                            restoredCount++
+                        }
+                    }
+                }
+                root.optJSONArray("batches")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val bid = o.optString("id")
+                        if (bid.isNotBlank() && bid !in existingBatchIds) {
+                            repository.saveBatch(
+                                BatchRecord(
+                                    id = bid,
+                                    code = o.optString("code"),
+                                    name = o.optString("name"),
+                                    courseId = o.optString("courseId"),
+                                    courseName = o.optString("courseName"),
+                                    teacherId = o.optString("teacherId"),
+                                    teacherName = o.optString("teacherName"),
+                                    batchAdminTeacherId = o.optString("batchAdminTeacherId"),
+                                    batchAdminTeacherName = o.optString("batchAdminTeacherName"),
+                                    roomName = o.optString("roomName"),
+                                    startTime = o.optString("startTime", "09:00"),
+                                    endTime = o.optString("endTime", "10:30"),
+                                    capacity = o.optInt("capacity", 30),
+                                    ownerUid = uid
+                                )
+                            )
+                            restoredCount++
+                        }
+                    }
+                }
+                root.optJSONArray("students")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val sid = o.optString("id")
+                        if (sid.isNotBlank() && sid !in existingStudentIds) {
+                            repository.saveStudent(
+                                StudentRecord(
+                                    id = sid,
+                                    enrollmentNo = o.optString("enrollmentNo"),
+                                    fullName = o.optString("fullName"),
+                                    phone = o.optString("phone"),
+                                    guardianName = o.optString("guardianName"),
+                                    guardianPhone = o.optString("guardianPhone"),
+                                    courseId = o.optString("courseId"),
+                                    courseName = o.optString("courseName"),
+                                    batchId = o.optString("batchId"),
+                                    batchName = o.optString("batchName"),
+                                    totalFeePaise = o.optLong("totalFeePaise", 0L),
+                                    paidFeePaise = o.optLong("paidFeePaise", 0L),
+                                    status = o.optString("status", "ACTIVE"),
+                                    ownerUid = uid
+                                )
+                            )
+                            restoredCount++
+                        }
+                    }
+                }
+                recordAudit("RESTORE_ENCRYPTED_WCI_BACKUP", "M23_BACKUP", "restore_$restoredCount", "INFO", "Restored $restoredCount non-duplicate records from AES-256-GCM .wci backup")
+                postMessage("Decrypted & restored $restoredCount records cleanly (zero duplicates) ✓")
+            }.onFailure { err ->
+                postMessage("Restore failed (wrong password or invalid .wci file): ${err.localizedMessage}")
+            }
+        }
     }
 
     // Settings & Preferences (M24: F443–F450)
@@ -2869,7 +3606,13 @@ internal object TeacherScopeMatcher {
         val cleanTeacher = normKey(b.teacherName.replace("(Batch Admin)", "", ignoreCase = true))
         val cleanTeacherSlug = slugKey(cleanTeacher)
         val bTeacherId = normKey(b.teacherId)
-        (bTeacherId.isNotBlank() && bTeacherId in teacherIdKeys) ||
+        val bAdminId = normKey(b.batchAdminTeacherId)
+        val bAdminName = normKey(b.batchAdminTeacherName)
+        val bAdminSlug = slugKey(bAdminName)
+        (bAdminId.isNotBlank() && bAdminId in teacherIdKeys) ||
+            (bAdminName.isNotBlank() && bAdminName in teacherNameKeys) ||
+            (bAdminSlug.isNotBlank() && bAdminSlug in teacherNameSlugs) ||
+            (bTeacherId.isNotBlank() && bTeacherId in teacherIdKeys) ||
             (cleanTeacher.isNotBlank() && cleanTeacher in teacherNameKeys) ||
             (cleanTeacherSlug.isNotBlank() && cleanTeacherSlug in teacherNameSlugs)
     }

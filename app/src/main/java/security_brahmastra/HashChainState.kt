@@ -50,7 +50,11 @@ class HashChainState(
 
     fun getCurrentHeadHash(): String = headHashHex
 
+    fun currentHeadHashHex(): String = headHashHex
+
     fun getRecordedSteps(): List<ChainStep> = steps.toList()
+
+    fun stepCount(): Int = steps.size
 
     companion object {
         fun verifyChainProof(

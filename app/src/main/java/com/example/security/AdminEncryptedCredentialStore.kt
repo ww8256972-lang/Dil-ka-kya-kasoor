@@ -2,45 +2,33 @@ package com.example.security
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.example.BuildConfig
+import com.example.auth.Argon2CredentialHasher
 import org.lsposed.lsparanoid.Obfuscate
 import java.security.MessageDigest
 import java.util.Arrays
 
 /**
- * Hardware-Backed Instant Admin Credential Store (`AdminEncryptedCredentialStore.kt`).
+ * Hardware-Backed Admin Credential Store (`AdminEncryptedCredentialStore.kt`).
  *
- * Guarantees:
- * 1. Sub-millisecond (<0.1s) offline & online Admin authentication without "No internet connection" errors.
- * 2. Zero plaintext password storage: stores ONLY normalized username and SHA-256 hex digest inside
- *    Android Keystore (`MasterKey` AES-256-GCM) + `EncryptedSharedPreferences`.
- * 3. Supports runtime Admin username & password rotation from Admin Settings, immediately persisting
- *    the updated SHA-256 hash in `EncryptedSharedPreferences` / Keystore.
- * 4. Supports optional CI/CD environment override via `BuildConfig.ADMIN_DEFAULT_PASSWORD_SHA256`.
+ * Security Guarantees:
+ * 1. ZERO hardcoded default passwords or unsalted SHA-256 digests anywhere in the APK.
+ * 2. Requires explicit First-Run Admin Setup (`completeFirstRunAdminSetup`) or Admin Settings
+ *    update (`saveUpdatedAdminCredentials`), hashing passwords exclusively with memory-hard
+ *    Argon2id (RFC 9106 + 16-byte CSPRNG salt) stored inside Android Keystore-backed
+ *    `EncryptedSharedPreferences`.
+ * 3. Supports runtime Admin username & password rotation from Admin Settings with constant-time
+ *    verification (`Argon2CredentialHasher.verifyPasswordConstantTime`).
  */
 @Obfuscate
 object AdminEncryptedCredentialStore {
 
-    private const val DEFAULT_ADMIN_USERNAME = "waqar"
-    private const val KEY_ADMIN_USERNAME = "wci_sec_admin_username_v2"
-    private const val KEY_ADMIN_PASSWORD_SHA256 = "wci_sec_admin_pwd_sha256_v2"
-    private const val KEY_ADMIN_PREVIOUS_USERNAME = "wci_sec_admin_prev_username_v2"
-    private const val KEY_ADMIN_CUSTOMIZED = "wci_sec_admin_customized_v2"
-    private const val KEY_ADMIN_UPDATED_AT_MS = "wci_sec_admin_updated_at_ms_v2"
-    private const val SHIELD_MASK = 0x5A
-
-    // XOR-shielded (mask=0x5A, stride=0x1F) UTF-8 hex bytes of the default Admin SHA-256 digest
-    // Zero plaintext password literal ever exists in Kotlin, C++, resources, or preferences.
-    private val SHIELDED_DEFAULT_DIGEST_HEX = byteArrayOf(
-        0x62, 0x75, 0x54, 0x35, 0x43, 0xf0.toByte(), 0xd3.toByte(), 0xb4.toByte(),
-        0xc6.toByte(), 0x7e, 0x0f, 0x6e, 0x1e, 0xfd.toByte(), 0xd9.toByte(), 0xb9.toByte(),
-        0x99.toByte(), 0x65, 0x4c, 0x24, 0x01, 0xb4.toByte(), 0xc5.toByte(), 0xf5.toByte(),
-        0x87.toByte(), 0x6d, 0x4b, 0x2e, 0x58, 0xec.toByte(), 0x9c.toByte(), 0xae.toByte(),
-        0x82.toByte(), 0x90.toByte(), 0x21, 0x5e, 0x32, 0x44, 0xa3.toByte(), 0x81.toByte(),
-        0xb1.toByte(), 0x99.toByte(), 0x2d, 0x57, 0x3a, 0x4a, 0xff.toByte(), 0xdf.toByte(),
-        0xeb.toByte(), 0x82.toByte(), 0x60, 0x41, 0x26, 0x07, 0xb6.toByte(), 0x95.toByte(),
-        0xab.toByte(), 0xd8.toByte(), 0x3d, 0x4e, 0x29, 0x5f, 0xbd.toByte(), 0x9f.toByte()
-    )
+    private const val PLACEHOLDER_ADMIN_USERNAME = "waqar"
+    private const val KEY_ADMIN_USERNAME = "wci_sec_admin_username_v3"
+    private const val KEY_ADMIN_PASSWORD_ARGON2 = "wci_sec_admin_pwd_argon2_v3"
+    private const val KEY_ADMIN_PREVIOUS_USERNAME = "wci_sec_admin_prev_username_v3"
+    private const val KEY_ADMIN_CUSTOMIZED = "wci_sec_admin_customized_v3"
+    private const val KEY_ADMIN_UPDATED_AT_MS = "wci_sec_admin_updated_at_ms_v3"
+    private const val LEGACY_KEY_SHA256 = "wci_sec_admin_pwd_sha256_v2"
 
     sealed class AdminVerifyResult {
         data class Verified(
@@ -56,6 +44,8 @@ object AdminEncryptedCredentialStore {
             val activeAdminUsername: String,
             val isCustomized: Boolean
         ) : AdminVerifyResult()
+
+        data object NotConfigured : AdminVerifyResult()
     }
 
     private fun openVaultPrefs(context: Context): SharedPreferences =
@@ -91,50 +81,39 @@ object AdminEncryptedCredentialStore {
         }
     }
 
-    private const val PROMPT_EXAMPLE_ALIAS_HASH =
-        "868393821922524c686214536f32040a6b3175776f2a666171482834303a6209"
-
-    fun resolveDefaultAdminPasswordSha256Hex(): String {
-        val trueDefaultSha256 = StringShield.unshield(SHIELDED_DEFAULT_DIGEST_HEX, SHIELD_MASK).lowercase()
-        val envOverride = BuildConfig.ADMIN_DEFAULT_PASSWORD_SHA256.trim().lowercase()
-        if (envOverride.length == 64 &&
-            envOverride != PROMPT_EXAMPLE_ALIAS_HASH &&
-            envOverride.all { it in '0'..'9' || it in 'a'..'f' }
-        ) {
-            return envOverride
-        }
-        return trueDefaultSha256
-    }
-
     /**
-     * Ensures the encrypted Keystore preferences are initialized with the default Admin username
-     * and the SHA-256 hash of the initial credential (never storing plaintext).
+     * Purges any legacy unsalted SHA-256 entries without seeding any default credential.
      */
     fun ensureInitialized(context: Context) {
         val prefs = openVaultPrefs(context)
-        val hasUsername = !prefs.getString(KEY_ADMIN_USERNAME, null).isNullOrBlank()
-        val hasHash = !prefs.getString(KEY_ADMIN_PASSWORD_SHA256, null).isNullOrBlank()
-        if (!hasUsername || !hasHash) {
-            val defaultHash = resolveDefaultAdminPasswordSha256Hex()
-            prefs.edit()
-                .putString(KEY_ADMIN_USERNAME, prefs.getString(KEY_ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME)?.ifBlank { DEFAULT_ADMIN_USERNAME } ?: DEFAULT_ADMIN_USERNAME)
-                .putString(KEY_ADMIN_PASSWORD_SHA256, defaultHash)
-                .putBoolean(KEY_ADMIN_CUSTOMIZED, prefs.getBoolean(KEY_ADMIN_CUSTOMIZED, false))
-                .commit()
+        if (prefs.contains(LEGACY_KEY_SHA256)) {
+            prefs.edit().remove(LEGACY_KEY_SHA256).commit()
         }
+    }
+
+    /**
+     * Returns `true` only after an explicit First-Run Admin Setup or Admin Settings password save
+     * has stored a valid Argon2id hash in Android Keystore-backed EncryptedSharedPreferences.
+     */
+    fun isAdminConfigured(context: Context): Boolean {
+        ensureInitialized(context)
+        val prefs = openVaultPrefs(context)
+        val username = prefs.getString(KEY_ADMIN_USERNAME, null)
+        val hash = prefs.getString(KEY_ADMIN_PASSWORD_ARGON2, null)
+        return !username.isNullOrBlank() && !hash.isNullOrBlank() && Argon2CredentialHasher.isArgon2idFormat(hash)
     }
 
     fun getActiveAdminUsername(context: Context): String {
         ensureInitialized(context)
         return openVaultPrefs(context)
-            .getString(KEY_ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME)
-            ?.ifBlank { DEFAULT_ADMIN_USERNAME }
-            ?: DEFAULT_ADMIN_USERNAME
+            .getString(KEY_ADMIN_USERNAME, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: PLACEHOLDER_ADMIN_USERNAME
     }
 
     fun isCustomizedByAdmin(context: Context): Boolean {
         ensureInitialized(context)
-        return openVaultPrefs(context).getBoolean(KEY_ADMIN_CUSTOMIZED, false)
+        return isAdminConfigured(context) && openVaultPrefs(context).getBoolean(KEY_ADMIN_CUSTOMIZED, false)
     }
 
     fun getPreviousAdminUsername(context: Context): String? {
@@ -143,7 +122,23 @@ object AdminEncryptedCredentialStore {
     }
 
     /**
-     * Constant-time (<0.1ms) SHA-256 verification against `EncryptedSharedPreferences` / Keystore.
+     * Completes interactive First-Run Admin Setup using memory-hard Argon2id + 16-byte CSPRNG salt.
+     */
+    fun completeFirstRunAdminSetup(
+        context: Context,
+        adminUsername: String,
+        passwordChars: CharArray
+    ): Pair<String, String> {
+        require(passwordChars.size >= 8) {
+            "First-run Admin password must be at least 8 characters."
+        }
+        return saveUpdatedAdminCredentials(context, adminUsername, passwordChars)
+    }
+
+    /**
+     * Constant-time Argon2id verification against Keystore-backed `EncryptedSharedPreferences`.
+     * Returns [AdminVerifyResult.NotConfigured] if First-Run Admin Setup has not been completed yet
+     * (never falls back to any hardcoded default password hash).
      */
     fun verifyAdminCredentialsInstant(
         context: Context,
@@ -152,14 +147,16 @@ object AdminEncryptedCredentialStore {
     ): AdminVerifyResult {
         ensureInitialized(context)
         val prefs = openVaultPrefs(context)
-        val cleanInputUser = normalizeAdminUsername(rawUsername)
-        val storedUsername = prefs.getString(KEY_ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME)
-            ?.ifBlank { DEFAULT_ADMIN_USERNAME } ?: DEFAULT_ADMIN_USERNAME
-        val storedHash = prefs.getString(KEY_ADMIN_PASSWORD_SHA256, null)
-            ?.takeIf { it.length == 64 }
-            ?: resolveDefaultAdminPasswordSha256Hex()
-        val customized = prefs.getBoolean(KEY_ADMIN_CUSTOMIZED, false)
+        val storedUsername = prefs.getString(KEY_ADMIN_USERNAME, null)?.takeIf { it.isNotBlank() }
+        val storedArgon2 = prefs.getString(KEY_ADMIN_PASSWORD_ARGON2, null)
+            ?.takeIf { Argon2CredentialHasher.isArgon2idFormat(it) }
 
+        if (storedUsername == null || storedArgon2 == null) {
+            return AdminVerifyResult.NotConfigured
+        }
+
+        val customized = prefs.getBoolean(KEY_ADMIN_CUSTOMIZED, true)
+        val cleanInputUser = normalizeAdminUsername(rawUsername)
         if (cleanInputUser != storedUsername) {
             return AdminVerifyResult.UsernameNotMatched(
                 activeAdminUsername = storedUsername,
@@ -167,10 +164,9 @@ object AdminEncryptedCredentialStore {
             )
         }
 
-        val candidateHash = sha256HexChars(passwordChars)
-        val matched = MessageDigest.isEqual(
-            storedHash.lowercase().toByteArray(Charsets.UTF_8),
-            candidateHash.lowercase().toByteArray(Charsets.UTF_8)
+        val matched = Argon2CredentialHasher.verifyPasswordConstantTime(
+            passwordChars = passwordChars,
+            storedEncodedHash = storedArgon2
         )
         return if (matched) {
             AdminVerifyResult.Verified(username = storedUsername, isCustomized = customized)
@@ -180,41 +176,48 @@ object AdminEncryptedCredentialStore {
     }
 
     /**
-     * Immediately updates Admin username and new password's SHA-256 hash inside
-     * `EncryptedSharedPreferences` / Android Keystore so subsequent offline & online logins work in <0.1s.
+     * Updates Admin username and new password's salted Argon2id hash inside
+     * `EncryptedSharedPreferences` / Android Keystore.
      */
     fun saveUpdatedAdminCredentials(
         context: Context,
         newUsername: String,
-        newPasswordChars: CharArray
+        newPasswordChars: CharArray,
+        previousUsernameHint: String? = null
     ): Pair<String, String> {
         ensureInitialized(context)
         val prefs = openVaultPrefs(context)
-        val prevUser = prefs.getString(KEY_ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME)
-            ?.ifBlank { DEFAULT_ADMIN_USERNAME } ?: DEFAULT_ADMIN_USERNAME
+        val prevUser = prefs.getString(KEY_ADMIN_USERNAME, null)?.takeIf { it.isNotBlank() }
+            ?: previousUsernameHint?.let(::normalizeAdminUsername)?.takeIf { it.isNotBlank() }
         val cleanNewUser = normalizeAdminUsername(newUsername)
         require(cleanNewUser.length >= 3) { "Admin username must be at least 3 characters." }
+        require(newPasswordChars.size >= 4) { "Admin password must be at least 4 characters." }
 
-        val newSha256Hex = sha256HexChars(newPasswordChars)
-        prefs.edit()
-            .putString(KEY_ADMIN_PREVIOUS_USERNAME, prevUser)
+        val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(newPasswordChars)
+        val editor = prefs.edit()
+            .remove(LEGACY_KEY_SHA256)
             .putString(KEY_ADMIN_USERNAME, cleanNewUser)
-            .putString(KEY_ADMIN_PASSWORD_SHA256, newSha256Hex)
+            .putString(KEY_ADMIN_PASSWORD_ARGON2, argonDigest.encodedHash)
             .putBoolean(KEY_ADMIN_CUSTOMIZED, true)
             .putLong(KEY_ADMIN_UPDATED_AT_MS, System.currentTimeMillis())
-            .commit()
 
-        return cleanNewUser to newSha256Hex
+        if (!prevUser.isNullOrBlank() && prevUser != cleanNewUser) {
+            editor.putString(KEY_ADMIN_PREVIOUS_USERNAME, prevUser)
+        }
+        editor.commit()
+
+        return cleanNewUser to argonDigest.encodedHash
     }
 
     /**
-     * Used exclusively by tests or resets to verify/restore initial uncustomized state.
+     * Clears Admin credential store back to an unconfigured first-run state for unit tests.
      */
     internal fun resetToDefaultForTest(context: Context) {
         openVaultPrefs(context).edit()
             .remove(KEY_ADMIN_PREVIOUS_USERNAME)
-            .putString(KEY_ADMIN_USERNAME, DEFAULT_ADMIN_USERNAME)
-            .putString(KEY_ADMIN_PASSWORD_SHA256, resolveDefaultAdminPasswordSha256Hex())
+            .remove(KEY_ADMIN_USERNAME)
+            .remove(KEY_ADMIN_PASSWORD_ARGON2)
+            .remove(LEGACY_KEY_SHA256)
             .putBoolean(KEY_ADMIN_CUSTOMIZED, false)
             .commit()
     }

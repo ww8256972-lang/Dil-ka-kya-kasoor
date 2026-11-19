@@ -71,12 +71,31 @@ object PdfMcqBankParser {
             String(rawBytes, StandardCharsets.UTF_8)
         }
 
+        // [B2] ChatGPT Bulk MCQ+Answer Parser (.json, .csv, .md, .txt, extracted .pdf)
+        val chatGptParsed = com.waqar.institute.exam.ChatGptBulkMcqFileParser
+            .parseBulkQuestionsAndAnswers(extractedText)
+            .mapIndexed { idx, master ->
+                ExamQuestionItem(
+                    id = master.masterQuestionId,
+                    category = defaultCategory.ifBlank { "General" },
+                    questionText = master.questionText,
+                    options = master.options,
+                    correctOptionIndex = master.correctOptionIndex,
+                    marks = 1
+                )
+            }
+
         val textParsed = parseSerialMcqText(extractedText, defaultCategory)
-        if (textParsed.isNotEmpty()) {
+        val bestParsed = if (chatGptParsed.size >= textParsed.size && chatGptParsed.isNotEmpty()) {
+            chatGptParsed
+        } else {
+            textParsed
+        }
+        if (bestParsed.isNotEmpty()) {
             return@withContext ParsedExamBankResult(
-                questions = textParsed,
-                questionsPerStudent = suggestPerStudentCount(textParsed.size),
-                extractionMethod = if (isPdfHeader) "PDF_TEXT_STREAM" else "TEXT_DOCUMENT"
+                questions = bestParsed,
+                questionsPerStudent = suggestPerStudentCount(bestParsed.size),
+                extractionMethod = if (isPdfHeader) "PDF_TEXT_STREAM" else "CHATGPT_BULK_TEXT_DOCUMENT"
             )
         }
 

@@ -108,10 +108,11 @@ class CertificateGeneratorViewModel : ViewModel() {
 
             val enrollmentNo = student?.enrollmentNo?.takeIf { it.isNotBlank() }
                 ?: issuedCert?.studentId?.takeIf { it.isNotBlank() }
-                ?: "WCI-2026-1001"
+                ?: student?.id?.takeIf { it.isNotBlank() }
+                ?: "UNASSIGNED"
 
             val serialNo = issuedCert?.serialNo?.takeIf { it.isNotBlank() }
-                ?: "WCI-CERT-2026-${enrollmentNo.takeLast(4)}"
+                ?: "WCI-CERT-2026-${enrollmentNo.takeLast(4).padStart(4, '0')}"
 
             val courseTitle = issuedCert?.courseName?.takeIf { it.isNotBlank() }
                 ?: student?.courseName?.takeIf { it.isNotBlank() }
