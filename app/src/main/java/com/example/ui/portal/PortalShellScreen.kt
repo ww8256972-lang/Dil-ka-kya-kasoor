@@ -99,7 +99,10 @@ val AllDrawerDestinations = listOf(
     ),
     com.waqar.institute.navigation.AppDrawer.codingSandboxDestination,
     com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination,
-    com.waqar.institute.navigation.AppDrawer.upiAutoEmiVaultDestination
+    com.waqar.institute.navigation.AppDrawer.upiAutoEmiVaultDestination,
+    com.waqar.institute.navigation.AppDrawer.tallyPracticeSimulatorDestination,
+    // Strictly LAST item in Side Navigation Drawer across all 4 portals
+    com.waqar.institute.navigation.AppDrawer.termsAndConditionsDestination
 )
 
 fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> {
@@ -120,7 +123,9 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M21_HELPDESK",
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE
+            com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
         PortalRole.STUDENT -> setOf(
             "M01_DASHBOARD",
@@ -139,7 +144,9 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND
+            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
         PortalRole.PARENT -> setOf(
             "M01_DASHBOARD",
@@ -154,7 +161,9 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND
+            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
     }
     return AllDrawerDestinations.filter { it.routeId in allowedIds }.map { dest ->
@@ -819,6 +828,12 @@ private fun PortalShellBody(
                                         uiState = state,
                                         viewModel = viewModel
                                     )
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR -> {
+                                    com.waqar.institute.tally.TallyPracticeSimulatorScreen()
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS -> {
+                                    com.waqar.institute.ui.legal.TermsAndConditionsScreen()
                                 }
                                 else -> AdminDashboardModule(
                                     state = state,

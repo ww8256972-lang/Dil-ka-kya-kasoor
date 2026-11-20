@@ -855,3 +855,94 @@ test('9. Zero-Bill AI Tutor collections enforce strict Zero-Trust RBAC (ai_share
   );
 });
 
+test('10. Elite Security Layers: device_pubkeys, dpop_nonces, examSessions, revoked_devices, and server_audit_hash_chain enforce strict Zero-Trust', async () => {
+  const adminDb = testEnv.authenticatedContext('admin_waqar_root', {
+    role: 'admin',
+    portalUid: 'admin_waqar_root',
+    username: 'waqar',
+  }).firestore(DATABASE_ID);
+  const student1Db = testEnv.authenticatedContext('stu_uid_1', {
+    role: 'student',
+    linkedEntityId: 'stu_001',
+  }).firestore(DATABASE_ID);
+  const student2Db = testEnv.authenticatedContext('stu_uid_2', {
+    role: 'student',
+    linkedEntityId: 'stu_002',
+  }).firestore(DATABASE_ID);
+  const unauthDb = testEnv.unauthenticatedContext().firestore(DATABASE_ID);
+
+  // 1. device_pubkeys: owner can register own key; cannot spoof another user's key; unauth denied
+  await assertSucceeds(
+    student1Db.collection('device_pubkeys').doc('stu_uid_1_HWFP01').set({
+      uid: 'stu_uid_1',
+      deviceFp: 'HWFP01',
+      spkiBase64: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE1234567890abcdef1234567890abcdef',
+    })
+  );
+  await assertSucceeds(student1Db.collection('device_pubkeys').doc('stu_uid_1_HWFP01').get());
+  await assertFails(student2Db.collection('device_pubkeys').doc('stu_uid_1_HWFP01').get());
+  await assertFails(
+    student2Db.collection('device_pubkeys').doc('stu_uid_1_HWFP02').set({
+      uid: 'stu_uid_1',
+      deviceFp: 'HWFP02',
+      spkiBase64: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE1234567890abcdef1234567890abcdef',
+    })
+  );
+  await assertFails(unauthDb.collection('device_pubkeys').doc('stu_uid_1_HWFP01').get());
+
+  // 2. dpop_nonces: strictly server-only (Admin SDK bypasses rules; all clients denied)
+  await assertFails(student1Db.collection('dpop_nonces').doc('jti_001').set({ jti: 'jti_001' }));
+  await assertFails(adminDb.collection('dpop_nonces').doc('jti_001').set({ jti: 'jti_001' }));
+  await assertFails(adminDb.collection('dpop_nonces').doc('jti_001').get());
+
+  // 3. examSessions: student cannot write/forge session; staff/admin can write; owner student can read own
+  await assertFails(
+    student1Db.collection('examSessions').doc('exm_01_stu_uid_1').set({
+      examId: 'exm_01',
+      studentUid: 'stu_uid_1',
+      sessionNonce: 'forged_nonce',
+      submitted: false,
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection('examSessions').doc('exm_01_stu_uid_1').set({
+      examId: 'exm_01',
+      studentUid: 'stu_uid_1',
+      sessionNonce: 'server_nonce_abc',
+      submitted: false,
+    })
+  );
+  await assertSucceeds(student1Db.collection('examSessions').doc('exm_01_stu_uid_1').get());
+  await assertFails(student2Db.collection('examSessions').doc('exm_01_stu_uid_1').get());
+  await assertFails(unauthDb.collection('examSessions').doc('exm_01_stu_uid_1').get());
+
+  // 4. revoked_devices: Admin writes & lists; signed-in user can get own deviceFp doc; student cannot write or list; unauth denied
+  await assertSucceeds(
+    adminDb.collection('revoked_devices').doc('HW_COMPROMISED_01').set({
+      deviceFingerprint: 'HW_COMPROMISED_01',
+      revoked: true,
+      reason: 'Stolen device',
+    })
+  );
+  await assertSucceeds(adminDb.collection('revoked_devices').get());
+  await assertSucceeds(student1Db.collection('revoked_devices').doc('HW_COMPROMISED_01').get());
+  await assertFails(student1Db.collection('revoked_devices').get());
+  await assertFails(
+    student1Db.collection('revoked_devices').doc('HW_COMPROMISED_01').update({ revoked: false })
+  );
+  await assertFails(unauthDb.collection('revoked_devices').doc('HW_COMPROMISED_01').get());
+
+  // 5. server_audit_hash_chain & server_audit_chain_meta: Admin read-only, ALL client writes denied
+  await assertSucceeds(adminDb.collection('server_audit_hash_chain').get());
+  await assertSucceeds(adminDb.collection('server_audit_chain_meta').doc('head').get());
+  await assertFails(
+    adminDb.collection('server_audit_hash_chain').doc('0000000001').set({ seq: 1, currentHash: 'forged' })
+  );
+  await assertFails(
+    adminDb.collection('server_audit_chain_meta').doc('head').set({ seq: 1, currentHash: 'forged' })
+  );
+  await assertFails(student1Db.collection('server_audit_hash_chain').get());
+  await assertFails(unauthDb.collection('server_audit_chain_meta').doc('head').get());
+});
+
+

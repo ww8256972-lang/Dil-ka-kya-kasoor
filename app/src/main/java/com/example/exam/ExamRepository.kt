@@ -50,6 +50,16 @@ fun ExamQuestionItem.toSanitized(): SanitizedExamQuestion = SanitizedExamQuestio
     marks = marks
 )
 
+data class ServerExamSessionInfo(
+    val sessionId: String,
+    val examId: String,
+    val sessionNonce: String,
+    val serverStartedAtMs: Long,
+    val hardDeadlineAtMs: Long,
+    val serverNowMs: Long,
+    val isAuthoritativeServerSession: Boolean
+)
+
 data class ExamGradingSubmissionRequest(
     val exam: ExamRecord,
     val studentId: String,
@@ -57,7 +67,8 @@ data class ExamGradingSubmissionRequest(
     val questionIds: List<String>,
     val selectedAnswers: Map<String, Int>,
     val violationReason: String?,
-    val ownerUid: String
+    val ownerUid: String,
+    val sessionNonce: String = ""
 )
 
 data class ExamGradingOutcome(
@@ -252,7 +263,8 @@ private object SealedAnswerKeyVault {
 }
 
 class FirebaseCloudExamGradingGateway(
-    private val gradingEndpointUrl: String = BuildConfig.EXAM_GRADING_ENDPOINT_URL.trim()
+    private val gradingEndpointUrl: String = BuildConfig.EXAM_GRADING_ENDPOINT_URL.trim(),
+    private val context: Context? = null
 ) : ExamGradingGateway {
 
     private val httpClient: OkHttpClient by lazy {
@@ -310,20 +322,30 @@ class FirebaseCloudExamGradingGateway(
                     put("answers", answersJson)
                     put("hashChainHead", telemetry["hashChainHead"]?.toString().orEmpty())
                     put("behavioralAnomalyCount", (telemetry["behavioralAnomalyCount"] as? Number)?.toInt() ?: 0)
+                    if (request.sessionNonce.isNotBlank()) {
+                        put("sessionNonce", request.sessionNonce)
+                    }
                     if (!request.violationReason.isNullOrBlank()) {
                         put("violationReason", request.violationReason)
                     }
                 }.toString()
 
-                val httpReq = Request.Builder()
+                val reqBuilder = Request.Builder()
                     .url(gradingEndpointUrl)
                     .header("Authorization", "Bearer $idToken")
                     .header("X-Firebase-AppCheck", appCheckToken)
                     .header("X-WCI-Paper-Watermark", watermark)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                    .build()
 
-                httpClient.newCall(httpReq).execute().use { resp ->
+                com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
+                    builder = reqBuilder,
+                    context = context,
+                    httpMethod = "POST",
+                    url = gradingEndpointUrl,
+                    rawBody = payload
+                )
+
+                httpClient.newCall(reqBuilder.build()).execute().use { resp ->
                     if (!resp.isSuccessful) return@runCatching null
                     val bodyStr = resp.body?.string().orEmpty()
                     val json = JSONObject(bodyStr)
@@ -358,10 +380,94 @@ class FirebaseCloudExamGradingGateway(
 class ExamRepository(
     private val context: Context,
     private val instituteRepository: InstituteRepository,
-    private val gradingGateway: ExamGradingGateway = FirebaseCloudExamGradingGateway()
+    private val gradingGateway: ExamGradingGateway = FirebaseCloudExamGradingGateway(context = context)
 ) {
+    private val startSessionEndpointUrl =
+        "https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net/startExamSession"
+
+    private val sessionHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(8, TimeUnit.SECONDS)
+            .writeTimeout(6, TimeUnit.SECONDS)
+            .build()
+    }
+
     private val prefs by lazy {
         com.example.security.HardwareKeystoreVault.openEncryptedPreferences(context)
+    }
+
+    /**
+     * Layer 2 — Requests an authoritative server-enforced exam start timestamp, hard deadline,
+     * and single-use `sessionNonce` from `startExamSession` (`asia-east1`), protected by
+     * Firebase ID token + App Check + Hardware DPoP. Falls back gracefully offline/in Robolectric.
+     */
+    suspend fun startAuthoritativeExamSession(
+        examId: String,
+        durationSeconds: Int
+    ): ServerExamSessionInfo = withContext(Dispatchers.IO) {
+        val safeDurationSec = durationSeconds.coerceIn(10, 360 * 60)
+        val localNow = TamperProofExamClock.currentTrustedEpochMs()
+        val localFallback = ServerExamSessionInfo(
+            sessionId = "${examId}_local",
+            examId = examId,
+            sessionNonce = "local_${UUID.randomUUID().toString().replace("-", "")}",
+            serverStartedAtMs = localNow,
+            hardDeadlineAtMs = localNow + (safeDurationSec * 1_000L),
+            serverNowMs = localNow,
+            isAuthoritativeServerSession = false
+        )
+        val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
+        if (isRobolectric) return@withContext localFallback
+
+        runCatching {
+            val idToken = withTimeoutOrNull(3_000L) {
+                FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+            }?.takeIf { it.isNotBlank() } ?: return@runCatching localFallback
+
+            val appCheckToken = withTimeoutOrNull(3_000L) {
+                FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
+            }?.takeIf { it.isNotBlank() } ?: return@runCatching localFallback
+
+            val reqBody = JSONObject().apply {
+                put("examId", examId)
+                put("durationSeconds", safeDurationSec)
+            }.toString()
+
+            val reqBuilder = Request.Builder()
+                .url(startSessionEndpointUrl)
+                .header("Authorization", "Bearer $idToken")
+                .header("X-Firebase-AppCheck", appCheckToken)
+                .post(reqBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+            com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
+                builder = reqBuilder,
+                context = context,
+                httpMethod = "POST",
+                url = startSessionEndpointUrl,
+                rawBody = reqBody
+            )
+
+            sessionHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching localFallback
+                val json = JSONObject(resp.body?.string().orEmpty())
+                val nonce = json.optString("sessionNonce", "").trim()
+                val startedAtMs = json.optLong("serverStartedAtMs", localNow)
+                val hardDeadlineAtMs = json.optLong("hardDeadlineAtMs", startedAtMs + safeDurationSec * 1_000L)
+                val serverNowMs = json.optLong("serverNowMs", startedAtMs)
+                if (nonce.isBlank()) return@runCatching localFallback
+                TamperProofExamClock.anchorAuthoritativeServerDeadline(serverNowMs, hardDeadlineAtMs)
+                ServerExamSessionInfo(
+                    sessionId = json.optString("sessionId", "${examId}_server"),
+                    examId = examId,
+                    sessionNonce = nonce,
+                    serverStartedAtMs = startedAtMs,
+                    hardDeadlineAtMs = hardDeadlineAtMs,
+                    serverNowMs = serverNowMs,
+                    isAuthoritativeServerSession = true
+                )
+            }
+        }.getOrDefault(localFallback)
     }
 
     fun generateShuffledExamPaper(
@@ -610,7 +716,8 @@ class ExamRepository(
         selectedAnswers: Map<String, Int>,
         isPreviewOnly: Boolean = false,
         violationReason: String? = null,
-        ownerUid: String
+        ownerUid: String,
+        sessionNonce: String = ""
     ): ExamGradingOutcome {
         val questionIds = sanitizedQuestions.map { it.id }
         val outcome = gradingGateway.gradeSubmission(
@@ -621,7 +728,8 @@ class ExamRepository(
                 questionIds = questionIds,
                 selectedAnswers = selectedAnswers,
                 violationReason = violationReason,
-                ownerUid = ownerUid
+                ownerUid = ownerUid,
+                sessionNonce = sessionNonce
             )
         )
         if (isPreviewOnly) {

@@ -1,6 +1,8 @@
 package com.waqar.institute.navigation
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalance
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VerifiedUser
 import com.example.data.model.PortalRole
@@ -9,7 +11,9 @@ import com.example.ui.portal.ModuleDestination
 
 /**
  * Dynamic Side Navigation Drawer Provider for the 100% Offline Coding, Testing & Learning Lab
- * Module (`M25_CODING_SANDBOX`) and the Pro Academic, Lab, PDF ID & Typing Suite (`M26_ACADEMIC_PRO_SUITE`).
+ * Module (`M25_CODING_SANDBOX`), Pro Academic Suite (`M26_ACADEMIC_PRO_SUITE`),
+ * UPI & Auto-EMI Vault (`M27_UPI_EMI_COMMAND`), Tally Practice Simulator (`M28_TALLY_SIMULATOR`),
+ * and Terms & Conditions (`M29_TERMS_AND_CONDITIONS` — strictly LAST item across all 4 portals).
  */
 object AppDrawer {
 
@@ -24,6 +28,14 @@ object AppDrawer {
     const val ROUTE_UPI_EMI_COMMAND: String = "M27_UPI_EMI_COMMAND"
     const val TITLE_UPI_EMI_COMMAND: String = "Zero-Fee UPI & Auto-EMI Vault"
     const val SHORT_LABEL_UPI_EMI_COMMAND: String = "UPI & EMI"
+
+    const val ROUTE_TALLY_SIMULATOR: String = "M28_TALLY_SIMULATOR"
+    const val TITLE_TALLY_SIMULATOR: String = "Tally Practice Simulator"
+    const val SHORT_LABEL_TALLY_SIMULATOR: String = "Tally Lab"
+
+    const val ROUTE_TERMS_AND_CONDITIONS: String = "M29_TERMS_AND_CONDITIONS"
+    const val TITLE_TERMS_AND_CONDITIONS: String = "Terms & Conditions"
+    const val SHORT_LABEL_TERMS_AND_CONDITIONS: String = "Terms"
 
     val codingSandboxDestination: ModuleDestination = ModuleDestination(
         routeId = ROUTE_CODING_SANDBOX,
@@ -53,6 +65,26 @@ object AppDrawer {
         icon = Icons.Default.VerifiedUser,
         accentStart = WciColors.SuccessNeon,
         accentEnd = WciColors.PurpleVibrant
+    )
+
+    val tallyPracticeSimulatorDestination: ModuleDestination = ModuleDestination(
+        routeId = ROUTE_TALLY_SIMULATOR,
+        title = TITLE_TALLY_SIMULATOR,
+        shortLabel = SHORT_LABEL_TALLY_SIMULATOR,
+        category = "Practice",
+        icon = Icons.Default.AccountBalance,
+        accentStart = WciColors.ScannerTeal,
+        accentEnd = WciColors.SuccessNeon
+    )
+
+    val termsAndConditionsDestination: ModuleDestination = ModuleDestination(
+        routeId = ROUTE_TERMS_AND_CONDITIONS,
+        title = TITLE_TERMS_AND_CONDITIONS,
+        shortLabel = SHORT_LABEL_TERMS_AND_CONDITIONS,
+        category = "Legal",
+        icon = Icons.Default.Gavel,
+        accentStart = WciColors.Info,
+        accentEnd = WciColors.IndigoDeep
     )
 
     val supportedRoles: Set<PortalRole> = setOf(

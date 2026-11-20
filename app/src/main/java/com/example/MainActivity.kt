@@ -162,6 +162,16 @@ class MainActivity : ComponentActivity() {
         extractVerifyUri(intent)?.let { pendingVerifyUri = it }
     }
 
+    override fun onResume() {
+        super.onResume()
+        val appCtx = applicationContext
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                com.waqar.institute.security.DeviceRevocationGuard.evaluateStartupAndResume(appCtx)
+            }
+        }
+    }
+
     override fun onDestroy() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             (screenCaptureCallback as? Activity.ScreenCaptureCallback)?.let { cb ->
@@ -195,6 +205,7 @@ fun WaqarInstituteApp(
 
     val raspViolation by RaspAndRootShieldManager.securityViolation.collectAsStateWithLifecycle()
     val nativeTamperViolation by NativeSecurityBridge.tamperViolationReason.collectAsStateWithLifecycle()
+    val deviceLockdownState by com.waqar.institute.security.DeviceRevocationGuard.lockdownState.collectAsStateWithLifecycle()
 
     // Non-Play-Store Signed Release APK policy: ignore RASP_UNTRUSTED_INSTALLER while strictly
     // blocking APK signature mismatches, repackaging, Frida/Xposed hooks, Root/Magisk, & PC Emulators.
@@ -244,6 +255,7 @@ fun WaqarInstituteApp(
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching { viewModel.refreshRaspSecurityAudit(context) }
+            runCatching { com.waqar.institute.security.DeviceRevocationGuard.evaluateStartupAndResume(context) }
             val latestRelease = runCatching {
                 com.waqar.institute.updater.GitHubOtaUpdater.checkForUpdate()
             }.getOrNull()
@@ -268,6 +280,34 @@ fun WaqarInstituteApp(
                 }
             )
             return@WaqarInstituteTheme
+        }
+
+        when (val lock = deviceLockdownState) {
+            is com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.ForceUpdateRequired -> {
+                ForceUpdateLockdownScreen(
+                    currentVersionCode = lock.currentVersionCode,
+                    minSupportedVersionCode = lock.minSupportedVersionCode,
+                    releaseInfo = lock.latestReleaseInfo ?: availableGitHubRelease,
+                    onExitApp = {
+                        runCatching { (context as? Activity)?.finishAffinity() }
+                        kotlin.system.exitProcess(0)
+                    }
+                )
+                return@WaqarInstituteTheme
+            }
+            is com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.DeviceRevoked -> {
+                RevokedDeviceLockdownScreen(
+                    deviceFingerprint = lock.deviceFingerprint,
+                    reason = lock.reason,
+                    onExitApp = {
+                        runCatching { viewModel.signOut() }
+                        runCatching { (context as? Activity)?.finishAffinity() }
+                        kotlin.system.exitProcess(0)
+                    }
+                )
+                return@WaqarInstituteTheme
+            }
+            com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.Allowed -> Unit
         }
 
         val isWindowProtected = WindowSecureManager.isPortalProtected(
@@ -388,6 +428,144 @@ private fun TamperSecurityLockdownScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("tamper_lockdown_exit_button")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForceUpdateLockdownScreen(
+    currentVersionCode: Int,
+    minSupportedVersionCode: Long,
+    releaseInfo: com.waqar.institute.updater.GitHubOtaUpdater.GitHubReleaseInfo?,
+    onExitApp: () -> Unit
+) {
+    val context = LocalContext.current
+    var showUpdaterDialog by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("force_update_lockdown_screen"),
+        color = WciColors.BgElevatedDark
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "MANDATORY SECURITY UPDATE",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        color = WciColors.Warning,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                )
+                Text(
+                    text = "This application build (vCode $currentVersionCode) is below the minimum supported security release (vCode $minSupportedVersionCode). Please install the latest signed official release to continue.",
+                    style = MaterialTheme.typography.bodyMedium.copy(color = Color.White)
+                )
+                if (releaseInfo != null) {
+                    Text(
+                        text = "Latest Official Release: ${releaseInfo.tagName}",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontFamily = JetBrainsMono,
+                            color = WciColors.Success
+                        )
+                    )
+                }
+                ShimmerButton(
+                    text = "Download & Install Official Update",
+                    onClick = {
+                        if (releaseInfo != null) {
+                            showUpdaterDialog = true
+                        } else {
+                            runCatching {
+                                val intent = Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://github.com/waqarkhan8256972/waqar-institute-erp/releases/latest")
+                                )
+                                context.startActivity(intent)
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("force_update_download_button")
+                )
+                TextButton(
+                    onClick = onExitApp,
+                    modifier = Modifier.testTag("force_update_exit_button")
+                ) {
+                    Text("Exit App", color = WciColors.TextSecondaryDark)
+                }
+            }
+        }
+    }
+
+    if (showUpdaterDialog && releaseInfo != null) {
+        com.waqar.institute.updater.UpdateDialog(releaseInfo = releaseInfo)
+    }
+}
+
+@Composable
+private fun RevokedDeviceLockdownScreen(
+    deviceFingerprint: String,
+    reason: String,
+    onExitApp: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("revoked_device_lockdown_screen"),
+        color = WciColors.BgElevatedDark
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "DEVICE ACCESS REVOKED",
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        color = WciColors.Danger,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                )
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.bodyMedium.copy(color = Color.White)
+                )
+                Text(
+                    text = "Device ID: $deviceFingerprint",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontFamily = JetBrainsMono,
+                        color = WciColors.Warning
+                    )
+                )
+                Text(
+                    text = "Please contact Waqar Computer Institute Administration to verify your identity and restore access.",
+                    style = MaterialTheme.typography.labelMedium.copy(color = WciColors.TextSecondaryDark)
+                )
+                ShimmerButton(
+                    text = "Close Application",
+                    onClick = onExitApp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("revoked_device_exit_button")
                 )
             }
         }

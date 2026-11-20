@@ -48,7 +48,9 @@ data class ActiveProctoredExamState(
     val isSubmitted: Boolean = false,
     val submittedResult: ExamResult? = null,
     val lastGradingOutcome: ExamGradingOutcome? = null,
-    val securityAlertBanner: String? = null
+    val securityAlertBanner: String? = null,
+    val activeSessionNonce: String = "",
+    val serverHardDeadlineAtMs: Long = 0L
 )
 
 class ExamViewModel(
@@ -133,8 +135,24 @@ class ExamViewModel(
             isSubmitted = false,
             submittedResult = null,
             lastGradingOutcome = null,
-            securityAlertBanner = securityWarning
+            securityAlertBanner = securityWarning,
+            activeSessionNonce = "",
+            serverHardDeadlineAtMs = 0L
         )
+
+        // Layer 2 — Request authoritative server exam session nonce & hard deadline
+        viewModelScope.launch {
+            val sessionInfo = examRepository.startAuthoritativeExamSession(
+                examId = exam.id,
+                durationSeconds = exam.effectiveDurationSeconds.coerceAtLeast(10)
+            )
+            if (_examState.value.exam?.id == exam.id && !_examState.value.isSubmitted) {
+                _examState.value = _examState.value.copy(
+                    activeSessionNonce = sessionInfo.sessionNonce,
+                    serverHardDeadlineAtMs = sessionInfo.hardDeadlineAtMs
+                )
+            }
+        }
     }
 
     /**
@@ -237,7 +255,8 @@ class ExamViewModel(
                     selectedAnswers = current.selectedAnswers,
                     isPreviewOnly = isPreviewOnly,
                     violationReason = violationReason,
-                    ownerUid = ownerUid
+                    ownerUid = ownerUid,
+                    sessionNonce = current.activeSessionNonce
                 )
                 _examState.value = _examState.value.copy(
                     isKioskLockTaskActive = false,

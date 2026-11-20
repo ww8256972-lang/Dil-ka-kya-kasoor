@@ -192,6 +192,7 @@ secrets {
   ignoreList.add("GROQ_API_KEY")
   ignoreList.add("CF_AI_GATEWAY_URL")
   ignoreList.add("CF_AI_TOKEN")
+  ignoreList.add("ADMIN_BOOTSTRAP_PASSWORD")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
@@ -224,6 +225,7 @@ dependencies {
   implementation(libs.androidx.paging.runtime)
   implementation(libs.androidx.paging.compose)
   implementation(libs.androidx.profileinstaller)
+  implementation(libs.androidx.biometric)
   implementation(libs.coil.compose)
   implementation(libs.firebase.appcheck.playintegrity)
   implementation(libs.firebase.ai)

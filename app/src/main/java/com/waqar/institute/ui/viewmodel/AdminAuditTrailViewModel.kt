@@ -20,7 +20,10 @@ data class AdminAuditTrailUiState(
     val searchQuery: String = "",
     val logs: List<SecurityAuditLog> = emptyList(),
     val filteredLogs: List<SecurityAuditLog> = emptyList(),
-    val lastRecordedChecksum: String = ""
+    val lastRecordedChecksum: String = "",
+    val serverHashChainStatus: String = "CHECKING",
+    val serverHashChainCount: Int = 0,
+    val serverHashChainMessage: String = "Pending server verification..."
 )
 
 /**
@@ -133,6 +136,29 @@ class AdminAuditTrailViewModel(
                 syncAuditLogs(loaded)
             }
             _uiState.update { it.copy(isLoading = false) }
+        }
+    }
+
+    /**
+     * Layer 5 — Queries `verifyAuditHashChain` Cloud Function (`asia-east1`) to verify
+     * cryptographic continuity of the server-side Fee & Certificate Audit Hash-Chain.
+     */
+    fun verifyServerAuditHashChain(context: android.content.Context?) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    serverHashChainStatus = "CHECKING",
+                    serverHashChainMessage = "Verifying server-side SHA-256 hash chain..."
+                )
+            }
+            val report = com.waqar.institute.security.ServerAuditHashChainClient.verifyServerAuditHashChain(context)
+            _uiState.update {
+                it.copy(
+                    serverHashChainStatus = report.statusLabel,
+                    serverHashChainCount = report.checkedCount,
+                    serverHashChainMessage = report.message
+                )
+            }
         }
     }
 

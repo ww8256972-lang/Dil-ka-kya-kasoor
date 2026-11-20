@@ -795,7 +795,11 @@ class InstituteViewModel(
      * Allows Admin to update their own Admin username & password immediately in EncryptedSharedPreferences/Keystore (SHA-256)
      * and synchronize asynchronously to Cloud Firestore.
      */
-    fun updateAdminCredentials(newUsername: String, newPassword: String) {
+    fun updateAdminCredentials(
+        newUsername: String,
+        newPassword: String,
+        biometricActionSignatureHex: String = ""
+    ) {
         val currentUsername = _uiState.value.userProfile?.username?.takeIf { it.isNotBlank() }
             ?: appContext?.let { com.example.security.AdminEncryptedCredentialStore.getActiveAdminUsername(it) }
             ?: "waqar"
@@ -805,21 +809,25 @@ class InstituteViewModel(
                 oldUsername = currentUsername,
                 newUsername = newUsername,
                 newPasswordChars = newPasswordChars,
-                actorUidOverride = currentActorUid()
+                actorUidOverride = currentActorUid(),
+                biometricActionSignatureHex = biometricActionSignatureHex
             )
             result.onSuccess { updatedCred ->
                 _uiState.value.userProfile?.let { profile ->
                     val updatedProfile = profile.copy(username = updatedCred.username)
                     _uiState.update { it.copy(userProfile = updatedProfile) }
                 }
+                val sigSuffix = if (biometricActionSignatureHex.isNotBlank()) {
+                    " [BioSig:${biometricActionSignatureHex.take(16)}]"
+                } else ""
                 recordAudit(
                     action = "UPDATE_ADMIN_CREDENTIALS",
                     module = "M01_AUTH",
                     targetId = updatedCred.username,
                     severity = "WARNING",
-                    details = "Admin updated portal username & SHA-256 digest in EncryptedSharedPreferences/Keystore + Cloud sync (${updatedCred.username})"
+                    details = "Admin updated portal username & Argon2id/PBKDF2 digest in Keystore + Cloud Firestore (${updatedCred.username})$sigSuffix"
                 )
-                postMessage("Admin credentials updated (SHA-256 Keystore + Cloud): @${updatedCred.username}. Use new login immediately offline or online.")
+                postMessage("Admin credentials updated (Keystore + Cloud): @${updatedCred.username}. Use new login immediately offline or online.")
             }.onFailure { err ->
                 postMessage("Could not update Admin credentials: ${err.localizedMessage}")
             }
@@ -2128,7 +2136,10 @@ class InstituteViewModel(
      * 4. Generates an official GST `FeeInvoice` receipt (`WCI-UPI-...`).
      * 5. Logs an immutable verification entry to `institute_audit_logs`.
      */
-    fun adminApproveUpiTransaction(txn: UpiTransactionRecord) {
+    fun adminApproveUpiTransaction(
+        txn: UpiTransactionRecord,
+        biometricActionSignatureHex: String = ""
+    ) {
         if (!ensureActiveSessionOrSignOut()) return
         val adminUid = currentActorUid() ?: "admin_root"
         val approvedTxn = txn.copy(
@@ -2234,7 +2245,22 @@ class InstituteViewModel(
                         severity = "INFO",
                         utrNumber = txn.utr_number,
                         intentHash = txn.intent_hash,
-                        details = "Admin 1-Tap Confirmed UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name} • Receipt $receiptNo"
+                        details = "Admin 1-Tap Confirmed UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name} • Receipt $receiptNo" +
+                            if (biometricActionSignatureHex.isNotBlank()) " [BioSig:${biometricActionSignatureHex.take(16)}]" else ""
+                    )
+                    com.waqar.institute.security.ServerAuditHashChainClient.sealAuditChainEvent(
+                        context = appContext,
+                        eventType = "UPI_FEE_APPROVED",
+                        recordId = approvedTxn.id,
+                        payload = mapOf(
+                            "studentId" to txn.student_id,
+                            "studentName" to txn.student_name,
+                            "amountPaise" to txn.amount_paise,
+                            "utrNumber" to txn.utr_number,
+                            "receiptNo" to receiptNo,
+                            "verifiedByUid" to adminUid
+                        ),
+                        biometricSignatureHex = biometricActionSignatureHex
                     )
                 }
             }
@@ -2243,7 +2269,8 @@ class InstituteViewModel(
                 module = "M08_FEES",
                 targetId = txn.id,
                 severity = "INFO",
-                details = "1-Tap Confirmed UPI UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name}"
+                details = "1-Tap Confirmed UPI UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name}" +
+                    if (biometricActionSignatureHex.isNotBlank()) " [BioSig:${biometricActionSignatureHex.take(16)}]" else ""
             )
             postMessage("Verified UTR ${txn.utr_number} • Credited ₹${txn.amount_paise / 100} & Generated Receipt $receiptNo ✓")
         }
@@ -2675,7 +2702,8 @@ class InstituteViewModel(
         studentName: String,
         courseName: String,
         grade: String,
-        enrollmentNo: String = ""
+        enrollmentNo: String = "",
+        biometricActionSignatureHex: String = ""
     ) {
         if (!ensureActiveSessionOrSignOut()) return
         val uid = currentActorUid() ?: return
@@ -2719,7 +2747,27 @@ class InstituteViewModel(
         viewModelScope.launch {
             runCatching {
                 repository.saveCertificate(cert)
-                recordAudit("ISSUE_CERTIFICATE", "M12_CERTIFICATES", id, "INFO", "Issued $serialNo to $cleanStudentName ($cleanRollOrId)")
+                val sigSuffix = if (biometricActionSignatureHex.isNotBlank()) {
+                    " [BioSig:${biometricActionSignatureHex.take(16)}]"
+                } else ""
+                recordAudit("ISSUE_CERTIFICATE", "M12_CERTIFICATES", id, "INFO", "Issued $serialNo to $cleanStudentName ($cleanRollOrId)$sigSuffix")
+                withContext(Dispatchers.IO) {
+                    com.waqar.institute.security.ServerAuditHashChainClient.sealAuditChainEvent(
+                        context = appContext,
+                        eventType = "CERTIFICATE_ISSUED",
+                        recordId = serialNo,
+                        payload = mapOf(
+                            "serialNo" to serialNo,
+                            "studentId" to cleanRollOrId,
+                            "studentName" to cleanStudentName,
+                            "courseName" to cleanCourseName,
+                            "grade" to cleanGrade,
+                            "verificationHash" to verificationHash,
+                            "issuedByUid" to uid
+                        ),
+                        biometricSignatureHex = biometricActionSignatureHex
+                    )
+                }
                 postMessage("Issued Certificate $serialNo for $cleanStudentName (Roll: $cleanRollOrId)")
             }.onFailure { postMessage("Certificate error: ${it.localizedMessage}") }
         }

@@ -132,6 +132,7 @@ appmattus-ct = { group = "com.appmattus.certificatetransparency", name = "certif
 lsparanoid-core = { group = "org.lsposed.lsparanoid", name = "core", version.ref = "lsparanoid" }
 agora-full-sdk = { group = "io.agora.rtc", name = "full-sdk", version.ref = "agoraRtc" }
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version = "1.1.0" }
 
 
 [plugins]

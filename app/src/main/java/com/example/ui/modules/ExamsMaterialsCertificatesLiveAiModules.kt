@@ -1,5 +1,6 @@
 package com.example.ui.modules
 
+import android.app.Activity
 import android.graphics.ImageDecoder
 import android.os.Build
 import android.provider.MediaStore
@@ -1116,12 +1117,30 @@ fun ExamsMaterialsCertificatesModuleScreen(
                         model = model,
                         isAdmin = isAdmin,
                         onAdminUnlockAndIssue = {
-                            viewModel.issueCertificate(
-                                certType = "COMPLETION",
-                                studentId = model.studentId,
-                                studentName = model.studentName,
-                                courseName = model.courseTitle,
-                                grade = model.grade
+                            com.waqar.institute.biometric.HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
+                                activity = context as? Activity,
+                                actionType = "CERTIFICATE_ISSUED",
+                                canonicalPayload = "COMPLETION|${model.studentId}|${model.courseTitle}|${model.grade}",
+                                onSigned = { sig ->
+                                    viewModel.issueCertificate(
+                                        certType = "COMPLETION",
+                                        studentId = model.studentId,
+                                        studentName = model.studentName,
+                                        courseName = model.courseTitle,
+                                        grade = model.grade,
+                                        biometricActionSignatureHex = sig.signatureHex
+                                    )
+                                },
+                                onFallback = { sig ->
+                                    viewModel.issueCertificate(
+                                        certType = "COMPLETION",
+                                        studentId = model.studentId,
+                                        studentName = model.studentName,
+                                        courseName = model.courseTitle,
+                                        grade = model.grade,
+                                        biometricActionSignatureHex = sig.signatureHex
+                                    )
+                                }
                             )
                         },
                         onExportPdf = {
@@ -1884,13 +1903,37 @@ fun ExamsMaterialsCertificatesModuleScreen(
                                 it.fullName.equals(studentName.trim(), ignoreCase = true)
                         }
                         val matchedId = matchedStu?.id ?: selectedStudentId.ifBlank { rollNumber.trim() }
-                        viewModel.issueCertificate(
-                            certType = certType,
-                            studentId = matchedId,
-                            studentName = studentName.trim(),
-                            courseName = courseName.trim(),
-                            grade = grade.trim(),
-                            enrollmentNo = rollNumber.trim()
+                        val cType = certType
+                        val sName = studentName.trim()
+                        val cName = courseName.trim()
+                        val cGrade = grade.trim()
+                        val rNo = rollNumber.trim()
+                        com.waqar.institute.biometric.HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
+                            activity = context as? Activity,
+                            actionType = "CERTIFICATE_ISSUED",
+                            canonicalPayload = "$cType|$matchedId|$rNo|$cName|$cGrade",
+                            onSigned = { sig ->
+                                viewModel.issueCertificate(
+                                    certType = cType,
+                                    studentId = matchedId,
+                                    studentName = sName,
+                                    courseName = cName,
+                                    grade = cGrade,
+                                    enrollmentNo = rNo,
+                                    biometricActionSignatureHex = sig.signatureHex
+                                )
+                            },
+                            onFallback = { sig ->
+                                viewModel.issueCertificate(
+                                    certType = cType,
+                                    studentId = matchedId,
+                                    studentName = sName,
+                                    courseName = cName,
+                                    grade = cGrade,
+                                    enrollmentNo = rNo,
+                                    biometricActionSignatureHex = sig.signatureHex
+                                )
+                            }
                         )
                         showIssueCertificate = false
                     }

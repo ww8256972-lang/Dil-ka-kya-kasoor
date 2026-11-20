@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   deploy-zero-bill-ai-tutor-proxy:
-    name: Secret Sync & Deploy streamInstituteAiTutor
+    name: Env Injection & Deploy streamInstituteAiTutor
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -26,10 +26,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: functions/package-lock.json
 
@@ -70,18 +70,19 @@ jobs:
 
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Authenticate Service Account, Sync Zero-Bill AI Secrets & Deploy streamInstituteAiTutor
+      - name: Authenticate Service Account, Write Temporary functions/.env & Deploy Cloud Functions
         if: steps.check_secrets.outputs.ready == 'true'
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           CF_AI_GATEWAY_URL: ${{ secrets.CF_AI_GATEWAY_URL }}
           CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
+          ADMIN_BOOTSTRAP_PASSWORD: ${{ secrets.ADMIN_BOOTSTRAP_PASSWORD }}
           FIREBASE_SA_RAW: ${{ secrets.FIREBASE_SERVICE_ACCOUNT || secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247 }}
           PROJECT_ID: gen-lang-client-0309263247
         run: |
           set -euo pipefail
           SA_FILE="${RUNNER_TEMP}/firebase-service-account.json"
-          trap 'rm -f "$SA_FILE"' EXIT
+          trap 'rm -f "$SA_FILE" functions/.env' EXIT
 
           # Support either raw JSON or base64-encoded service account JSON
           if printf '%s' "$FIREBASE_SA_RAW" | grep -q '"private_key"'; then
@@ -92,28 +93,21 @@ jobs:
           chmod 600 "$SA_FILE"
           export GOOGLE_APPLICATION_CREDENTIALS="$SA_FILE"
 
-          # Store/rotate Zero-Bill AI secrets securely in Google Cloud Secret Manager (never printed to logs)
-          printf '%s' "$GROQ_API_KEY" | npx --yes firebase-tools@latest functions:secrets:set GROQ_API_KEY \
-            --project "$PROJECT_ID" \
-            --data-file=- \
-            --force \
-            --non-interactive
+          # Write temporary Firebase Functions .env (never logged, deleted automatically on EXIT)
+          umask 077
+          {
+            printf 'GROQ_API_KEY=%s\n' "$(printf '%s' "$GROQ_API_KEY" | tr -d '\r\n')"
+            printf 'CF_AI_GATEWAY_URL=%s\n' "$(printf '%s' "$CF_AI_GATEWAY_URL" | tr -d '\r\n')"
+            printf 'CF_AI_TOKEN=%s\n' "$(printf '%s' "$CF_AI_TOKEN" | tr -d '\r\n')"
+            if [ -n "${ADMIN_BOOTSTRAP_PASSWORD:-}" ]; then
+              printf 'ADMIN_BOOTSTRAP_PASSWORD=%s\n' "$(printf '%s' "$ADMIN_BOOTSTRAP_PASSWORD" | tr -d '\r\n')"
+            fi
+          } > functions/.env
+          chmod 600 functions/.env
 
-          printf '%s' "$CF_AI_GATEWAY_URL" | npx --yes firebase-tools@latest functions:secrets:set CF_AI_GATEWAY_URL \
-            --project "$PROJECT_ID" \
-            --data-file=- \
-            --force \
-            --non-interactive
-
-          printf '%s' "$CF_AI_TOKEN" | npx --yes firebase-tools@latest functions:secrets:set CF_AI_TOKEN \
-            --project "$PROJECT_ID" \
-            --data-file=- \
-            --force \
-            --non-interactive
-
-          # Deploy all three production Cloud Functions in asia-east1 without touching Hosting or Firestore rules
+          # Deploy all six production Cloud Functions in asia-east1 without requiring Secret Manager API
           npx --yes firebase-tools@latest deploy \
-            --only functions:streamInstituteAiTutor,functions:gradeExamSubmission,functions:issuePortalCustomToken \
-            --project "$PROJECT_ID" \
+            --only functions:streamInstituteAiTutor,functions:gradeExamSubmission,functions:issuePortalCustomToken,functions:startExamSession,functions:sealAuditChainEvent,functions:verifyAuditHashChain \
+            --project gen-lang-client-0309263247 \
             --force \
             --non-interactive

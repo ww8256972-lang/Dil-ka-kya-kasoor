@@ -486,10 +486,23 @@ private fun AdminUpiAndAutoEmiCommandSection(
                     }
                 }
             } else {
+                val approvalHostActivity = androidx.activity.compose.LocalActivity.current
                 pendingTxns.forEach { txn ->
                     PendingUpiApprovalCard(
                         txn = txn,
-                        onApprove = { viewModel.adminApproveUpiTransaction(txn) },
+                        onApprove = {
+                            com.waqar.institute.biometric.HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
+                                activity = approvalHostActivity,
+                                actionType = "UPI_FEE_APPROVED",
+                                canonicalPayload = "${txn.id}|${txn.student_id}|${txn.amount_paise}|${txn.utr_number}",
+                                onSigned = { sig ->
+                                    viewModel.adminApproveUpiTransaction(txn, biometricActionSignatureHex = sig.signatureHex)
+                                },
+                                onFallback = { sig ->
+                                    viewModel.adminApproveUpiTransaction(txn, biometricActionSignatureHex = sig.signatureHex)
+                                }
+                            )
+                        },
                         onReject = { viewModel.adminRejectUpiTransaction(txn) }
                     )
                 }

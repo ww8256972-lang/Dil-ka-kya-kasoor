@@ -24,6 +24,7 @@ data class OtaDynamicConfig(
     val festivalAutoThemeEnabled: Boolean = true,
     val strictBiometricExamGate: Boolean = true,
     val remoteScriptPayload: String = "card_elevation=14;liquid_wave_speed=1.15;accent_boost=true",
+    val minSupportedVersionCode: Long = 1L,
     val lastSyncedEpochMs: Long = 0L
 )
 
@@ -39,7 +40,8 @@ object OtaDynamicManager {
         "dynamic_banner_headline" to "Grow Up Computer Skill — ISO 9001:2015 Certified",
         "festival_auto_theme_enabled" to true,
         "strict_biometric_exam_gate" to true,
-        "remote_script_payload" to "card_elevation=14;liquid_wave_speed=1.15;accent_boost=true"
+        "remote_script_payload" to "card_elevation=14;liquid_wave_speed=1.15;accent_boost=true",
+        "min_supported_version_code" to 1L
     )
 
     private val _configFlow = MutableStateFlow(OtaDynamicConfig())
@@ -67,6 +69,7 @@ object OtaDynamicManager {
                 strictBiometricExamGate = remoteConfig.getBoolean("strict_biometric_exam_gate"),
                 remoteScriptPayload = remoteConfig.getString("remote_script_payload")
                     .ifBlank { "card_elevation=14;liquid_wave_speed=1.15;accent_boost=true" },
+                minSupportedVersionCode = remoteConfig.getLong("min_supported_version_code").coerceAtLeast(1L),
                 lastSyncedEpochMs = System.currentTimeMillis()
             )
             _configFlow.value = updated

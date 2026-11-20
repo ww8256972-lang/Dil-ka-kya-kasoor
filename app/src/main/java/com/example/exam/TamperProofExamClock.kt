@@ -169,6 +169,33 @@ object TamperProofExamClock {
     }
 
     /**
+     * Anchors the authoritative UTC clock returned by `startExamSession` (`serverNowMs`) to
+     * monotonic `elapsedRealtime()` and converts `hardDeadlineAtMs` into a tamper-proof
+     * monotonic deadline in `elapsedRealtime()` milliseconds.
+     */
+    fun anchorAuthoritativeServerDeadline(
+        serverNowMs: Long,
+        hardDeadlineAtMs: Long,
+        currentElapsedRealtimeMs: Long = SystemClock.elapsedRealtime()
+    ): Long {
+        if (serverNowMs > 1_700_000_000_000L) {
+            anchorServerEpoch(serverNowMs, currentElapsedRealtimeMs)
+        }
+        val effectiveNow = if (serverNowMs > 0L) serverNowMs else currentTrustedEpochMs(currentElapsedRealtimeMs)
+        val remainingMs = (hardDeadlineAtMs - effectiveNow).coerceAtLeast(0L)
+        return currentElapsedRealtimeMs + remainingMs
+    }
+
+    /**
+     * Checks whether a server-issued exam deadline has passed (including optional network grace).
+     */
+    fun isServerDeadlineExpired(
+        hardDeadlineAtMs: Long,
+        graceWindowMs: Long = 30_000L,
+        trustedNowMs: Long = currentTrustedEpochMs()
+    ): Boolean = hardDeadlineAtMs > 0L && trustedNowMs > (hardDeadlineAtMs + graceWindowMs)
+
+    /**
      * Computes remaining exam seconds strictly from a monotonic `elapsedRealtime()` deadline.
      */
     fun computeRemainingSeconds(

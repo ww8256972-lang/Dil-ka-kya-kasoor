@@ -951,6 +951,55 @@ service cloud.firestore {
       allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
       allow write: if isAdmin();
     }
+
+    // ===============================================================
+    // [ELITE SECURITY LAYERS] Hardware DPoP, Exam Sessions, Device Kill-Switch & Server Audit Hash-Chain
+    // ZERO request.auth == null rules.
+    // ===============================================================
+
+    match /device_pubkeys/{keyId} {
+      allow read: if isAdmin() || (isSignedIn() && (
+        keyId.matches('^' + request.auth.uid + '_.*') ||
+        (resource != null && resource.data.get('uid', '') == request.auth.uid)
+      ));
+      allow create, update: if isSignedIn() && (
+        isAdmin() || (
+          keyId.matches('^' + request.auth.uid + '_.*') &&
+          request.resource.data.get('uid', '') == request.auth.uid &&
+          isValidString(request.resource.data.get('deviceFp', ''), 4, 128) &&
+          isValidString(request.resource.data.get('spkiBase64', ''), 32, 1024)
+        )
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /dpop_nonces/{jti} {
+      allow read, write: if false;
+    }
+
+    match /examSessions/{sessionId} {
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        resource.data.get('studentUid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('studentUid', ''))
+      ));
+      allow write: if isStaffOrAdmin();
+    }
+
+    match /revoked_devices/{deviceFp} {
+      allow get: if isSignedIn();
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /server_audit_hash_chain/{seq} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /server_audit_chain_meta/{docId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
   }
 }
 

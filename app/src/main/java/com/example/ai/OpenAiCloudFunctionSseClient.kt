@@ -156,7 +156,8 @@ object OpenAiCloudFunctionSseClient {
         role: String,
         endpointUrl: String = DEFAULT_CLOUD_FUNCTION_SSE_URL,
         featureType: String = "TUTOR_CHAT",
-        languageCode: String = "EN"
+        languageCode: String = "EN",
+        context: android.content.Context? = null
     ): Flow<String> = flow {
         val idToken = fetchIdTokenSafe()
             ?: throw IllegalStateException("Firebase Auth session required for AI Tutor.")
@@ -170,6 +171,7 @@ object OpenAiCloudFunctionSseClient {
             put("languageCode", languageCode)
             put("role", role)
         }
+        val rawBodyStr = requestJson.toString()
 
         val reqBuilder = Request.Builder()
             .url(endpointUrl)
@@ -178,7 +180,15 @@ object OpenAiCloudFunctionSseClient {
             .header("Authorization", "Bearer $idToken")
             .header("X-Firebase-AppCheck", appCheckToken)
             .header("X-WCI-Portal-Role", role)
-            .post(requestJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .post(rawBodyStr.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+        com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
+            builder = reqBuilder,
+            context = context,
+            httpMethod = "POST",
+            url = endpointUrl,
+            rawBody = rawBodyStr
+        )
 
         val accumulated = StringBuilder()
         sseHttpClient.newCall(reqBuilder.build()).execute().use { response ->

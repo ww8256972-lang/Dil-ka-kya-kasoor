@@ -36,6 +36,7 @@ import com.example.viewmodel.InstituteViewModel
 import com.waqar.institute.security.BytecodeMutator
 import com.waqar.institute.security.EnterpriseRaspShield
 import com.waqar.institute.security.StrongBoxKeymasterVault
+import kotlinx.coroutines.launch
 
 // ============================================================================
 // ANALYTICS REPORTS, LAB INVENTORY & LIBRARY, HELPDESK & NPS
@@ -457,13 +458,195 @@ fun SecurityBackupSettingsModuleScreen(
                                 icon = Icons.Default.SyncLock,
                                 enabled = adminUsername.trim().length >= 3 && adminNewPassword.trim().length >= 4,
                                 onClick = {
-                                    viewModel.updateAdminCredentials(adminUsername, adminNewPassword)
+                                    val u = adminUsername
+                                    val p = adminNewPassword
+                                    com.waqar.institute.biometric.HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
+                                        activity = context as? Activity,
+                                        actionType = "ADMIN_CREDENTIALS_ROTATED",
+                                        canonicalPayload = "admin_cred_rotation|${u.trim().lowercase()}",
+                                        onSigned = { sig ->
+                                            viewModel.updateAdminCredentials(u, p, biometricActionSignatureHex = sig.signatureHex)
+                                        },
+                                        onFallback = { sig ->
+                                            viewModel.updateAdminCredentials(u, p, biometricActionSignatureHex = sig.signatureHex)
+                                        }
+                                    )
                                     adminNewPassword = ""
                                     adminConfirmPassword = ""
                                 },
                                 modifier = Modifier.fillMaxWidth(),
                                 testTag = "save_admin_credentials_button"
                             )
+                        }
+                    }
+
+                    // 1b. Server Hash-Chain Integrity & 1-Tap Compromised Device Revocation (Admin Only)
+                    item {
+                        var chainReport by remember {
+                            mutableStateOf<com.waqar.institute.security.ServerAuditHashChainClient.ChainVerificationReport?>(null)
+                        }
+                        var isVerifyingChain by remember { mutableStateOf(false) }
+                        var revokeFpInput by remember { mutableStateOf("") }
+                        var revokeReasonInput by remember { mutableStateOf("Compromised or lost device") }
+                        var revokedList by remember {
+                            mutableStateOf<List<com.waqar.institute.security.DeviceRevocationGuard.RevokedDeviceEntry>>(emptyList())
+                        }
+                        val secScope = rememberCoroutineScope()
+
+                        LaunchedEffect(Unit) {
+                            isVerifyingChain = true
+                            chainReport = com.waqar.institute.security.ServerAuditHashChainClient.verifyServerAuditHashChain(context)
+                            revokedList = com.waqar.institute.security.DeviceRevocationGuard.fetchRevokedDevices()
+                            isVerifyingChain = false
+                        }
+
+                        GlassCard(modifier = Modifier.fillMaxWidth()) {
+                            val statusText = when {
+                                isVerifyingChain -> "CHECKING..."
+                                chainReport?.statusLabel == "VERIFIED" -> "VERIFIED"
+                                chainReport?.statusLabel == "TAMPERED" -> "TAMPERED"
+                                else -> "OFFLINE / PENDING"
+                            }
+                            val statusColor = when (statusText) {
+                                "VERIFIED" -> WciColors.successColor
+                                "TAMPERED" -> WciColors.dangerColor
+                                else -> WciColors.warningColor
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Server Hash-Chain Integrity: $statusText",
+                                        style = MaterialTheme.typography.titleSmall.copy(
+                                            color = statusColor,
+                                            fontWeight = FontWeight.ExtraBold
+                                        ),
+                                        modifier = Modifier.testTag("server_hash_chain_status_label")
+                                    )
+                                    Text(
+                                        text = chainReport?.message?.ifBlank { "Audit hash chain ready" }
+                                            ?: "Verifying server-side Fee & Certificate SHA-256 chain...",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontFamily = JetBrainsMono,
+                                            color = WciColors.textMuted
+                                        )
+                                    )
+                                }
+                                LiquidPill(
+                                    text = "Re-Verify",
+                                    selected = false,
+                                    onClick = {
+                                        secScope.launch {
+                                            isVerifyingChain = true
+                                            chainReport = com.waqar.institute.security.ServerAuditHashChainClient.verifyServerAuditHashChain(context)
+                                            isVerifyingChain = false
+                                        }
+                                    }
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+                            HorizontalDivider(color = WciColors.glassBorderSubtleColor)
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text(
+                                text = "1-Tap Compromised Device Revocation",
+                                style = MaterialTheme.typography.titleSmall.copy(color = WciColors.textPrimary)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = revokeFpInput,
+                                    onValueChange = { revokeFpInput = it },
+                                    label = { Text("Device Fingerprint") },
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("revoke_device_fp_input")
+                                )
+                                OutlinedTextField(
+                                    value = revokeReasonInput,
+                                    onValueChange = { revokeReasonInput = it },
+                                    label = { Text("Reason") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            ShimmerButton(
+                                text = "Revoke Compromised Device Immediately",
+                                icon = Icons.Default.Block,
+                                enabled = revokeFpInput.trim().length >= 4,
+                                onClick = {
+                                    val targetFp = revokeFpInput.trim()
+                                    val reason = revokeReasonInput.trim()
+                                    secScope.launch {
+                                        val res = com.waqar.institute.security.DeviceRevocationGuard.revokeDevice(
+                                            deviceFingerprint = targetFp,
+                                            reason = reason,
+                                            adminUid = state.userProfile?.uid ?: "admin_root"
+                                        )
+                                        res.onSuccess {
+                                            revokeFpInput = ""
+                                            revokedList = com.waqar.institute.security.DeviceRevocationGuard.fetchRevokedDevices()
+                                            viewModel.postMessage("Device '$targetFp' revoked immediately across Cloud Functions & app sessions.")
+                                        }.onFailure { err ->
+                                            viewModel.postMessage("Revocation failed: ${err.localizedMessage}")
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                testTag = "revoke_device_submit_button"
+                            )
+
+                            if (revokedList.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                revokedList.take(5).forEach { entry ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "${entry.deviceFingerprint} • ${if (entry.revoked) "REVOKED" else "ACTIVE"}",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = JetBrainsMono,
+                                                    color = if (entry.revoked) WciColors.dangerColor else WciColors.successColor,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            )
+                                            if (entry.reason.isNotBlank()) {
+                                                Text(
+                                                    text = entry.reason,
+                                                    style = MaterialTheme.typography.labelSmall.copy(color = WciColors.textMuted)
+                                                )
+                                            }
+                                        }
+                                        if (entry.revoked) {
+                                            LiquidPill(
+                                                text = "Unrevoke",
+                                                selected = false,
+                                                onClick = {
+                                                    secScope.launch {
+                                                        com.waqar.institute.security.DeviceRevocationGuard.unrevokeDevice(
+                                                            deviceFingerprint = entry.deviceFingerprint,
+                                                            adminUid = state.userProfile?.uid ?: "admin_root"
+                                                        )
+                                                        revokedList = com.waqar.institute.security.DeviceRevocationGuard.fetchRevokedDevices()
+                                                        viewModel.postMessage("Restored device '${entry.deviceFingerprint}'.")
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1045,7 +1228,19 @@ fun SecurityBackupSettingsModuleScreen(
                                 icon = Icons.Default.SyncLock,
                                 enabled = canSaveCreds,
                                 onClick = {
-                                    viewModel.updateAdminCredentials(adminUsername, adminNewPassword)
+                                    val u = adminUsername
+                                    val p = adminNewPassword
+                                    com.waqar.institute.biometric.HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
+                                        activity = context as? Activity,
+                                        actionType = "ADMIN_CREDENTIALS_ROTATED",
+                                        canonicalPayload = "admin_cred_rotation|${u.trim().lowercase()}",
+                                        onSigned = { sig ->
+                                            viewModel.updateAdminCredentials(u, p, biometricActionSignatureHex = sig.signatureHex)
+                                        },
+                                        onFallback = { sig ->
+                                            viewModel.updateAdminCredentials(u, p, biometricActionSignatureHex = sig.signatureHex)
+                                        }
+                                    )
                                     adminNewPassword = ""
                                     adminConfirmPassword = ""
                                 },

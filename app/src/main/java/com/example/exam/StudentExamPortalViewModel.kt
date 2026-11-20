@@ -27,7 +27,10 @@ data class StudentExamGatewayState(
     val isExamUnlocked: Boolean = true,
     val remainingExamSeconds: Int = 3600,
     val remainingFormattedMmSs: String = "60:00",
-    val hasTimerExpiredAutoSubmit: Boolean = false
+    val hasTimerExpiredAutoSubmit: Boolean = false,
+    val activeSessionNonce: String = "",
+    val serverHardDeadlineAtMs: Long = 0L,
+    val isAuthoritativeServerSession: Boolean = false
 )
 
 class StudentExamPortalViewModel : ViewModel() {
@@ -93,6 +96,46 @@ class StudentExamPortalViewModel : ViewModel() {
     fun startActiveExamClockSeconds(durationSeconds: Int, onTimeExpiredAutoSubmit: () -> Unit) {
         examTimerJob?.cancel()
         val deadlineElapsedMs = TamperProofExamClock.elapsedDeadlineAfterDurationSeconds(durationSeconds)
+        examTimerJob = viewModelScope.launch {
+            while (true) {
+                val secsLeft = TamperProofExamClock.computeRemainingSeconds(deadlineElapsedMs)
+                if (secsLeft <= 0) {
+                    break
+                }
+                _gatewayState.value = _gatewayState.value.copy(
+                    remainingExamSeconds = secsLeft,
+                    remainingFormattedMmSs = TamperProofExamClock.formatMmSs(secsLeft),
+                    hasTimerExpiredAutoSubmit = false
+                )
+                delay(250L)
+            }
+            _gatewayState.value = _gatewayState.value.copy(
+                remainingExamSeconds = 0,
+                remainingFormattedMmSs = "00:00",
+                hasTimerExpiredAutoSubmit = true
+            )
+            onTimeExpiredAutoSubmit()
+        }
+    }
+
+    /**
+     * Layer 2 — Binds an authoritative server-issued `ServerExamSessionInfo` (`sessionNonce` +
+     * `hardDeadlineAtMs`) and locks the active countdown timer directly to the server's deadline.
+     */
+    fun bindServerExamSession(
+        sessionInfo: ServerExamSessionInfo,
+        onTimeExpiredAutoSubmit: () -> Unit
+    ) {
+        examTimerJob?.cancel()
+        val deadlineElapsedMs = TamperProofExamClock.anchorAuthoritativeServerDeadline(
+            serverNowMs = sessionInfo.serverNowMs,
+            hardDeadlineAtMs = sessionInfo.hardDeadlineAtMs
+        )
+        _gatewayState.value = _gatewayState.value.copy(
+            activeSessionNonce = sessionInfo.sessionNonce,
+            serverHardDeadlineAtMs = sessionInfo.hardDeadlineAtMs,
+            isAuthoritativeServerSession = sessionInfo.isAuthoritativeServerSession
+        )
         examTimerJob = viewModelScope.launch {
             while (true) {
                 val secsLeft = TamperProofExamClock.computeRemainingSeconds(deadlineElapsedMs)

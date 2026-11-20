@@ -26,7 +26,6 @@
  */
 
 const { onRequest } = require("firebase-functions/v2/https");
-const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const crypto = require("node:crypto");
@@ -38,17 +37,16 @@ if (!admin.apps.length) {
 const NAMED_DB_ID = "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1";
 const namedDb = () => getFirestore(admin.app(), NAMED_DB_ID);
 
-// Strictly Cloud Secret Manager secrets — NEVER stored in Android APK or BuildConfig
-const GROQ_API_KEY = defineSecret("GROQ_API_KEY");
-const CF_AI_GATEWAY_URL = defineSecret("CF_AI_GATEWAY_URL");
-const CF_AI_TOKEN = defineSecret("CF_AI_TOKEN");
-
 const RATE_LIMIT_MAX_REQUESTS = 35;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;       // 60 seconds
 const RATE_LIMIT_BLOCK_MS = 5 * 60 * 1000;    // 5 minutes (300 seconds)
 const PBKDF2_WEB_PARITY_ITERATIONS = 12000;
 const PBKDF2_LEGACY_ITERATIONS = 65536;
+const PBKDF2_HARDENED_ITERATIONS = 120000;
 const PBKDF2_KEYLEN_BYTES = 32;
+const DPOP_CLOCK_SKEW_SECONDS = 120;
+const EXAM_GRACE_PERIOD_MS = 30 * 1000;
+const AUDIT_CHAIN_GENESIS_HASH = "GENESIS_WCI_SERVER_AUDIT_CHAIN_V1";
 const fallbackBuckets = new Map();
 
 const STUDENT_DAILY_LIVE_AI_CAP = 5;
@@ -181,6 +179,13 @@ function constantTimeHexEquals(expectedHex, actualHex) {
   return crypto.timingSafeEqual(a, b);
 }
 
+function constantTimeStringEquals(expectedStr, actualStr) {
+  const a = Buffer.from(String(expectedStr || ""), "utf8");
+  const b = Buffer.from(String(actualStr || ""), "utf8");
+  if (a.length === 0 || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function verifyPbkdf2Hex(password, saltHex, expectedHashHex) {
   const cleanSalt = String(saltHex || "").trim().toLowerCase();
   const cleanExpected = String(expectedHashHex || "").trim().toLowerCase();
@@ -190,6 +195,13 @@ function verifyPbkdf2Hex(password, saltHex, expectedHashHex) {
   const saltBuf = /^[0-9a-f]+$/.test(cleanSalt) && cleanSalt.length % 2 === 0
     ? Buffer.from(cleanSalt, "hex")
     : Buffer.from(cleanSalt, "utf8");
+
+  const derived120k = crypto
+    .pbkdf2Sync(password, saltBuf, PBKDF2_HARDENED_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+    .toString("hex");
+  if (constantTimeHexEquals(cleanExpected, derived120k)) {
+    return true;
+  }
 
   const derived12k = crypto
     .pbkdf2Sync(password, saltBuf, PBKDF2_WEB_PARITY_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
@@ -202,6 +214,164 @@ function verifyPbkdf2Hex(password, saltHex, expectedHashHex) {
     .pbkdf2Sync(password, saltBuf, PBKDF2_LEGACY_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
     .toString("hex");
   return constantTimeHexEquals(cleanExpected, derived65k);
+}
+
+function sanitizeDocKey(raw, maxLen = 120) {
+  return String(raw || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.\-:]/g, "_")
+    .slice(0, maxLen);
+}
+
+function canonicalizeJson(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeJson(item)).join(",")}]`;
+  }
+  const sortedKeys = Object.keys(value).sort();
+  return `{${sortedKeys.map((k) => `${JSON.stringify(k)}:${canonicalizeJson(value[k])}`).join(",")}}`;
+}
+
+async function assertDeviceNotRevoked(db, req) {
+  const rawFp = String(
+    req.header("X-WCI-Device-Fp") ||
+    req.body?.deviceFingerprint ||
+    ""
+  ).trim();
+  if (!rawFp) {
+    return { revoked: false, deviceFp: "" };
+  }
+  const safeFp = sanitizeDocKey(rawFp, 128);
+  try {
+    const snap = await db.collection("revoked_devices").doc(safeFp).get();
+    if (snap.exists && snap.data()?.revoked === true) {
+      const reason = String(snap.data()?.reason || "Device revoked by Institute Admin.");
+      return { revoked: true, deviceFp: safeFp, reason };
+    }
+  } catch (_) {
+    // Allow through if lookup momentarily unavailable
+  }
+  return { revoked: false, deviceFp: safeFp };
+}
+
+function decodeBase64UrlToBuffer(b64url) {
+  const normalized = String(b64url || "").replace(/-/g, "+").replace(/_/g, "/");
+  const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + pad, "base64");
+}
+
+/**
+ * Verifies hardware-bound RFC 9449-style `X-WCI-DPoP` ECDSA P-256 request proof against
+ * `device_pubkeys/{uid}_{deviceFp}`, enforces ±120s timestamp window, and atomically rejects
+ * replayed `jti` nonces in `dpop_nonces/{jti}`.
+ */
+async function verifyDpopProof(req, db, uid) {
+  const dpopHeader = String(req.header("X-WCI-DPoP") || "").trim();
+  const deviceFpHeader = sanitizeDocKey(req.header("X-WCI-Device-Fp") || "", 128);
+
+  if (!dpopHeader) {
+    if (uid && deviceFpHeader) {
+      try {
+        const regSnap = await db.collection("device_pubkeys").doc(`${sanitizeDocKey(uid, 64)}_${deviceFpHeader}`).get();
+        if (regSnap.exists && regSnap.data()?.spkiBase64) {
+          return { ok: false, status: 401, error: "Missing required X-WCI-DPoP proof for hardware-bound device." };
+        }
+      } catch (_) {
+        // Non-blocking if key registry lookup fails
+      }
+    }
+    return { ok: true, verified: false };
+  }
+
+  const parts = dpopHeader.split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return { ok: false, status: 401, error: "Malformed X-WCI-DPoP header." };
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(decodeBase64UrlToBuffer(parts[0]).toString("utf8"));
+  } catch (_) {
+    return { ok: false, status: 401, error: "Unparseable X-WCI-DPoP payload." };
+  }
+
+  const jti = sanitizeDocKey(payload.jti || "", 96);
+  const iat = Number(payload.iat || 0);
+  const htm = String(payload.htm || "").trim().toUpperCase();
+  const htu = String(payload.htu || "").trim();
+  const ath = String(payload.ath || "").trim().toLowerCase();
+  const payloadFp = sanitizeDocKey(payload.deviceFp || deviceFpHeader, 128);
+
+  if (!jti || !Number.isFinite(iat) || iat <= 0 || !htm || !htu || !payloadFp) {
+    return { ok: false, status: 401, error: "Incomplete X-WCI-DPoP claims." };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - iat) > DPOP_CLOCK_SKEW_SECONDS) {
+    return { ok: false, status: 401, error: "Expired or skewed X-WCI-DPoP timestamp (±120s)." };
+  }
+
+  if (htm !== String(req.method || "POST").toUpperCase()) {
+    return { ok: false, status: 401, error: "X-WCI-DPoP HTTP method mismatch." };
+  }
+
+  if (ath && req.rawBody && Buffer.isBuffer(req.rawBody)) {
+    const actualBodyHash = crypto.createHash("sha256").update(req.rawBody).digest("hex").toLowerCase();
+    if (!constantTimeHexEquals(ath, actualBodyHash)) {
+      return { ok: false, status: 401, error: "X-WCI-DPoP body digest mismatch." };
+    }
+  }
+
+  // Verify ECDSA P-256 signature against registered hardware public key when available
+  if (uid) {
+    const pubKeyDocId = `${sanitizeDocKey(uid, 64)}_${payloadFp}`;
+    const pubSnap = await db.collection("device_pubkeys").doc(pubKeyDocId).get();
+    if (pubSnap.exists && pubSnap.data()?.spkiBase64) {
+      try {
+        const spkiDer = Buffer.from(String(pubSnap.data().spkiBase64), "base64");
+        const publicKey = crypto.createPublicKey({ key: spkiDer, format: "der", type: "spki" });
+        const sigBuf = decodeBase64UrlToBuffer(parts[1]);
+        const verifier = crypto.createVerify("SHA256");
+        verifier.update(parts[0], "utf8");
+        verifier.end();
+        const sigValid = verifier.verify(publicKey, sigBuf);
+        if (!sigValid) {
+          return { ok: false, status: 401, error: "Invalid X-WCI-DPoP hardware ECDSA signature." };
+        }
+      } catch (_) {
+        return { ok: false, status: 401, error: "Failed X-WCI-DPoP ECDSA verification." };
+      }
+    }
+  }
+
+  // Atomic anti-replay nonce consumption
+  try {
+    const nonceRef = db.collection("dpop_nonces").doc(jti);
+    const consumed = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(nonceRef);
+      if (snap.exists) {
+        return false;
+      }
+      tx.set(nonceRef, {
+        jti,
+        uid: String(uid || "pre_auth"),
+        deviceFp: payloadFp,
+        iat,
+        expiresAtMs: Date.now() + 300_000,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      return true;
+    });
+    if (!consumed) {
+      return { ok: false, status: 401, error: "DPoP replay detected: jti already consumed." };
+    }
+  } catch (_) {
+    // Allow through only if Firestore nonce transaction momentarily unavailable
+  }
+
+  return { ok: true, verified: true, deviceFp: payloadFp, jti };
 }
 
 function credentialSupportsRole(credData, requestedRole) {
@@ -523,7 +693,7 @@ exports.issuePortalCustomToken = onRequest(
 
     if (req.method === "OPTIONS") {
       res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.set("Access-Control-Allow-Headers", "Content-Type, X-Firebase-AppCheck");
+      res.set("Access-Control-Allow-Headers", "Content-Type, X-Firebase-AppCheck, X-WCI-DPoP, X-WCI-Device-Fp");
       res.status(204).send("");
       return;
     }
@@ -551,7 +721,7 @@ exports.issuePortalCustomToken = onRequest(
     const body = req.body || {};
     const cleanUsername = normalizeUsername(body.username);
     const rawPassword = String(body.password || "").trim();
-    const requestedRole = String(body.role || "").trim().toLowerCase();
+    const requestedRole = String(body.requestedRole || body.role || "").trim().toLowerCase();
 
     if (cleanUsername.length < 3 || rawPassword.length < 3 || !["admin", "teacher", "student", "parent"].includes(requestedRole)) {
       return res.status(400).json({ error: "Invalid username, password, or portal role." });
@@ -572,8 +742,96 @@ exports.issuePortalCustomToken = onRequest(
 
     try {
       const db = namedDb();
-      const credSnap = await db.collection("portalCredentials").doc(cleanUsername).get();
+
+      // Enforce central revoked-device blocklist before issuing any Custom Token
+      const revCheck = await assertDeviceNotRevoked(db, req);
+      if (revCheck.revoked) {
+        return res.status(403).json({
+          error: `Device access revoked by Institute Admin (${revCheck.reason}).`,
+          revoked: true,
+        });
+      }
+
+      const credRef = db.collection("portalCredentials").doc(cleanUsername);
+      const credSnap = await credRef.get();
+
+      // One-Time Server-Side Admin Bootstrap (`waqar`) ONLY when `/portalCredentials/waqar` does not exist yet
       if (!credSnap.exists) {
+        if (cleanUsername === "waqar" && requestedRole === "admin") {
+          const bootstrapPassword = String(process.env.ADMIN_BOOTSTRAP_PASSWORD || "").trim();
+          if (bootstrapPassword.length >= 6 && constantTimeStringEquals(bootstrapPassword, rawPassword)) {
+            const saltBuf = crypto.randomBytes(16);
+            const saltHex = saltBuf.toString("hex");
+            const hash120k = crypto
+              .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_HARDENED_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+              .toString("hex");
+            const parity12k = crypto
+              .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_WEB_PARITY_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+              .toString("hex");
+
+            const bootstrapPortalUid = "admin_waqar_root";
+            const bootstrapDisplayName = "Waqar Khan (Admin)";
+
+            await credRef.set({
+              username: "waqar",
+              passwordHash: hash120k,
+              passwordSalt: saltHex,
+              pbkdf2ParityHash: parity12k,
+              pbkdf2ParitySalt: saltHex,
+              portalUid: bootstrapPortalUid,
+              role: "admin",
+              linkedEntityId: "ADMIN_ROOT",
+              displayName: bootstrapDisplayName,
+              assignedByUid: bootstrapPortalUid,
+              active: true,
+              isAdmin: true,
+              isTeacher: false,
+              isStudent: false,
+              isParent: false,
+              portalRoles: ["admin"],
+              createdAt: FieldValue.serverTimestamp(),
+            });
+
+            await db.collection("users").doc(bootstrapPortalUid).set(
+              {
+                uid: bootstrapPortalUid,
+                email: "waqar@waqarinstitute.edu",
+                displayName: bootstrapDisplayName,
+                role: "admin",
+                username: "waqar",
+                phone: "",
+                mfaEnabled: false,
+                totpSecret: "",
+                linkedEntityId: "ADMIN_ROOT",
+                isAdmin: true,
+                isTeacher: false,
+                isStudent: false,
+                isParent: false,
+                portalRoles: ["admin"],
+                createdAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+
+            const customClaims = {
+              role: "admin",
+              portalUid: bootstrapPortalUid,
+              username: "waqar",
+              linkedEntityId: "ADMIN_ROOT",
+            };
+            const customToken = await admin.auth().createCustomToken(bootstrapPortalUid, customClaims);
+
+            return res.status(200).json({
+              customToken,
+              portalUid: bootstrapPortalUid,
+              role: "admin",
+              username: "waqar",
+              displayName: bootstrapDisplayName,
+              linkedEntityId: "ADMIN_ROOT",
+              bootstrapped: true,
+            });
+          }
+        }
         return res.status(401).json({ error: "Invalid username or password." });
       }
 
@@ -592,8 +850,10 @@ exports.issuePortalCustomToken = onRequest(
         return res.status(401).json({ error: "Invalid username or password." });
       }
 
-      const portalUid = String(cred.portalUid || `cred_${cleanUsername}`);
-      const linkedEntityId = String(cred.linkedEntityId || "");
+      const portalUid = String(
+        cred.portalUid || (cleanUsername === "waqar" && requestedRole === "admin" ? "admin_waqar_root" : `cred_${cleanUsername}`)
+      );
+      const linkedEntityId = String(cred.linkedEntityId || (requestedRole === "admin" ? "ADMIN_ROOT" : ""));
       const displayName = String(cred.displayName || cleanUsername);
 
       const customClaims = {
@@ -635,7 +895,6 @@ exports.issuePortalCustomToken = onRequest(
 exports.streamInstituteAiTutor = onRequest(
   {
     region: "asia-east1",
-    secrets: [GROQ_API_KEY, CF_AI_GATEWAY_URL, CF_AI_TOKEN],
     cors: [
       "https://gen-lang-client-0309263247.web.app",
       "https://gen-lang-client-0309263247.firebaseapp.com",
@@ -650,7 +909,7 @@ exports.streamInstituteAiTutor = onRequest(
       res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
       res.set(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-Portal-Role"
+        "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-Portal-Role, X-WCI-DPoP, X-WCI-Device-Fp"
       );
       res.status(204).send("");
       return;
@@ -728,6 +987,21 @@ exports.streamInstituteAiTutor = onRequest(
 
     const db = namedDb();
 
+    // 4B. Enforce Revoked Device Blocklist & Hardware-Bound DPoP Proof
+    const revCheck = await assertDeviceNotRevoked(db, req);
+    if (revCheck.revoked) {
+      res.status(403).json({
+        error: `Device access revoked by Institute Admin (${revCheck.reason}).`,
+        revoked: true,
+      });
+      return;
+    }
+    const dpopCheck = await verifyDpopProof(req, db, studentUid);
+    if (!dpopCheck.ok) {
+      res.status(dpopCheck.status || 401).json({ error: dpopCheck.error });
+      return;
+    }
+
     // 5. Check Existing 24-Hour Security Cage Lock (Admin & Teacher exempt)
     if (!isExemptStaffOrAdmin) {
       try {
@@ -751,10 +1025,10 @@ exports.streamInstituteAiTutor = onRequest(
       }
     }
 
-    // Read secrets strictly from Google Cloud Secret Manager
-    const groqKey = (GROQ_API_KEY.value() || process.env.GROQ_API_KEY || "").trim();
-    const cfGatewayUrl = (CF_AI_GATEWAY_URL.value() || process.env.CF_AI_GATEWAY_URL || "").trim();
-    const cfToken = (CF_AI_TOKEN.value() || process.env.CF_AI_TOKEN || "").trim();
+    // Read server-only AI proxy credentials from Firebase Functions runtime environment (`functions/.env`)
+    const groqKey = String(process.env.GROQ_API_KEY || "").trim();
+    const cfGatewayUrl = String(process.env.CF_AI_GATEWAY_URL || "").trim();
+    const cfToken = String(process.env.CF_AI_TOKEN || "").trim();
 
     // 6. Stage A — Server Security Guard (Llama Prompt Guard 2 86M + Anti-Hacking/Injection Regex)
     const guardVerdict = await evaluatePromptGuardServer(userPrompt, groqKey, cfGatewayUrl, cfToken);
@@ -1025,23 +1299,23 @@ exports.streamInstituteAiTutor = onRequest(
 );
 
 /**
- * [A5] Zero-Client-Trust Server Exam Grader Cloud Function (`gradeExamSubmission`).
+ * [B2] Server-Enforced Exam Start-Time & Single-Use Session Nonce (`startExamSession`, asia-east1).
  */
-exports.gradeExamSubmission = onRequest(
+exports.startExamSession = onRequest(
   {
     region: "asia-east1",
     cors: [
       "https://gen-lang-client-0309263247.web.app",
       "https://gen-lang-client-0309263247.firebaseapp.com",
     ],
-    timeoutSeconds: 60,
+    timeoutSeconds: 30,
     memory: "256MiB",
   },
   async (req, res) => {
     applySecurityHeaders(res);
     if (req.method === "OPTIONS") {
       res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-Paper-Watermark");
+      res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-DPoP, X-WCI-Device-Fp");
       res.status(204).send("");
       return;
     }
@@ -1070,6 +1344,168 @@ exports.gradeExamSubmission = onRequest(
       return res.status(401).json({ error: "Invalid Firebase App Check token." });
     }
 
+    const db = namedDb();
+    const revCheck = await assertDeviceNotRevoked(db, req);
+    if (revCheck.revoked) {
+      return res.status(403).json({ error: `Device access revoked (${revCheck.reason}).`, revoked: true });
+    }
+    const dpopCheck = await verifyDpopProof(req, db, decoded.uid);
+    if (!dpopCheck.ok) {
+      return res.status(dpopCheck.status || 401).json({ error: dpopCheck.error });
+    }
+
+    const body = req.body || {};
+    const examId = sanitizeDocKey(body.examId || "", 80);
+    if (!examId) {
+      return res.status(400).json({ error: "Missing examId." });
+    }
+
+    try {
+      let authoritativeDurationSec = Number(body.durationSeconds || 0);
+      const examSnap = await db.collection("exams").doc(examId).get();
+      if (examSnap.exists) {
+        const examData = examSnap.data() || {};
+        const docDurSec = Number(examData.durationSeconds || 0);
+        const docDurMin = Number(examData.durationMinutes || 0);
+        if (docDurSec >= 10) {
+          authoritativeDurationSec = docDurSec;
+        } else if (docDurMin >= 1) {
+          authoritativeDurationSec = docDurMin * 60;
+        }
+      }
+      if (!Number.isFinite(authoritativeDurationSec) || authoritativeDurationSec < 10) {
+        authoritativeDurationSec = 1800;
+      }
+      authoritativeDurationSec = Math.min(21600, Math.max(10, Math.round(authoritativeDurationSec)));
+
+      const studentUid = decoded.uid;
+      const sessionId = `${examId}_${sanitizeDocKey(studentUid, 80)}`;
+      const sessionRef = db.collection("examSessions").doc(sessionId);
+      const serverNowMs = Date.now();
+
+      const result = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(sessionRef);
+        if (snap.exists) {
+          const existing = snap.data() || {};
+          if (existing.submitted === true) {
+            return { alreadySubmitted: true };
+          }
+          return {
+            alreadySubmitted: false,
+            sessionId,
+            examId,
+            studentUid,
+            sessionNonce: String(existing.sessionNonce || ""),
+            serverStartedAtMs: Number(existing.serverStartedAtMs || serverNowMs),
+            hardDeadlineAtMs: Number(existing.hardDeadlineAtMs || (serverNowMs + authoritativeDurationSec * 1000)),
+            durationSeconds: Number(existing.durationSeconds || authoritativeDurationSec),
+            serverNowMs,
+          };
+        }
+
+        const sessionNonce = crypto.randomBytes(16).toString("hex");
+        const hardDeadlineAtMs = serverNowMs + authoritativeDurationSec * 1000;
+        tx.set(sessionRef, {
+          id: sessionId,
+          examId,
+          studentUid,
+          sessionNonce,
+          serverStartedAtMs: serverNowMs,
+          hardDeadlineAtMs,
+          durationSeconds: authoritativeDurationSec,
+          submitted: false,
+          serverStartedAt: FieldValue.serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        return {
+          alreadySubmitted: false,
+          sessionId,
+          examId,
+          studentUid,
+          sessionNonce,
+          serverStartedAtMs: serverNowMs,
+          hardDeadlineAtMs,
+          durationSeconds: authoritativeDurationSec,
+          serverNowMs,
+        };
+      });
+
+      if (result.alreadySubmitted) {
+        return res.status(403).json({
+          error: "Exam attempt already submitted for this student.",
+          alreadySubmitted: true,
+        });
+      }
+
+      return res.status(200).json(result);
+    } catch (err) {
+      return res.status(500).json({ error: err.message || "Failed to initialize exam session." });
+    }
+  }
+);
+
+/**
+ * [A5 + B2] Zero-Client-Trust Server Exam Grader Cloud Function (`gradeExamSubmission`).
+ * Enforces Firebase ID Token + App Check + DPoP + Revoked Device Check + Single-Use `sessionNonce`
+ * + Server-Enforced `hardDeadlineAt` (+30s network grace) in an atomic Firestore transaction.
+ */
+exports.gradeExamSubmission = onRequest(
+  {
+    region: "asia-east1",
+    cors: [
+      "https://gen-lang-client-0309263247.web.app",
+      "https://gen-lang-client-0309263247.firebaseapp.com",
+    ],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    applySecurityHeaders(res);
+    if (req.method === "OPTIONS") {
+      res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.set(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-Paper-Watermark, X-WCI-DPoP, X-WCI-Device-Fp"
+      );
+      res.status(204).send("");
+      return;
+    }
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method Not Allowed" });
+    }
+
+    const authHeader = String(req.header("Authorization") || "");
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing Firebase ID token." });
+    }
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(authHeader.slice(7).trim());
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase ID token." });
+    }
+
+    const appCheckToken = req.header("X-Firebase-AppCheck");
+    if (!appCheckToken) {
+      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
+    }
+    try {
+      await admin.appCheck().verifyToken(appCheckToken);
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase App Check token." });
+    }
+
+    const db = namedDb();
+    const revCheck = await assertDeviceNotRevoked(db, req);
+    if (revCheck.revoked) {
+      return res.status(403).json({ error: `Device access revoked (${revCheck.reason}).`, revoked: true });
+    }
+    const dpopCheck = await verifyDpopProof(req, db, decoded.uid);
+    if (!dpopCheck.ok) {
+      return res.status(dpopCheck.status || 401).json({ error: dpopCheck.error });
+    }
+
     const rate = await checkAndConsumeServerRateLimit(`grade:${decoded.uid}`);
     if (!rate.allowed) {
       res.setHeader("Retry-After", String(rate.retryAfterSec));
@@ -1080,13 +1516,17 @@ exports.gradeExamSubmission = onRequest(
     }
 
     const body = req.body || {};
-    const examId = String(body.examId || "").trim();
+    const examId = sanitizeDocKey(body.examId || "", 80);
+    const sessionNonce = String(body.sessionNonce || "").trim();
     const submittedAnswers =
       (body.answersByMasterQId && typeof body.answersByMasterQId === "object" ? body.answersByMasterQId : null) ||
       (body.answers && typeof body.answers === "object" ? body.answers : null);
 
     if (!examId || !submittedAnswers) {
       return res.status(400).json({ error: "Missing examId or answersByMasterQId." });
+    }
+    if (!sessionNonce) {
+      return res.status(403).json({ error: "Missing authoritative exam sessionNonce." });
     }
 
     const authoritativeStudentId = decoded.uid;
@@ -1100,7 +1540,6 @@ exports.gradeExamSubmission = onRequest(
       : 0;
 
     try {
-      const db = namedDb();
       const keySnap = await db.collection("examAnswerKeys").doc(examId).get();
       if (!keySnap.exists) {
         return res.status(404).json({ error: "Answer key not found." });
@@ -1146,7 +1585,11 @@ exports.gradeExamSubmission = onRequest(
         ? `Server-Graded (${correct}/${totalQ}) [Auto-Submitted: ${violationReason}]`
         : `Verified Server-Graded Proctored CBT (${correct}/${totalQ})`;
 
-      const resultDocId = `${examId}_${authoritativeStudentId}`;
+      const resultDocId = `${examId}_${sanitizeDocKey(authoritativeStudentId, 80)}`;
+      const sessionRef = db.collection("examSessions").doc(resultDocId);
+      const resultRef = db.collection("examResults").doc(resultDocId);
+      const serverNowMs = Date.now();
+
       const resultPayload = {
         id: resultDocId,
         examId,
@@ -1173,7 +1616,35 @@ exports.gradeExamSubmission = onRequest(
         resultPayload.hashChainHead = hashChainHead;
       }
 
-      await db.collection("examResults").doc(resultDocId).set(resultPayload, { merge: true });
+      const txOutcome = await db.runTransaction(async (tx) => {
+        const sessionSnap = await tx.get(sessionRef);
+        if (!sessionSnap.exists) {
+          return { ok: false, status: 403, error: "Exam session not found. Start exam via startExamSession first." };
+        }
+        const sessionData = sessionSnap.data() || {};
+        if (sessionData.submitted === true) {
+          return { ok: false, status: 403, error: "Duplicate submission rejected: exam session already submitted." };
+        }
+        if (!constantTimeStringEquals(sessionData.sessionNonce || "", sessionNonce)) {
+          return { ok: false, status: 403, error: "Invalid exam sessionNonce." };
+        }
+        const hardDeadlineAtMs = Number(sessionData.hardDeadlineAtMs || 0);
+        if (hardDeadlineAtMs > 0 && serverNowMs > hardDeadlineAtMs + EXAM_GRACE_PERIOD_MS) {
+          return { ok: false, status: 403, error: "Exam submission rejected: server hard deadline exceeded." };
+        }
+
+        tx.update(sessionRef, {
+          submitted: true,
+          submittedAtMs: serverNowMs,
+          submittedAt: FieldValue.serverTimestamp(),
+        });
+        tx.set(resultRef, resultPayload, { merge: true });
+        return { ok: true };
+      });
+
+      if (!txOutcome.ok) {
+        return res.status(txOutcome.status || 403).json({ error: txOutcome.error });
+      }
 
       return res.status(200).json({
         id: resultDocId,
@@ -1191,6 +1662,263 @@ exports.gradeExamSubmission = onRequest(
       });
     } catch (err) {
       return res.status(500).json({ error: err.message || "Server grading failed." });
+    }
+  }
+);
+
+/**
+ * [B5] Server-Side Tamper-Evident Fee & Certificate Audit Hash-Chain Sealer (`sealAuditChainEvent`).
+ * Admin-only, atomic Firestore transaction updating `/server_audit_chain_meta/head` & `/server_audit_hash_chain/{seq}`.
+ */
+exports.sealAuditChainEvent = onRequest(
+  {
+    region: "asia-east1",
+    cors: [
+      "https://gen-lang-client-0309263247.web.app",
+      "https://gen-lang-client-0309263247.firebaseapp.com",
+    ],
+    timeoutSeconds: 30,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    applySecurityHeaders(res);
+    if (req.method === "OPTIONS") {
+      res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-DPoP, X-WCI-Device-Fp");
+      res.status(204).send("");
+      return;
+    }
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method Not Allowed" });
+    }
+
+    const authHeader = String(req.header("Authorization") || "");
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing Firebase ID token." });
+    }
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(authHeader.slice(7).trim());
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase ID token." });
+    }
+    if (resolveAuthoritativeRole(decoded) !== "admin") {
+      return res.status(403).json({ error: "Admin privileges required to seal audit chain events." });
+    }
+
+    const appCheckToken = req.header("X-Firebase-AppCheck");
+    if (!appCheckToken) {
+      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
+    }
+    try {
+      await admin.appCheck().verifyToken(appCheckToken);
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase App Check token." });
+    }
+
+    const db = namedDb();
+    const revCheck = await assertDeviceNotRevoked(db, req);
+    if (revCheck.revoked) {
+      return res.status(403).json({ error: `Device access revoked (${revCheck.reason}).`, revoked: true });
+    }
+    const dpopCheck = await verifyDpopProof(req, db, decoded.uid);
+    if (!dpopCheck.ok) {
+      return res.status(dpopCheck.status || 401).json({ error: dpopCheck.error });
+    }
+
+    const body = req.body || {};
+    const eventType = String(body.eventType || "").trim().toUpperCase().slice(0, 80);
+    const recordId = String(body.recordId || "").trim().slice(0, 120);
+    const payloadObj = body.payload && typeof body.payload === "object" ? body.payload : {};
+    const biometricActionSignatureHex = String(body.biometricActionSignatureHex || "").trim().slice(0, 512);
+
+    if (!eventType || !recordId) {
+      return res.status(400).json({ error: "Missing eventType or recordId." });
+    }
+
+    try {
+      const headRef = db.collection("server_audit_chain_meta").doc("head");
+      const canonicalJson = canonicalizeJson(payloadObj).slice(0, 4000);
+
+      const sealed = await db.runTransaction(async (tx) => {
+        const headSnap = await tx.get(headRef);
+        const headData = headSnap.exists ? headSnap.data() : {};
+        const prevSeq = Number(headData.seq || 0);
+        const previousHash = String(headData.currentHash || AUDIT_CHAIN_GENESIS_HASH);
+        const nextSeq = prevSeq + 1;
+        const serverTimestampMs = Date.now();
+
+        const preimage = `${previousHash}|${nextSeq}|${eventType}|${recordId}|${canonicalJson}|${serverTimestampMs}`;
+        const currentHash = crypto.createHash("sha256").update(preimage, "utf8").digest("hex");
+        const docKey = String(nextSeq).padStart(10, "0");
+
+        tx.set(db.collection("server_audit_hash_chain").doc(docKey), {
+          seq: nextSeq,
+          eventType,
+          recordId,
+          actorUid: decoded.uid,
+          canonicalJson,
+          previousHash,
+          currentHash,
+          serverTimestampMs,
+          biometricActionSignatureHex,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        tx.set(headRef, {
+          seq: nextSeq,
+          currentHash,
+          lastEventType: eventType,
+          lastRecordId: recordId,
+          updatedAtMs: serverTimestampMs,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        return {
+          seq: nextSeq,
+          previousHash,
+          currentHash,
+          serverTimestampMs,
+          eventType,
+          recordId,
+        };
+      });
+
+      return res.status(200).json(sealed);
+    } catch (err) {
+      return res.status(500).json({ error: err.message || "Failed to seal audit chain event." });
+    }
+  }
+);
+
+/**
+ * [B5] Server-Side Tamper-Evident Audit Hash-Chain Verifier (`verifyAuditHashChain`).
+ * Recomputes every link in `/server_audit_hash_chain` and compares against `/server_audit_chain_meta/head`.
+ */
+exports.verifyAuditHashChain = onRequest(
+  {
+    region: "asia-east1",
+    cors: [
+      "https://gen-lang-client-0309263247.web.app",
+      "https://gen-lang-client-0309263247.firebaseapp.com",
+    ],
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async (req, res) => {
+    applySecurityHeaders(res);
+    if (req.method === "OPTIONS") {
+      res.set("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-AppCheck, X-WCI-DPoP, X-WCI-Device-Fp");
+      res.status(204).send("");
+      return;
+    }
+    if (req.method !== "POST" && req.method !== "GET") {
+      return res.status(405).json({ error: "Method Not Allowed" });
+    }
+
+    const authHeader = String(req.header("Authorization") || "");
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Missing Firebase ID token." });
+    }
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(authHeader.slice(7).trim());
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase ID token." });
+    }
+    if (resolveAuthoritativeRole(decoded) !== "admin") {
+      return res.status(403).json({ error: "Admin privileges required to verify audit hash-chain." });
+    }
+
+    const appCheckToken = req.header("X-Firebase-AppCheck");
+    if (!appCheckToken) {
+      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
+    }
+    try {
+      await admin.appCheck().verifyToken(appCheckToken);
+    } catch (_) {
+      return res.status(401).json({ error: "Invalid Firebase App Check token." });
+    }
+
+    const db = namedDb();
+    const revCheck = await assertDeviceNotRevoked(db, req);
+    if (revCheck.revoked) {
+      return res.status(403).json({ error: `Device access revoked (${revCheck.reason}).`, revoked: true });
+    }
+    const dpopCheck = await verifyDpopProof(req, db, decoded.uid);
+    if (!dpopCheck.ok) {
+      return res.status(dpopCheck.status || 401).json({ error: dpopCheck.error });
+    }
+
+    try {
+      const headSnap = await db.collection("server_audit_chain_meta").doc("head").get();
+      const chainSnap = await db.collection("server_audit_hash_chain").orderBy("seq", "asc").get();
+
+      if (!headSnap.exists && chainSnap.empty) {
+        return res.status(200).json({
+          verified: true,
+          status: "VERIFIED",
+          chainLength: 0,
+          headSeq: 0,
+          headHash: AUDIT_CHAIN_GENESIS_HASH,
+          firstBrokenSeq: null,
+          checkedAtMs: Date.now(),
+        });
+      }
+
+      let expectedPrev = AUDIT_CHAIN_GENESIS_HASH;
+      let expectedSeq = 1;
+      let verified = true;
+      let firstBrokenSeq = null;
+      let lastHash = AUDIT_CHAIN_GENESIS_HASH;
+
+      for (const doc of chainSnap.docs) {
+        const d = doc.data() || {};
+        const seq = Number(d.seq || 0);
+        const eventType = String(d.eventType || "");
+        const recordId = String(d.recordId || "");
+        const canonicalJson = String(d.canonicalJson || "{}");
+        const serverTimestampMs = Number(d.serverTimestampMs || 0);
+        const storedPrev = String(d.previousHash || "");
+        const storedCurr = String(d.currentHash || "");
+
+        const preimage = `${storedPrev}|${seq}|${eventType}|${recordId}|${canonicalJson}|${serverTimestampMs}`;
+        const recomputed = crypto.createHash("sha256").update(preimage, "utf8").digest("hex");
+
+        if (
+          seq !== expectedSeq ||
+          !constantTimeStringEquals(expectedPrev, storedPrev) ||
+          !constantTimeHexEquals(recomputed, storedCurr)
+        ) {
+          verified = false;
+          firstBrokenSeq = seq || expectedSeq;
+          break;
+        }
+        expectedPrev = storedCurr;
+        lastHash = storedCurr;
+        expectedSeq++;
+      }
+
+      const headData = headSnap.exists ? headSnap.data() : {};
+      const headSeq = Number(headData.seq || 0);
+      const headHash = String(headData.currentHash || AUDIT_CHAIN_GENESIS_HASH);
+      if (verified && (headSeq !== chainSnap.size || !constantTimeStringEquals(headHash, lastHash))) {
+        verified = false;
+        firstBrokenSeq = headSeq;
+      }
+
+      return res.status(200).json({
+        verified,
+        status: verified ? "VERIFIED" : "TAMPERED",
+        chainLength: chainSnap.size,
+        headSeq,
+        headHash,
+        firstBrokenSeq,
+        checkedAtMs: Date.now(),
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message || "Audit hash-chain verification failed." });
     }
   }
 );

@@ -131,7 +131,7 @@ class FirebaseAuthServiceProvider(
     private sealed class CustomTokenExchangeOutcome {
         data class Authenticated(val session: AuthenticatedPortalSession) : CustomTokenExchangeOutcome()
         data class Rejected(val message: String) : CustomTokenExchangeOutcome()
-        data object Unavailable : CustomTokenExchangeOutcome()
+        data class Unavailable(val networkFailure: Boolean = false) : CustomTokenExchangeOutcome()
     }
 
     /**
@@ -149,28 +149,39 @@ class FirebaseAuthServiceProvider(
         val isRobolectric = android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
         val endpoint = BuildConfig.PORTAL_AUTH_TOKEN_ENDPOINT_URL.trim()
         if (isRobolectric || !endpoint.startsWith("https://", ignoreCase = true)) {
-            return@withContext CustomTokenExchangeOutcome.Unavailable
+            return@withContext CustomTokenExchangeOutcome.Unavailable(networkFailure = false)
         }
         val appCheckToken = runCatching {
-            withTimeoutOrNull(2_500L) {
+            withTimeoutOrNull(3_000L) {
                 FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
             }
-        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@withContext CustomTokenExchangeOutcome.Unavailable
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: return@withContext CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
 
         runCatching {
             val bodyJson = JSONObject().apply {
                 put("username", username)
                 put("password", rawPassword)
                 put("role", selectedRole.key)
+                put("requestedRole", selectedRole.key)
+                put("deviceFingerprint", deviceFp)
             }.toString()
 
-            val request = Request.Builder()
+            val reqBuilder = Request.Builder()
                 .url(endpoint)
                 .header("X-Firebase-AppCheck", appCheckToken)
                 .post(bodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
 
-            tokenExchangeHttpClient.newCall(request).execute().use { resp ->
+            com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
+                builder = reqBuilder,
+                context = context,
+                httpMethod = "POST",
+                url = endpoint,
+                rawBody = bodyJson,
+                deviceFpOverride = deviceFp
+            )
+
+            tokenExchangeHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 val respBody = resp.body?.string().orEmpty()
                 if (resp.code == 401 || resp.code == 403 || resp.code == 429) {
                     val errMsg = runCatching { JSONObject(respBody).optString("error") }
@@ -180,24 +191,51 @@ class FirebaseAuthServiceProvider(
                     return@runCatching CustomTokenExchangeOutcome.Rejected(errMsg)
                 }
                 if (!resp.isSuccessful) {
-                    return@runCatching CustomTokenExchangeOutcome.Unavailable
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
                 }
                 val json = JSONObject(respBody)
                 val customToken = json.optString("customToken").trim()
                 if (customToken.isBlank()) {
-                    return@runCatching CustomTokenExchangeOutcome.Unavailable
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
                 }
                 val authResult = auth.signInWithCustomToken(customToken).await()
                 val signedInUser = authResult.user ?: auth.currentUser
                 val portalUid = signedInUser?.uid ?: json.optString("portalUid", "cred_$username")
                 val displayName = json.optString("displayName", username).ifBlank { username }
                 val linkedEntityId = json.optString("linkedEntityId", "")
+                val resolvedUsername = json.optString("username", username).ifBlank { username }
+
+                // Register hardware-bound ECDSA P-256 public key for subsequent DPoP verification
+                runCatching {
+                    com.waqar.institute.security.HardwareDpopRequestSigner.registerDevicePublicKeyInFirestore(
+                        context = context,
+                        uidOverride = portalUid,
+                        deviceFpOverride = deviceFp
+                    )
+                }
+
+                // Cache verified Admin credential hash locally in Keystore vault for offline fallback
+                if (selectedRole == PortalRole.ADMIN && context != null) {
+                    val passCopy = rawPassword.toCharArray()
+                    try {
+                        AdminEncryptedCredentialStore.saveUpdatedAdminCredentials(
+                            context = context,
+                            newUsername = resolvedUsername,
+                            newPasswordChars = passCopy
+                        )
+                    } catch (_: Exception) {
+                        // Best-effort offline cache update
+                    } finally {
+                        Arrays.fill(passCopy, '\u0000')
+                    }
+                }
+
                 CustomTokenExchangeOutcome.Authenticated(
                     AuthenticatedPortalSession(
                         firebaseUser = signedInUser,
                         sessionUid = portalUid,
                         role = selectedRole,
-                        username = json.optString("username", username).ifBlank { username },
+                        username = resolvedUsername,
                         displayName = displayName,
                         linkedEntityId = linkedEntityId,
                         deviceFingerprint = deviceFp
@@ -206,7 +244,7 @@ class FirebaseAuthServiceProvider(
             }
         }.getOrElse { err ->
             Log.d(TAG, "Custom token exchange unavailable (falling back to local/cache): ${err.localizedMessage}")
-            CustomTokenExchangeOutcome.Unavailable
+            CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
         }
     }
 
@@ -486,8 +524,10 @@ class FirebaseAuthServiceProvider(
         val isPermittedAdminCandidate = cleanUsername in setOf("admin", "waqar", "waqar_admin") || isBootstrappedOwner
         val deviceFp = SessionFingerprintManager.captureCurrentDeviceFingerprint(activityContext)
 
-        // 0. Zero-Trust Server Custom Token Exchange (mints signed Firebase JWT with { role, portalUid } claims)
-        when (val tokenOutcome = exchangePortalCredentialsForCustomToken(cleanUsername, cleanPassword, selectedRole, deviceFp)) {
+        // 0. Zero-Trust Server Custom Token Exchange (mints signed Firebase JWT with { role, portalUid } claims;
+        //    no Google Sign-In required for Admin, Teacher, Student, or Parent).
+        val tokenOutcome = exchangePortalCredentialsForCustomToken(cleanUsername, cleanPassword, selectedRole, deviceFp)
+        when (tokenOutcome) {
             is CustomTokenExchangeOutcome.Authenticated -> {
                 val verifiedSession = tokenOutcome.session
                 CoroutineScope(Dispatchers.IO).launch {
@@ -516,8 +556,8 @@ class FirebaseAuthServiceProvider(
             is CustomTokenExchangeOutcome.Rejected -> {
                 throw SecurityException(tokenOutcome.message)
             }
-            CustomTokenExchangeOutcome.Unavailable -> {
-                // Offline / Robolectric fallback continues below using encrypted local vault
+            is CustomTokenExchangeOutcome.Unavailable -> {
+                // Offline / Robolectric fallback continues below using verified local encrypted vault
             }
         }
 
@@ -836,21 +876,23 @@ class FirebaseAuthServiceProvider(
             return@runCatching session
         }
 
-        // Handle Admin portal lookup miss clearly without blocking configured offline Admin
+        // Handle Admin portal lookup miss clearly without requiring Google Sign-In
         if (selectedRole == PortalRole.ADMIN) {
             val adminCtx = context ?: activityContext
             if (AdminEncryptedCredentialStore.isAdminConfigured(adminCtx)) {
                 throw SecurityException("Invalid username or password for Admin portal.")
             }
-            if (isPermittedAdminCandidate) {
-                if (lookupResult is PortalAuthRepository.CredentialLookupResult.ConfirmedMissing &&
-                    !portalAuthRepository.hasAnyAdminCredential()
-                ) {
-                    throw FirstRunAdminSetupRequiredException(cleanUsername)
-                }
-                if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable) {
-                    throw IOException("Unable to reach server. Please check your internet connection and try again.")
-                }
+            val hadNetworkUnavailable =
+                (tokenOutcome as? CustomTokenExchangeOutcome.Unavailable)?.networkFailure == true ||
+                    lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable
+            if (hadNetworkUnavailable) {
+                throw IOException("Unable to reach authentication server. Please check your internet connection and try again.")
+            }
+            if (isPermittedAdminCandidate &&
+                lookupResult is PortalAuthRepository.CredentialLookupResult.ConfirmedMissing &&
+                !portalAuthRepository.hasAnyAdminCredential()
+            ) {
+                throw FirstRunAdminSetupRequiredException(cleanUsername)
             }
         } else if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable) {
             throw IOException("Unable to reach server. Please check your internet connection and try again.")
@@ -888,7 +930,8 @@ class FirebaseAuthServiceProvider(
         oldUsername: String,
         newUsername: String,
         newPasswordChars: CharArray,
-        actorUidOverride: String? = null
+        actorUidOverride: String? = null,
+        biometricActionSignatureHex: String = ""
     ): Result<PortalCredential> = runCatching {
         val displayName = auth.currentUser?.displayName ?: "Waqar Khan (Admin)"
         val cleanNew = normalizeUsername(newUsername)
@@ -925,7 +968,7 @@ class FirebaseAuthServiceProvider(
         val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
         val adminUid = auth.currentUser?.uid
             ?: actorUidOverride?.takeIf { it.isNotBlank() }
-            ?: "cred_admin"
+            ?: "admin_waqar_root"
         val flags = PortalAuthRepository.buildRoleFlags(role = PortalRole.ADMIN)
 
         val localUpdatedCred = PortalCredential(
@@ -950,13 +993,33 @@ class FirebaseAuthServiceProvider(
         }
         InstituteRepository.cacheCredentialLocally(localUpdatedCred)
 
-        // Sync to Cloud Firestore best-effort so offline Settings updates always succeed immediately
+        // Immediately sync updated salted hash to Cloud Firestore /portalCredentials/{newUsername}
+        // and remove old username doc if renamed (bounded timeout so offline devices never stall)
+        withContext(Dispatchers.IO) {
+            withTimeoutOrNull(4_000L) {
+                runCatching {
+                    portalAuthRepository.provisionCredentialWithRoleFlags(localUpdatedCred)
+                    if (cleanOld.isNotBlank() && cleanOld != cleanNew) {
+                        runCatching { repository.deletePortalCredential(cleanOld) }
+                    }
+                }
+            }
+        }
+
+        // Best-effort seal into server-side tamper-evident audit hash chain
         CoroutineScope(Dispatchers.IO).launch {
             runCatching {
-                portalAuthRepository.provisionCredentialWithRoleFlags(localUpdatedCred)
-                if (cleanOld.isNotBlank() && cleanOld != cleanNew) {
-                    runCatching { repository.deletePortalCredential(cleanOld) }
-                }
+                com.waqar.institute.security.ServerAuditHashChainClient.sealAuditChainEvent(
+                    context = context,
+                    eventType = "ADMIN_CREDENTIALS_ROTATED",
+                    recordId = cleanNew,
+                    payload = mapOf(
+                        "previousUsername" to cleanOld,
+                        "newUsername" to cleanNew,
+                        "actorUid" to adminUid
+                    ),
+                    biometricSignatureHex = biometricActionSignatureHex
+                )
             }
         }
 
