@@ -131,14 +131,67 @@ class FirebaseAuthServiceProvider(
     private sealed class CustomTokenExchangeOutcome {
         data class Authenticated(val session: AuthenticatedPortalSession) : CustomTokenExchangeOutcome()
         data class Rejected(val message: String) : CustomTokenExchangeOutcome()
-        data class Unavailable(val networkFailure: Boolean = false) : CustomTokenExchangeOutcome()
+        data class Unavailable(
+            val networkFailure: Boolean = false,
+            val httpStatus: Int? = null,
+            val errorMessage: String? = null
+        ) : CustomTokenExchangeOutcome()
+    }
+
+    private fun resolveRuntimeSigningCertSha256(ctx: Context?): String {
+        if (ctx != null) {
+            val extracted = runCatching {
+                val pm = ctx.packageManager
+                val pkgInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNATURES)
+                }
+                val signers = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    val info = pkgInfo.signingInfo
+                    info?.apkContentsSigners ?: info?.signingCertificateHistory
+                } else {
+                    @Suppress("DEPRECATION")
+                    pkgInfo.signatures
+                }
+                val firstSig = signers?.firstOrNull() ?: return@runCatching ""
+                val digest = MessageDigest.getInstance("SHA-256").digest(firstSig.toByteArray())
+                digest.joinToString("") { "%02x".format(it) }
+            }.getOrDefault("")
+            if (extracted.length == 64) {
+                return extracted
+            }
+        }
+        return BuildConfig.EXPECTED_RELEASE_CERT_SHA256
+            .replace(":", "")
+            .trim()
+            .lowercase()
+            .takeIf { it.length == 64 }
+            .orEmpty()
+    }
+
+    private fun isTrueNetworkTransportException(throwable: Throwable): Boolean {
+        var curr: Throwable? = throwable
+        while (curr != null) {
+            if (curr is java.net.UnknownHostException ||
+                curr is java.net.ConnectException ||
+                curr is java.net.SocketTimeoutException ||
+                curr is java.net.NoRouteToHostException ||
+                curr is com.google.firebase.FirebaseNetworkException
+            ) {
+                return true
+            }
+            curr = curr.cause
+        }
+        return false
     }
 
     /**
      * Zero-Trust Custom Token Exchange (`issuePortalCustomToken` in asia-east1).
-     * Verifies username + password + role server-side, receives a signed Firebase Custom Token
-     * carrying `{ role, portalUid, username, linkedEntityId }` claims, and signs into FirebaseAuth
-     * via `auth.signInWithCustomToken(token).await()` so all Firestore queries run with a verified JWT.
+     * Sideload-compatible: sends runtime `X-WCI-App-Cert-Sha256` plus best-effort optional
+     * `X-Firebase-AppCheck` (Play Integrity unavailability on sideloaded WhatsApp APKs never
+     * blocks login), verifies credentials server-side, and signs into FirebaseAuth via Custom Token.
      */
     private suspend fun exchangePortalCredentialsForCustomToken(
         username: String,
@@ -151,12 +204,14 @@ class FirebaseAuthServiceProvider(
         if (isRobolectric || !endpoint.startsWith("https://", ignoreCase = true)) {
             return@withContext CustomTokenExchangeOutcome.Unavailable(networkFailure = false)
         }
+        // Best-effort optional App Check: never abort or claim offline when Play Integrity is absent on sideloaded APKs
         val appCheckToken = runCatching {
-            withTimeoutOrNull(3_000L) {
+            withTimeoutOrNull(2_000L) {
                 FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
             }
         }.getOrNull()?.takeIf { it.isNotBlank() }
-            ?: return@withContext CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
+
+        val certSha256 = resolveRuntimeSigningCertSha256(context)
 
         runCatching {
             val bodyJson = JSONObject().apply {
@@ -169,8 +224,14 @@ class FirebaseAuthServiceProvider(
 
             val reqBuilder = Request.Builder()
                 .url(endpoint)
-                .header("X-Firebase-AppCheck", appCheckToken)
                 .post(bodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+            if (certSha256.isNotBlank()) {
+                reqBuilder.header("X-WCI-App-Cert-Sha256", certSha256)
+            }
+            if (appCheckToken != null) {
+                reqBuilder.header("X-Firebase-AppCheck", appCheckToken)
+            }
 
             com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
                 builder = reqBuilder,
@@ -183,20 +244,40 @@ class FirebaseAuthServiceProvider(
 
             tokenExchangeHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
                 val respBody = resp.body?.string().orEmpty()
-                if (resp.code == 401 || resp.code == 403 || resp.code == 429) {
-                    val errMsg = runCatching { JSONObject(respBody).optString("error") }
-                        .getOrNull()
-                        ?.takeIf { it.isNotBlank() }
-                        ?: "Invalid username or password for ${selectedRole.label} portal."
-                    return@runCatching CustomTokenExchangeOutcome.Rejected(errMsg)
+                val parsedServerError = runCatching { JSONObject(respBody).optString("error") }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+
+                if (resp.code == 400 || resp.code == 401 || resp.code == 403 || resp.code == 429) {
+                    val defaultRejection = when (resp.code) {
+                        429 -> "Too many attempts. Please wait and try again."
+                        403 -> "Access denied for ${selectedRole.label} portal (HTTP 403)."
+                        else -> "Invalid username or password for ${selectedRole.label} portal."
+                    }
+                    return@runCatching CustomTokenExchangeOutcome.Rejected(parsedServerError ?: defaultRejection)
+                }
+                if (resp.code == 404) {
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable(
+                        networkFailure = false,
+                        httpStatus = 404,
+                        errorMessage = parsedServerError ?: "Auth service not deployed (HTTP 404)"
+                    )
                 }
                 if (!resp.isSuccessful) {
-                    return@runCatching CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable(
+                        networkFailure = false,
+                        httpStatus = resp.code,
+                        errorMessage = parsedServerError ?: "Authentication server error (HTTP ${resp.code})"
+                    )
                 }
                 val json = JSONObject(respBody)
                 val customToken = json.optString("customToken").trim()
                 if (customToken.isBlank()) {
-                    return@runCatching CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
+                    return@runCatching CustomTokenExchangeOutcome.Unavailable(
+                        networkFailure = false,
+                        httpStatus = resp.code,
+                        errorMessage = "Authentication server returned an invalid token response."
+                    )
                 }
                 val authResult = auth.signInWithCustomToken(customToken).await()
                 val signedInUser = authResult.user ?: auth.currentUser
@@ -243,8 +324,19 @@ class FirebaseAuthServiceProvider(
                 )
             }
         }.getOrElse { err ->
-            Log.d(TAG, "Custom token exchange unavailable (falling back to local/cache): ${err.localizedMessage}")
-            CustomTokenExchangeOutcome.Unavailable(networkFailure = true)
+            val isNetworkFailure = isTrueNetworkTransportException(err)
+            val detail = if (isNetworkFailure) {
+                "No internet connection. Please check your network and try again."
+            } else {
+                err.localizedMessage?.takeIf { it.isNotBlank() }
+                    ?: "Authentication server verification failed."
+            }
+            Log.d(TAG, "Custom token exchange unavailable (networkFailure=$isNetworkFailure): ${err.localizedMessage}")
+            CustomTokenExchangeOutcome.Unavailable(
+                networkFailure = isNetworkFailure,
+                httpStatus = null,
+                errorMessage = detail
+            )
         }
     }
 
@@ -376,25 +468,17 @@ class FirebaseAuthServiceProvider(
                     return AuthPortalResult.AdminSetupRequired(err.suggestedUsername)
                 }
                 val friendlyMessage = when {
-                    InstituteRepository.isOfflineOrNetworkError(err) -> {
-                        "No internet connection. Please check your network and try again."
-                    }
-                    err.localizedMessage?.contains("offline", ignoreCase = true) == true -> {
-                        "No internet connection. Please check your network and try again."
-                    }
                     err is SecurityException -> {
                         err.message ?: "Access denied. Please check your role and credentials."
                     }
                     err is IllegalArgumentException -> {
                         err.message ?: "Invalid username or password format."
                     }
+                    isTrueNetworkTransportException(err) || InstituteRepository.isOfflineOrNetworkError(err) -> {
+                        "No internet connection. Please check your network and try again."
+                    }
                     else -> {
-                        val rawMsg = err.localizedMessage.orEmpty()
-                        if (rawMsg.contains("\"error\":") && rawMsg.contains("offline", ignoreCase = true)) {
-                            "No internet connection. Please check your network and try again."
-                        } else {
-                            err.localizedMessage ?: "Invalid username or password."
-                        }
+                        err.localizedMessage?.takeIf { it.isNotBlank() } ?: "Invalid username or password."
                     }
                 }
                 AuthPortalResult.Failure(friendlyMessage)
@@ -877,16 +961,28 @@ class FirebaseAuthServiceProvider(
         }
 
         // Handle Admin portal lookup miss clearly without requiring Google Sign-In
+        val unavailableOutcome = tokenOutcome as? CustomTokenExchangeOutcome.Unavailable
         if (selectedRole == PortalRole.ADMIN) {
             val adminCtx = context ?: activityContext
             if (AdminEncryptedCredentialStore.isAdminConfigured(adminCtx)) {
                 throw SecurityException("Invalid username or password for Admin portal.")
             }
-            val hadNetworkUnavailable =
-                (tokenOutcome as? CustomTokenExchangeOutcome.Unavailable)?.networkFailure == true ||
-                    lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable
-            if (hadNetworkUnavailable) {
-                throw IOException("Unable to reach authentication server. Please check your internet connection and try again.")
+            if (unavailableOutcome?.httpStatus != null ||
+                (unavailableOutcome?.networkFailure == false && !unavailableOutcome.errorMessage.isNullOrBlank())
+            ) {
+                throw SecurityException(
+                    unavailableOutcome.errorMessage ?: "Authentication server error (HTTP ${unavailableOutcome.httpStatus})."
+                )
+            }
+            val hadTrueNetworkUnavailable =
+                unavailableOutcome?.networkFailure == true ||
+                    (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable &&
+                        lookupResult.reason?.contains("PERMISSION_DENIED", ignoreCase = true) != true &&
+                        unavailableOutcome == null)
+            if (hadTrueNetworkUnavailable) {
+                throw java.net.ConnectException(
+                    unavailableOutcome?.errorMessage ?: "No internet connection. Please check your network and try again."
+                )
             }
             if (isPermittedAdminCandidate &&
                 lookupResult is PortalAuthRepository.CredentialLookupResult.ConfirmedMissing &&
@@ -894,8 +990,24 @@ class FirebaseAuthServiceProvider(
             ) {
                 throw FirstRunAdminSetupRequiredException(cleanUsername)
             }
-        } else if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable) {
-            throw IOException("Unable to reach server. Please check your internet connection and try again.")
+        } else {
+            if (unavailableOutcome?.httpStatus != null ||
+                (unavailableOutcome?.networkFailure == false && !unavailableOutcome.errorMessage.isNullOrBlank())
+            ) {
+                throw SecurityException(
+                    unavailableOutcome.errorMessage ?: "Authentication server error (HTTP ${unavailableOutcome.httpStatus})."
+                )
+            }
+            if (unavailableOutcome?.networkFailure == true) {
+                throw java.net.ConnectException(
+                    unavailableOutcome.errorMessage ?: "No internet connection. Please check your network and try again."
+                )
+            }
+            if (lookupResult is PortalAuthRepository.CredentialLookupResult.NetworkUnavailable &&
+                lookupResult.reason?.contains("PERMISSION_DENIED", ignoreCase = true) != true
+            ) {
+                throw IOException("No internet connection. Please check your network and try again.")
+            }
         }
 
         // Security guard: NEVER mint credentials or accept arbitrary passwords for unprovisioned directory entries.

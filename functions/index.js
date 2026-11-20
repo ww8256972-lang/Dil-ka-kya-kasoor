@@ -256,6 +256,56 @@ async function assertDeviceNotRevoked(db, req) {
   return { revoked: false, deviceFp: safeFp };
 }
 
+/**
+ * Sideload-Compatible Best-Effort App Check Verification:
+ * This APK is distributed outside Google Play Store via WhatsApp/GitHub OTA, where Play
+ * Integrity App Check is unavailable. Verify the token when provided, log when absent or
+ * unverified, and NEVER reject sideloaded APK clients with HTTP 401 solely for missing App Check.
+ */
+async function verifyAppCheckBestEffort(req, functionName) {
+  const appCheckToken = String(req.header("X-Firebase-AppCheck") || "").trim();
+  if (!appCheckToken) {
+    console.info(`[${functionName}] X-Firebase-AppCheck absent (sideload APK mode)`);
+    return { verified: false, appId: "sideload_apk" };
+  }
+  try {
+    const verified = await admin.appCheck().verifyToken(appCheckToken);
+    return { verified: true, appId: verified.appId || "verified_app" };
+  } catch (err) {
+    console.warn(`[${functionName}] X-Firebase-AppCheck verification skipped on sideload client: ${err?.message || "unverified"}`);
+    return { verified: false, appId: "sideload_unverified" };
+  }
+}
+
+/**
+ * Validates `X-WCI-App-Cert-Sha256` sent by sideloaded Release APKs.
+ * Always validates 64-char SHA-256 hex format when present, and matches against
+ * configured release keystore pins (`process.env.EXPECTED_CERT_SHA256`) when set.
+ */
+function verifySideloadAppCertHeader(req) {
+  const rawCert = String(req.header("X-WCI-App-Cert-Sha256") || "")
+    .replace(/:/g, "")
+    .trim()
+    .toLowerCase();
+  if (!rawCert) {
+    return { ok: true, certSha256: "" };
+  }
+  if (!/^[0-9a-f]{64}$/.test(rawCert)) {
+    return { ok: false, status: 403, error: "Malformed X-WCI-App-Cert-Sha256 signing certificate digest." };
+  }
+  const configuredRaw = String(process.env.EXPECTED_CERT_SHA256 || "").trim();
+  if (configuredRaw) {
+    const expectedPins = configuredRaw
+      .split(",")
+      .map((s) => s.replace(/:/g, "").trim().toLowerCase())
+      .filter((s) => /^[0-9a-f]{64}$/.test(s));
+    if (expectedPins.length > 0 && !expectedPins.some((pin) => constantTimeHexEquals(pin, rawCert))) {
+      return { ok: false, status: 403, error: "Untrusted application signing certificate." };
+    }
+  }
+  return { ok: true, certSha256: rawCert };
+}
+
 function decodeBase64UrlToBuffer(b64url) {
   const normalized = String(b64url || "").replace(/-/g, "+").replace(/_/g, "/");
   const pad = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
@@ -693,7 +743,10 @@ exports.issuePortalCustomToken = onRequest(
 
     if (req.method === "OPTIONS") {
       res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-      res.set("Access-Control-Allow-Headers", "Content-Type, X-Firebase-AppCheck, X-WCI-DPoP, X-WCI-Device-Fp");
+      res.set(
+        "Access-Control-Allow-Headers",
+        "Content-Type, X-Firebase-AppCheck, X-WCI-App-Cert-Sha256, X-WCI-DPoP, X-WCI-Device-Fp"
+      );
       res.status(204).send("");
       return;
     }
@@ -702,20 +755,10 @@ exports.issuePortalCustomToken = onRequest(
       return res.status(405).json({ error: "Method Not Allowed. Use POST." });
     }
 
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      return res.status(401).json({
-        error: "Unauthorized: Missing X-Firebase-AppCheck attestation header.",
-      });
-    }
-    let verifiedAppId = "verified_app";
-    try {
-      const verified = await admin.appCheck().verifyToken(appCheckToken);
-      verifiedAppId = verified.appId || "verified_app";
-    } catch (_) {
-      return res.status(401).json({
-        error: "Unauthorized: Invalid or expired Firebase App Check token.",
-      });
+    const appCheckInfo = await verifyAppCheckBestEffort(req, "issuePortalCustomToken");
+    const certCheck = verifySideloadAppCertHeader(req);
+    if (!certCheck.ok) {
+      return res.status(certCheck.status || 403).json({ error: certCheck.error });
     }
 
     const body = req.body || {};
@@ -728,14 +771,26 @@ exports.issuePortalCustomToken = onRequest(
     }
 
     const clientIp = (req.headers["x-forwarded-for"] || req.ip || "ip_unknown").toString().split(",")[0].trim();
+    const ipRateDecision = await checkAndConsumeServerRateLimit(
+      `portal_auth_ip:${clientIp}`,
+      30
+    );
+    if (!ipRateDecision.allowed) {
+      res.setHeader("Retry-After", String(ipRateDecision.retryAfterSec));
+      return res.status(429).json({
+        error: `Too many login attempts from this network. Retry in ${ipRateDecision.retryAfterSec}s.`,
+        retryAfterSeconds: ipRateDecision.retryAfterSec,
+      });
+    }
+
     const rateDecision = await checkAndConsumeServerRateLimit(
-      `portal_auth:${verifiedAppId}:${cleanUsername}:${clientIp}`,
+      `portal_auth:${appCheckInfo.appId}:${cleanUsername}:${clientIp}`,
       15
     );
     if (!rateDecision.allowed) {
       res.setHeader("Retry-After", String(rateDecision.retryAfterSec));
       return res.status(429).json({
-        error: `Too many login attempts. Blocked for ${rateDecision.retryAfterSec}s.`,
+        error: `Too many attempts. Blocked for ${rateDecision.retryAfterSec}s.`,
         retryAfterSeconds: rateDecision.retryAfterSec,
       });
     }
@@ -934,24 +989,8 @@ exports.streamInstituteAiTutor = onRequest(
       return;
     }
 
-    // 2. Verify Firebase App Check Token (mandatory)
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      res.status(401).json({
-        error: "Unauthorized: Missing X-Firebase-AppCheck attestation header.",
-      });
-      return;
-    }
-    let verifiedAppId = "verified_app";
-    try {
-      const verified = await admin.appCheck().verifyToken(appCheckToken);
-      verifiedAppId = verified.appId || "verified_app";
-    } catch (_) {
-      res.status(401).json({
-        error: "Unauthorized: Invalid or expired Firebase App Check token.",
-      });
-      return;
-    }
+    // 2. Best-effort Firebase App Check verification (optional for sideloaded Release APKs)
+    const appCheckInfo = await verifyAppCheckBestEffort(req, "streamInstituteAiTutor");
 
     const studentUid = decodedToken.uid;
     const role = resolveAuthoritativeRole(decodedToken);
@@ -960,7 +999,7 @@ exports.streamInstituteAiTutor = onRequest(
 
     // 3. Enforce Global Edge Abuse Rate Limit
     const clientIp = (req.headers["x-forwarded-for"] || req.ip || "ip_unknown").toString().split(",")[0].trim();
-    const rateDecision = await checkAndConsumeServerRateLimit(`ai_tutor:${verifiedAppId}:${studentUid}:${clientIp}`);
+    const rateDecision = await checkAndConsumeServerRateLimit(`ai_tutor:${appCheckInfo.appId}:${studentUid}:${clientIp}`);
     if (!rateDecision.allowed) {
       res.setHeader("Retry-After", String(rateDecision.retryAfterSec));
       res.status(429).json({
@@ -1334,15 +1373,7 @@ exports.startExamSession = onRequest(
       return res.status(401).json({ error: "Invalid Firebase ID token." });
     }
 
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
-    }
-    try {
-      await admin.appCheck().verifyToken(appCheckToken);
-    } catch (_) {
-      return res.status(401).json({ error: "Invalid Firebase App Check token." });
-    }
+    await verifyAppCheckBestEffort(req, "startExamSession");
 
     const db = namedDb();
     const revCheck = await assertDeviceNotRevoked(db, req);
@@ -1486,15 +1517,7 @@ exports.gradeExamSubmission = onRequest(
       return res.status(401).json({ error: "Invalid Firebase ID token." });
     }
 
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
-    }
-    try {
-      await admin.appCheck().verifyToken(appCheckToken);
-    } catch (_) {
-      return res.status(401).json({ error: "Invalid Firebase App Check token." });
-    }
+    await verifyAppCheckBestEffort(req, "gradeExamSubmission");
 
     const db = namedDb();
     const revCheck = await assertDeviceNotRevoked(db, req);
@@ -1706,15 +1729,7 @@ exports.sealAuditChainEvent = onRequest(
       return res.status(403).json({ error: "Admin privileges required to seal audit chain events." });
     }
 
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
-    }
-    try {
-      await admin.appCheck().verifyToken(appCheckToken);
-    } catch (_) {
-      return res.status(401).json({ error: "Invalid Firebase App Check token." });
-    }
+    await verifyAppCheckBestEffort(req, "sealAuditChainEvent");
 
     const db = namedDb();
     const revCheck = await assertDeviceNotRevoked(db, req);
@@ -1831,15 +1846,7 @@ exports.verifyAuditHashChain = onRequest(
       return res.status(403).json({ error: "Admin privileges required to verify audit hash-chain." });
     }
 
-    const appCheckToken = req.header("X-Firebase-AppCheck");
-    if (!appCheckToken) {
-      return res.status(401).json({ error: "Missing X-Firebase-AppCheck token." });
-    }
-    try {
-      await admin.appCheck().verifyToken(appCheckToken);
-    } catch (_) {
-      return res.status(401).json({ error: "Invalid Firebase App Check token." });
-    }
+    await verifyAppCheckBestEffort(req, "verifyAuditHashChain");
 
     const db = namedDb();
     const revCheck = await assertDeviceNotRevoked(db, req);
