@@ -945,4 +945,113 @@ test('10. Elite Security Layers: device_pubkeys, dpop_nonces, examSessions, revo
   await assertFails(unauthDb.collection('server_audit_chain_meta').doc('head').get());
 });
 
+test('11. Spark-Plan Native Firebase Auth: waqar@portal.waqarinstitute.in Admin bootstrap & one-time student examResults write', async () => {
+  const waqarSparkAdminDb = testEnv.authenticatedContext('waqar_spark_uid', {
+    email: 'waqar@portal.waqarinstitute.in',
+    email_verified: false,
+  }).firestore(DATABASE_ID);
 
+  const studentSparkDb = testEnv.authenticatedContext('stu_spark_uid', {
+    email: 'aarav@portal.waqarinstitute.in',
+    email_verified: false,
+  }).firestore(DATABASE_ID);
+
+  const now = new Date(Date.now() - 2000);
+
+  // 1. waqar@portal.waqarinstitute.in can immediately write /users/{uid} and /portalCredentials/waqar on first login
+  await assertSucceeds(
+    waqarSparkAdminDb.collection('users').doc('waqar_spark_uid').set({
+      uid: 'waqar_spark_uid',
+      email: 'waqar@portal.waqarinstitute.in',
+      displayName: 'Waqar Khan (Admin)',
+      role: 'admin',
+      username: 'waqar',
+      phone: '',
+      mfaEnabled: false,
+      totpSecret: '',
+      linkedEntityId: 'ADMIN_ROOT',
+      isAdmin: true,
+      portalRoles: ['admin'],
+      createdAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    waqarSparkAdminDb.collection('portalCredentials').doc('waqar').set({
+      username: 'waqar',
+      passwordHash: '3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b',
+      passwordSalt: '00112233445566778899aabbccddeeff',
+      role: 'admin',
+      linkedEntityId: 'ADMIN_ROOT',
+      displayName: 'Waqar Khan (Admin)',
+      assignedByUid: 'waqar_spark_uid',
+      active: true,
+      isAdmin: true,
+      portalRoles: ['admin'],
+      createdAt: now,
+    })
+  );
+
+  // 2. Admin provisions student /users/{stu_spark_uid} with linkedEntityId = 'stu_spark_001'
+  await assertSucceeds(
+    waqarSparkAdminDb.collection('users').doc('stu_spark_uid').set({
+      uid: 'stu_spark_uid',
+      email: 'aarav@portal.waqarinstitute.in',
+      displayName: 'Aarav Spark',
+      role: 'student',
+      username: 'aarav',
+      phone: '',
+      mfaEnabled: false,
+      totpSecret: '',
+      linkedEntityId: 'stu_spark_001',
+      isStudent: true,
+      isTeacher: false,
+      isParent: false,
+      isAdmin: false,
+      portalRoles: ['student'],
+      createdAt: now,
+    })
+  );
+
+  // Student CANNOT self-escalate role to teacher or admin
+  await assertFails(
+    studentSparkDb.collection('users').doc('stu_spark_uid').update({
+      role: 'teacher',
+      isTeacher: true,
+    })
+  );
+
+  // 3. Student CAN create own /examResults/{examId}_{uid} ONCE
+  const validSubmission = {
+    id: 'exm_spark_01_stu_spark_uid',
+    examId: 'exm_spark_01',
+    examTitle: 'ADCA Spark CBT',
+    studentId: 'stu_spark_001',
+    studentName: 'Aarav Spark',
+    marksObtained: 88,
+    totalMarks: 100,
+    grade: 'A',
+    rank: 1,
+    ownerUid: 'stu_spark_uid',
+    createdAt: now,
+  };
+  await assertSucceeds(
+    studentSparkDb.collection('examResults').doc('exm_spark_01_stu_spark_uid').set(validSubmission)
+  );
+
+  // Student CANNOT update or overwrite their submitted examResult
+  await assertFails(
+    studentSparkDb.collection('examResults').doc('exm_spark_01_stu_spark_uid').update({
+      marksObtained: 100,
+      grade: 'A+',
+    })
+  );
+
+  // Student CANNOT write another student's examResult doc
+  await assertFails(
+    studentSparkDb.collection('examResults').doc('exm_spark_01_other_uid').set({
+      ...validSubmission,
+      id: 'exm_spark_01_other_uid',
+    })
+  );
+});

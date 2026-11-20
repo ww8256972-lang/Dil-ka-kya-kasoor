@@ -346,6 +346,22 @@ class EnterpriseAuditRemediationTest {
     }
 
     @Test
+    fun sparkPlanPortalEmailAndDerivedSecret_satisfyFirebaseAuthMinLength() {
+        assertEquals(
+            "waqar@portal.waqarinstitute.in",
+            FirebaseAuthServiceProvider.toPortalAuthEmail(" Waqar ")
+        )
+        assertEquals(
+            "aarav_101@portal.waqarinstitute.in",
+            FirebaseAuthServiceProvider.toPortalAuthEmail("Aarav@101".replace("@", "_"))
+        )
+        val shortDerived = FirebaseAuthServiceProvider.derivePortalAuthSecret("waqar")
+        assertEquals(64, shortDerived.length)
+        assertTrue(shortDerived.all { it in '0'..'9' || it in 'a'..'f' })
+        assertEquals(shortDerived, FirebaseAuthServiceProvider.derivePortalAuthSecret("waqar"))
+    }
+
+    @Test
     fun enterpriseRaspGuard_detectsPcEmulatorsIncludingBlueStacksLdPlayerNoxGenymotionQemu() {
         assertTrue(
             com.example.security.EnterpriseRaspGuard.detectEmulatorMarkers(

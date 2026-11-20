@@ -299,7 +299,7 @@ class FirebaseCloudExamGradingGateway(
             runCatching {
                 val appCheckToken = withTimeoutOrNull(2_500L) {
                     FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
-                }?.takeIf { it.isNotBlank() } ?: return@runCatching null
+                }?.takeIf { it.isNotBlank() }
 
                 val idToken = withTimeoutOrNull(2_500L) {
                     FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
@@ -333,9 +333,12 @@ class FirebaseCloudExamGradingGateway(
                 val reqBuilder = Request.Builder()
                     .url(gradingEndpointUrl)
                     .header("Authorization", "Bearer $idToken")
-                    .header("X-Firebase-AppCheck", appCheckToken)
                     .header("X-WCI-Paper-Watermark", watermark)
                     .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+                if (appCheckToken != null) {
+                    reqBuilder.header("X-Firebase-AppCheck", appCheckToken)
+                }
 
                 com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
                     builder = reqBuilder,
@@ -427,7 +430,7 @@ class ExamRepository(
 
             val appCheckToken = withTimeoutOrNull(3_000L) {
                 FirebaseAppCheck.getInstance().getAppCheckToken(false).await().token
-            }?.takeIf { it.isNotBlank() } ?: return@runCatching localFallback
+            }?.takeIf { it.isNotBlank() }
 
             val reqBody = JSONObject().apply {
                 put("examId", examId)
@@ -437,8 +440,11 @@ class ExamRepository(
             val reqBuilder = Request.Builder()
                 .url(startSessionEndpointUrl)
                 .header("Authorization", "Bearer $idToken")
-                .header("X-Firebase-AppCheck", appCheckToken)
                 .post(reqBody.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+            if (appCheckToken != null) {
+                reqBuilder.header("X-Firebase-AppCheck", appCheckToken)
+            }
 
             com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
                 builder = reqBuilder,
@@ -675,11 +681,14 @@ class ExamRepository(
         val exactPct = if (exam.totalMarks > 0) (scaledMarks.toDouble() * 100.0) / exam.totalMarks.toDouble() else 0.0
         val roundedPctLabel = "${(kotlin.math.round(exactPct * 100.0) / 100.0)}%"
         val correctCount = questions.count { q -> selectedAnswers[q.id] == q.correctOptionIndex }
+        val effectiveOwnerUid = runCatching {
+            FirebaseAuth.getInstance().currentUser?.uid
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: ownerUid.ifBlank { studentId.ifBlank { "stu_online" } }
         val result = ExamResult(
-            id = "res_${UUID.randomUUID().toString().take(8)}",
+            id = "${exam.id}_${effectiveOwnerUid}",
             examId = exam.id,
             examTitle = exam.title,
-            studentId = studentId.ifBlank { "stu_online" },
+            studentId = studentId.ifBlank { effectiveOwnerUid },
             studentName = studentName.ifBlank { "WCI Student" },
             marksObtained = scaledMarks.coerceIn(0, exam.totalMarks),
             totalMarks = exam.totalMarks,
@@ -691,7 +700,7 @@ class ExamRepository(
             rank = 1,
             status = if (passed) "PASSED" else "FAILED",
             remarks = remarksText.take(480),
-            ownerUid = ownerUid,
+            ownerUid = effectiveOwnerUid,
             createdAt = safeNow
         )
 
@@ -743,11 +752,14 @@ class ExamRepository(
         } else 0.0
         val roundedPctLabel = "${(kotlin.math.round(exactPct * 100.0) / 100.0)}%"
         val hashHead = security_brahmastra.SecurityBridge.currentHashChainHead()
+        val effectiveOwnerUid = runCatching {
+            FirebaseAuth.getInstance().currentUser?.uid
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: ownerUid.ifBlank { studentId.ifBlank { "stu_online" } }
         val result = ExamResult(
-            id = if (outcome.gradedByRemoteServer) "${exam.id}_${studentId.ifBlank { ownerUid }}" else "res_${UUID.randomUUID().toString().take(8)}",
+            id = if (outcome.gradedByRemoteServer) "${exam.id}_${studentId.ifBlank { effectiveOwnerUid }}" else "${exam.id}_${effectiveOwnerUid}",
             examId = exam.id,
             examTitle = exam.title,
-            studentId = studentId.ifBlank { "stu_online" },
+            studentId = studentId.ifBlank { effectiveOwnerUid },
             studentName = studentName.ifBlank { "WCI Student" },
             marksObtained = outcome.scaledMarks.coerceIn(0, exam.totalMarks),
             totalMarks = exam.totalMarks,
@@ -759,7 +771,7 @@ class ExamRepository(
             rank = 1,
             status = if (outcome.passed) "PASSED" else "FAILED",
             remarks = outcome.remarks,
-            ownerUid = ownerUid,
+            ownerUid = effectiveOwnerUid,
             createdAt = safeNow,
             hashChainHead = hashHead
         )

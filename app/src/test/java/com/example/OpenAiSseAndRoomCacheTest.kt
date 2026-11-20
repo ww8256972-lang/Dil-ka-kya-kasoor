@@ -172,6 +172,33 @@ class OpenAiSseAndRoomCacheTest {
 
         assertEquals("Gemini MUST run exactly once when GROQ_AND_CLOUDFLARE_EXHAUSTED", 1, geminiCalls.get())
         assertTrue(chunksC.last().contains("Tally Prime F9"))
+
+        // Case D: Proxy returns HTTP 404 (Spark Plan / Cloud Functions not deployed) -> Seamless Stage 5 Gemini Free Tier fallback
+        val sparkPlanService = GeminiInstituteService(
+            context = context,
+            proxyStreamProvider = { _, _, _, _, _ ->
+                flow {
+                    throw OpenAiCloudFunctionSseClient.CloudFunctionNotDeployedException()
+                }
+            },
+            lastResortGeminiProvider = { _, onChunk ->
+                geminiCalls.incrementAndGet()
+                val text = "Spark-Plan Gemini Free Tier: Tally Prime F8 opens Sales Voucher."
+                onChunk(text)
+                text
+            }
+        )
+        val chunksD = sparkPlanService.streamTutorResponse(
+            role = "Student",
+            languageCode = "EN",
+            featureType = "TUTOR_CHAT",
+            userPrompt = "Which Tally Prime shortcut key opens Sales Voucher?",
+            userId = "stu_spark_1"
+        ).toList()
+
+        assertEquals("Gemini Free Tier MUST run when Cloud Function returns HTTP 404 on Spark Plan", 2, geminiCalls.get())
+        assertTrue(chunksD.last().contains("Tally Prime F8"))
+        assertFalse("Must never show HTTP 404 error to student", chunksD.last().contains("404"))
     }
 
     @Test

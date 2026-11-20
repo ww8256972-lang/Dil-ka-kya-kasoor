@@ -59,6 +59,10 @@ object OpenAiCloudFunctionSseClient {
         override val message: String
     ) : IllegalStateException(message)
 
+    class CloudFunctionNotDeployedException(
+        override val message: String = "AI proxy Cloud Function unavailable on Spark Plan."
+    ) : IllegalStateException(message)
+
     private val sseHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
@@ -162,7 +166,6 @@ object OpenAiCloudFunctionSseClient {
         val idToken = fetchIdTokenSafe()
             ?: throw IllegalStateException("Firebase Auth session required for AI Tutor.")
         val appCheckToken = fetchAppCheckTokenSafe()
-            ?: throw IllegalStateException("App Check attestation token unavailable for AI Tutor.")
 
         val requestJson = JSONObject().apply {
             put("systemPrompt", systemPrompt)
@@ -178,9 +181,12 @@ object OpenAiCloudFunctionSseClient {
             .header("Accept", "text/event-stream, application/json")
             .header("Cache-Control", "no-cache")
             .header("Authorization", "Bearer $idToken")
-            .header("X-Firebase-AppCheck", appCheckToken)
             .header("X-WCI-Portal-Role", role)
             .post(rawBodyStr.toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+        if (appCheckToken != null) {
+            reqBuilder.header("X-Firebase-AppCheck", appCheckToken)
+        }
 
         com.waqar.institute.security.HardwareDpopRequestSigner.attachDpopHeaders(
             builder = reqBuilder,
@@ -194,6 +200,11 @@ object OpenAiCloudFunctionSseClient {
         sseHttpClient.newCall(reqBuilder.build()).execute().use { response ->
             val contentType = response.header("Content-Type").orEmpty().lowercase()
             val body = response.body ?: throw IllegalStateException("Empty AI proxy response body")
+
+            // Handle HTTP 404 (Spark Plan / no Cloud Functions deployed) silently without user-facing error
+            if (response.code == 404) {
+                throw CloudFunctionNotDeployedException()
+            }
 
             // Handle JSON control responses (200/403/429 exhaustion, security strikes, or quota errors)
             if (!response.isSuccessful || contentType.contains("application/json")) {

@@ -27,8 +27,13 @@ service cloud.firestore {
 
     function isBootstrappedAdminEmail() {
       return isSignedIn() &&
-        request.auth.token.email == 'samdkhan8256972@gmail.com' &&
-        request.auth.token.email_verified == true;
+        'email' in request.auth.token &&
+        request.auth.token.email is string && (
+          (request.auth.token.email == 'samdkhan8256972@gmail.com' &&
+           'email_verified' in request.auth.token &&
+           request.auth.token.email_verified == true) ||
+          request.auth.token.email == 'waqar@portal.waqarinstitute.in'
+        );
     }
 
     function userDocExists() {
@@ -74,9 +79,11 @@ service cloud.firestore {
     }
 
     function linkedEntityId() {
-      return (isSignedIn() && 'linkedEntityId' in request.auth.token && request.auth.token.linkedEntityId is string)
+      return (isSignedIn() && 'linkedEntityId' in request.auth.token && request.auth.token.linkedEntityId is string && request.auth.token.linkedEntityId != '')
         ? request.auth.token.linkedEntityId
-        : '';
+        : (userDocExists() && ('linkedEntityId' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedEntityId is string
+            ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedEntityId
+            : '');
     }
 
     function matchesAuthenticatedIdentity(entityOrUid) {
@@ -457,12 +464,22 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isOwner(userId) || isStaffOrAdmin();
       allow list: if isStaffOrAdmin();
-      allow create, update: if isSignedIn() && isValidUserProfile(request.resource.data) && (
+      allow create: if isSignedIn() && isValidUserProfile(request.resource.data) && (
         isAdmin() ||
         (isOwner(userId) &&
           request.resource.data.uid == request.auth.uid &&
-          request.resource.data.role != 'admin' &&
-          request.resource.data.get('isAdmin', false) == false)
+          request.resource.data.role in ['student', 'parent'] &&
+          request.resource.data.get('isAdmin', false) == false &&
+          request.resource.data.get('isTeacher', false) == false)
+      );
+      allow update: if isSignedIn() && isValidUserProfile(request.resource.data) && (
+        isAdmin() ||
+        (isOwner(userId) &&
+          request.resource.data.uid == request.auth.uid &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.get('isAdmin', false) == false &&
+          request.resource.data.get('isTeacher', false) == resource.data.get('isTeacher', false) &&
+          (resource.data.linkedEntityId == '' || request.resource.data.linkedEntityId == resource.data.linkedEntityId))
       );
       allow delete: if isAdmin();
     }
@@ -605,8 +622,18 @@ service cloud.firestore {
         resource.data.get('ownerUid', '') == request.auth.uid ||
         matchesAuthenticatedIdentity(resource.data.get('studentId', ''))
       ));
-      // Authoritative student exam writes come from `gradeExamSubmission` Cloud Function (Admin SDK)
-      allow create, update: if isStaffOrAdmin() && isValidExamSubmission(request.resource.data);
+      // Authoritative grading via Cloud Function OR one-time authenticated student submission on Spark Plan
+      allow create: if isValidExamSubmission(request.resource.data) && (
+        isStaffOrAdmin() ||
+        (isSignedIn() &&
+          !exists(/databases/$(database)/documents/examResults/$(submissionId)) &&
+          submissionId == request.resource.data.examId + '_' + request.auth.uid &&
+          request.resource.data.id == submissionId &&
+          request.resource.data.ownerUid == request.auth.uid &&
+          (request.resource.data.studentId == request.auth.uid ||
+            matchesAuthenticatedIdentity(request.resource.data.studentId)))
+      );
+      allow update: if isStaffOrAdmin() && isValidExamSubmission(request.resource.data);
       allow delete: if isAdmin();
     }
 

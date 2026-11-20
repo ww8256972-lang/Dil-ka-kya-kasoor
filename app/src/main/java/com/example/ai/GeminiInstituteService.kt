@@ -51,7 +51,8 @@ class GeminiInstituteService(
             userPrompt = usr,
             role = roleStr,
             featureType = feat,
-            languageCode = lang
+            languageCode = lang,
+            context = context
         )
     },
     private val lastResortGeminiProvider: (suspend (prompt: String, onChunk: suspend (String) -> Unit) -> String)? = null
@@ -268,6 +269,9 @@ class GeminiInstituteService(
             }
         } catch (exhausted: OpenAiCloudFunctionSseClient.GroqAndCloudflareExhaustedException) {
             // ONLY this explicit exhaustion signal unlocks Stage 5 (Last-Resort Gemini)
+            groqAndCloudflareExhausted = true
+        } catch (_: OpenAiCloudFunctionSseClient.CloudFunctionNotDeployedException) {
+            // Spark Plan (no Cloud Functions deployed): seamlessly fall back to Stage 5 Gemini Free Tier -> Stage 6 Offline Notes
             groqAndCloudflareExhausted = true
         } catch (secErr: OpenAiCloudFunctionSseClient.ProxySecurityViolationException) {
             AiRateLimiterManager.mirrorServerSecurityLock(
