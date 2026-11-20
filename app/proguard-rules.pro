@@ -39,7 +39,6 @@
     native <methods>;
 }
 -keep class com.waqar.institute.universal.WaqarUniversalAppBootstrapper { *; }
--keep class com.waqar.institute.upi.WciUpiMerchantNotificationService { *; }
 -keep class io.agora.** { *; }
 -dontwarn io.agora.**
 

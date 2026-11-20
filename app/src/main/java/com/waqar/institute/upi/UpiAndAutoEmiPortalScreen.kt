@@ -382,42 +382,18 @@ private fun AdminUpiAndAutoEmiCommandSection(
                     modifier = Modifier.padding(14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Layer 4: Merchant Notification / SMS UTR Auto-Reconciler",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = ElectricCyan
-                            )
-                            Text(
-                                text = "Matches Paytm Business / PhonePe Business / Bank alerts against Pending Approvals.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                runCatching {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
-                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        }
-                                    )
-                                }.onFailure {
-                                    viewModel.postMessage("Notification listener settings unavailable on this device.")
-                                }
-                            },
-                            modifier = Modifier.testTag("enable_merchant_notif_listener_btn")
-                        ) {
-                            Icon(Icons.Default.NotificationsActive, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Auto-Listen", style = MaterialTheme.typography.labelSmall)
-                        }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = "Layer 4: Merchant Alert / UTR Quick-Reconciler",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = ElectricCyan
+                        )
+                        Text(
+                            text = "Paste a Paytm Business / PhonePe Business / Bank alert or 12-digit UTR to match against Pending Approvals.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
 
                     Row(

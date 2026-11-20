@@ -7,8 +7,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.service.notification.NotificationListenerService
-import android.service.notification.StatusBarNotification
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.example.data.firestore.InstituteRepository
@@ -761,7 +759,7 @@ object ZeroFeeUpiPaymentEngine {
      * 6. Server-side + local Single-Use UTR Lock (`used_utr_locks/{utrNumber}`)
      *
      * On valid verification, writes `PENDING_APPROVAL` to `/upi_transactions/{txnId}` so Admin can
-     * 1-Tap Confirm in the Admin Side Menu Bar (or auto-match via `WciUpiMerchantNotificationService`).
+     * 1-Tap Confirm in the Admin Side Menu Bar (or match via pasted Merchant Alert / UTR text).
      */
     suspend fun verifyIntentResultAndSubmitPending(
         context: Context?,
@@ -1297,103 +1295,6 @@ object ZeroFeeUpiPaymentEngine {
         val clean = if (hex.length % 2 == 0) hex else "0$hex"
         return ByteArray(clean.length / 2) { i ->
             clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-        }
-    }
-}
-
-/**
- * Layer 4: Play-Policy-Compliant `NotificationListenerService` for Admin Merchant Device.
- * Listens for incoming Paytm Business / PhonePe Business / GPay / Bank payment notifications
- * and automatically reconciles matching `PENDING_APPROVAL` UPI transactions by UTR + Amount.
- */
-class WciUpiMerchantNotificationService : NotificationListenerService() {
-
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    companion object {
-        val SUPPORTED_MERCHANT_NOTIFICATION_PACKAGES = setOf(
-            "com.paytm.business",
-            "net.one97.paytm",
-            "com.phonepe.app.business",
-            "com.phonepe.app",
-            "com.google.android.apps.nbu.paisa.user",
-            "com.bharatpe.merchant",
-            "in.org.npci.upiapp"
-        )
-
-        /**
-         * Enables `WciUpiMerchantNotificationService` ONLY for verified Admin sessions and
-         * disables it for Student/Teacher/Parent sessions and upon sign-out.
-         */
-        fun setMerchantNotificationServiceEnabled(context: Context, enabled: Boolean) {
-            runCatching {
-                val appCtx = context.applicationContext ?: context
-                val component = android.content.ComponentName(
-                    appCtx,
-                    WciUpiMerchantNotificationService::class.java
-                )
-                val targetState = if (enabled) {
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-                } else {
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-                }
-                appCtx.packageManager.setComponentEnabledSetting(
-                    component,
-                    targetState,
-                    android.content.pm.PackageManager.DONT_KILL_APP
-                )
-            }
-        }
-    }
-
-    override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        super.onNotificationPosted(sbn)
-        val notification = sbn?.notification ?: return
-        val pkg = sbn.packageName.orEmpty()
-        if (pkg !in SUPPORTED_MERCHANT_NOTIFICATION_PACKAGES && !pkg.contains("bank", ignoreCase = true)) {
-            return
-        }
-        val extras = notification.extras ?: return
-        val title = extras.getCharSequence("android.title")?.toString().orEmpty()
-        val text = extras.getCharSequence("android.text")?.toString().orEmpty()
-        val bigText = extras.getCharSequence("android.bigText")?.toString().orEmpty()
-        val combinedText = "$title $text $bigText".trim()
-        if (combinedText.isBlank()) return
-
-        val parsed = ZeroFeeUpiPaymentEngine.extractMerchantAlertUtrAndAmount(combinedText) ?: return
-        val (utrNumber, amountPaise) = parsed
-
-        serviceScope.launch {
-            runCatching {
-                val db = InstituteRepository.getConfiguredFirestore(applicationContext)
-                val querySnap = db.collection("upi_transactions")
-                    .whereEqualTo("utr_number", utrNumber)
-                    .whereEqualTo("status", "PENDING_APPROVAL")
-                    .get()
-                    .await()
-                for (doc in querySnap.documents) {
-                    val docPaise = doc.getLong("amount_paise") ?: 0L
-                    if (amountPaise <= 0L || docPaise == amountPaise) {
-                        db.collection("upi_transactions").document(doc.id).update(
-                            mapOf(
-                                "status" to "VERIFIED_PAID",
-                                "verified_by_uid" to "admin_root"
-                            )
-                        ).await()
-                        ZeroFeeUpiPaymentEngine.logAuditEventInternal(
-                            context = applicationContext,
-                            actorUid = "admin_root",
-                            actorName = "Merchant Notification Reconciler ($pkg)",
-                            studentId = doc.getString("student_id").orEmpty(),
-                            eventType = "MERCHANT_NOTIFICATION_AUTO_VERIFIED",
-                            severity = "INFO",
-                            utrNumber = utrNumber,
-                            intentHash = doc.getString("intent_hash").orEmpty(),
-                            details = "Auto-verified UTR $utrNumber (₹${docPaise / 100.0}) from $pkg notification"
-                        )
-                    }
-                }
-            }
         }
     }
 }

@@ -636,11 +636,6 @@ class InstituteViewModel(
                             authLockoutUntilEpochMs = 0L
                             com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
                             val effectiveRole = result.session.role
-                            com.waqar.institute.upi.WciUpiMerchantNotificationService
-                                .setMerchantNotificationServiceEnabled(
-                                    activityContext.applicationContext,
-                                    effectiveRole == PortalRole.ADMIN
-                                )
                             internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
                             prefsManager.setSelectedPortalRole(effectiveRole.key)
                             _uiState.update {
@@ -757,11 +752,6 @@ class InstituteViewModel(
                         is AuthPortalResult.Success -> {
                             failedAuthAttempts = 0
                             authLockoutUntilEpochMs = 0L
-                            com.waqar.institute.upi.WciUpiMerchantNotificationService
-                                .setMerchantNotificationServiceEnabled(
-                                    activityContext.applicationContext,
-                                    true
-                                )
                             internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
                             prefsManager.setSelectedPortalRole(PortalRole.ADMIN.key)
                             _uiState.update {
@@ -1334,10 +1324,6 @@ class InstituteViewModel(
     }
 
     fun signOut(reasonMessage: String? = null) {
-        appContext?.let {
-            com.waqar.institute.upi.WciUpiMerchantNotificationService
-                .setMerchantNotificationServiceEnabled(it, false)
-        }
         internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(null)
         com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
         com.waqar.institute.session.ConcurrentSessionManager.stopWatchingSession()
