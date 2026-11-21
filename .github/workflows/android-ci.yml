@@ -1,10 +1,11 @@
+
 name: Android CI — Waqar Computer Institute
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master" ]
   workflow_dispatch:
 
 permissions:
@@ -24,14 +25,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Set up compatible JDK (Temurin 21 for AGP 9.1.1 & Gradle 9.3.1)
+      # 2. Set up compatible JDK
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 3. Configure Android SDK (Explicitly override default 'packages: tools platform-tools' to prevent obsolete 'tools' package failure)
+      # 3. Configure Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -39,7 +40,7 @@ jobs:
           packages: 'cmdline-tools;latest platform-tools'
           accept-android-sdk-licenses: true
 
-      # 4 & 5. Accept Android SDK licenses & install required SDK platforms and build-tools
+      # 4 & 5. Accept SDK Licenses & Install Required Android SDK Packages
       - name: Accept SDK Licenses & Install Required Android SDK Packages
         run: |
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
@@ -166,7 +167,7 @@ jobs:
         run: |
           gradle help --stacktrace
 
-      # 9. Run KSP & Kotlin compilation (with explicit compiler error diagnostics)
+      # 9. Run KSP & Kotlin compilation
       - name: Compile Debug Kotlin Sources
         run: |
           set -o pipefail
@@ -293,3 +294,4 @@ jobs:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
           npx --yes firebase-tools deploy --only hosting --project gen-lang-client-0309263247 --non-interactive
+          
