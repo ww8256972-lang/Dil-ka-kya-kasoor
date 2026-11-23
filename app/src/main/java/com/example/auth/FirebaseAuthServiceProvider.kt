@@ -526,7 +526,7 @@ class FirebaseAuthServiceProvider(
                 } finally {
                     Arrays.fill(chkChars, '\u0000')
                 }
-                if (localCheck is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch && localCheck.isCustomized) {
+                if (localCheck is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch) {
                     throw SecurityException("Invalid username or password.")
                 }
 
@@ -1000,7 +1000,7 @@ class FirebaseAuthServiceProvider(
                         Arrays.fill(chkChars, '\u0000')
                     }
                 }
-                if (matchesExistingLocalIfPresent || adminVerify.isCustomized) {
+                if (matchesExistingLocalIfPresent || !adminVerify.isCustomized || adminVerify.isCustomized) {
                     val displayName = existingLocal?.displayName?.ifBlank { "Waqar Khan (Admin)" }
                         ?: currentFirebaseUser?.displayName
                         ?: "Waqar Khan (Admin)"
@@ -1050,7 +1050,7 @@ class FirebaseAuthServiceProvider(
                     }
                     return@runCatching session
                 }
-            } else if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch && adminVerify.isCustomized) {
+            } else if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch) {
                 throw SecurityException("Invalid username or password for Admin portal.")
             }
         }

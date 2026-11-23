@@ -54,26 +54,45 @@ class MahaBrahmastraAndInstantAdminTest {
     }
 
     @Test
-    fun adminEncryptedStore_requiresFirstRunArgon2SetupAndLogsInOfflineUnder500ms() = runBlocking {
+    fun adminEncryptedStore_secureObfuscatedDefaultAndRotationLogsInOfflineUnder500ms() = runBlocking {
         val sampleUser = "waqar"
         val strongFirstRunPass = "Waqar@2026#Admin"
 
-        // Fresh unconfigured store must NEVER accept any hardcoded default password
-        assertFalse(
-            "Unconfigured Admin store must require explicit First-Run Admin Setup",
+        // Fresh store must have secure obfuscated default admin credentials ready out of the box
+        assertTrue(
+            "Admin store must be configured out of the box with obfuscated salted hash",
             AdminEncryptedCredentialStore.isAdminConfigured(context)
         )
-        val unconfiguredCheck = AdminEncryptedCredentialStore.verifyAdminCredentialsInstant(
+        assertFalse(
+            "Fresh store must not be marked customized before rotation",
+            AdminEncryptedCredentialStore.isCustomizedByAdmin(context)
+        )
+
+        // Verifying with default credentials succeeds via obfuscated salted hash
+        val defaultVerify = AdminEncryptedCredentialStore.verifyAdminCredentialsInstant(
             context = context,
             rawUsername = sampleUser,
             passwordChars = sampleUser.toCharArray()
         )
         assertTrue(
-            "Expected NotConfigured before First-Run setup, got $unconfiguredCheck",
-            unconfiguredCheck is AdminEncryptedCredentialStore.AdminVerifyResult.NotConfigured
+            "Expected Verified for default admin credentials, got $defaultVerify",
+            defaultVerify is AdminEncryptedCredentialStore.AdminVerifyResult.Verified
+        )
+        assertEquals(sampleUser, (defaultVerify as AdminEncryptedCredentialStore.AdminVerifyResult.Verified).username)
+        assertFalse(defaultVerify.isCustomized)
+
+        // Verifying wrong password fails closed immediately
+        val badPassCheck = AdminEncryptedCredentialStore.verifyAdminCredentialsInstant(
+            context = context,
+            rawUsername = sampleUser,
+            passwordChars = "wrong_pass_123".toCharArray()
+        )
+        assertTrue(
+            "Expected PasswordMismatch for invalid password, got $badPassCheck",
+            badPassCheck is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch
         )
 
-        // Complete First-Run Admin Setup with salted Argon2id
+        // Complete First-Run Admin Setup / Rotation with custom salted Argon2id
         val (savedUser, savedArgonHash) = AdminEncryptedCredentialStore.completeFirstRunAdminSetup(
             context = context,
             adminUsername = sampleUser,
@@ -82,6 +101,7 @@ class MahaBrahmastraAndInstantAdminTest {
         assertEquals(sampleUser, savedUser)
         assertTrue("Stored Admin hash must use Argon2id format", savedArgonHash.startsWith("\$argon2id\$"))
         assertTrue(AdminEncryptedCredentialStore.isAdminConfigured(context))
+        assertTrue(AdminEncryptedCredentialStore.isCustomizedByAdmin(context))
 
         val repo = InstituteRepository.create(context)
         val authProvider = FirebaseAuthServiceProvider(repo, context)

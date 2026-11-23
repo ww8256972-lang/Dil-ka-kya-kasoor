@@ -1,22 +1,50 @@
-*.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-.env
-functions/.env
-debug.keystore
-*-debug.log
-*firebase-adminsdk*.json
+# Built application files
+*.apk
+*.aar
+*.aab
 
+# Keystore and signing keys
+*.jks
+*.keystore
+debug.keystore
+my-upload-key.jks
+
+# Android & Gradle build files
+*.iml
+.gradle/
+.kotlin/
+/build/
+*/build/
+/local.properties
+local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Environment files & Secrets
+.env
+.env.local
+.env.*.local
+functions/.env
+cloud-functions/.env
+*firebase-adminsdk*.json
+serviceAccountKey*.json
+
+# Logs
+*.log
+*-debug.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Node dependencies & compilation outputs
+node_modules/
+functions/node_modules/
+cloud-functions/node_modules/
+cloud-functions/lib/
+
+# IDE & OS files
+.DS_Store
+/.idea/
+Thumbs.db
+*.hprof
