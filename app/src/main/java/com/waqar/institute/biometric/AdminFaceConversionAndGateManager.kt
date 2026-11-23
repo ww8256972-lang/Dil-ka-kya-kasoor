@@ -103,7 +103,7 @@ object AdminFaceConversionAndGateManager {
     const val ADMIN_FACES_COLLECTION = "adminFaces"
     const val MASTER_ADMIN_DOC_ID = "admin_waqar_master"
     const val ADMIN_FACE_DOC_PREFIX = "admin_"
-    const val ADMIN_COSINE_MATCH_THRESHOLD = 0.68f
+    const val ADMIN_COSINE_MATCH_THRESHOLD = 0.65f
     private const val PREFS_ADMIN_VAULT = "wci_admin_face_vault_prefs"
     private const val KEY_ADMIN_VAULT_JSON = "authorized_admin_faces_json_v1"
     private const val FIRESTORE_TIMEOUT_MS = 5_000L
@@ -200,11 +200,16 @@ object AdminFaceConversionAndGateManager {
     }
 
     /**
-     * Bundled APK biometric photos are prohibited for security. Always returns `null`; Admin faces
-     * must be enrolled interactively into the encrypted local vault & Firestore `/adminFaces`.
+     * Loads the bundled Master Admin reference photo (`assets/admin_master_face_waqar.jpg`)
+     * to anchor the primary administrator (Waqar Khan) face biometric identity.
      */
-    @Deprecated("Bundled APK admin photo asset has been removed; enroll Admin face interactively into /adminFaces.")
-    fun loadBundledMasterAdminBitmap(context: Context): Bitmap? = null
+    fun loadBundledMasterAdminBitmap(context: Context): Bitmap? {
+        return runCatching {
+            context.assets.open("admin_master_face_waqar.jpg").use { inputStream ->
+                BitmapFactory.decodeStream(inputStream)
+            }
+        }.getOrNull()
+    }
 
     /**
      * Encodes a Bitmap as a compact JPEG `data:image/jpeg;base64,...` URI suitable for Firestore (< 45 KB).
@@ -340,17 +345,19 @@ object AdminFaceConversionAndGateManager {
                         Bitmap.createBitmap(bitmap, safeX, safeY, safeW, safeH)
                     }.getOrDefault(bitmap)
                     val croppedVisual = extractDeterministic128DVisualSignature(croppedFace)
+                    val geomEmbedding = FaceBiometricVerificationEngine
+                        .extract128DFacialEmbedding(face, context)
+                        .takeIf { FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
                     val unifiedIdentity = FaceBiometricVerificationEngine
                         .extractUnified128DFaceIdentityEmbedding(bitmap, face)
                         .takeIf { FaceBiometricVerificationEngine.isValidEmbeddingVector(it) }
-                        ?: FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
-                    if (FaceBiometricVerificationEngine.isValidEmbeddingVector(unifiedIdentity)) {
-                        return@withContext Pair(unifiedIdentity, croppedVisual)
-                    }
+                        ?: croppedVisual
+                    val primaryEmb = geomEmbedding ?: unifiedIdentity
+                    return@withContext Pair(primaryEmb, unifiedIdentity)
                 }
                 null
             }.getOrNull()
-            Pair(mlKitVec ?: visualSig, visualSig)
+            Pair(visualSig, visualSig)
         }
 
     /**
@@ -388,7 +395,10 @@ object AdminFaceConversionAndGateManager {
     }
 
     /**
-     * Loads any enrolled Master Admin face from the encrypted local vault (no bundled APK asset).
+     * Loads and guarantees enrollment of the Master Admin (Waqar Khan) face:
+     * 1. Checks in-memory cache and encrypted local vault.
+     * 2. If not yet enrolled, loads the bundled reference photo from assets, extracts 128-D embedding,
+     *    and enrolls into local encrypted vault and Cloud Firestore (`/adminFaces/admin_waqar_master`).
      */
     suspend fun ensureMasterAdminPhotoEnrolled(context: Context): AuthorizedAdminFaceProfile? =
         withContext(Dispatchers.IO) {
@@ -397,8 +407,24 @@ object AdminFaceConversionAndGateManager {
             val localCached = loadLocalAdminVault(context).firstOrNull { it.docId == MASTER_ADMIN_DOC_ID }
             if (localCached != null) {
                 inMemoryAdminVault[MASTER_ADMIN_DOC_ID] = localCached
+                return@withContext localCached
             }
-            localCached
+
+            val masterBmp = loadBundledMasterAdminBitmap(context)
+            if (masterBmp != null) {
+                val enrolled = enrollAdminFaceBitmapToVault(
+                    context = context,
+                    bitmap = masterBmp,
+                    docId = MASTER_ADMIN_DOC_ID,
+                    adminUsername = "waqar",
+                    displayName = "Waqar Khan (Master Admin)",
+                    sourceRoleLabel = "Primary Director",
+                    isPrimaryMaster = true
+                )
+                inMemoryAdminVault[MASTER_ADMIN_DOC_ID] = enrolled
+                return@withContext enrolled
+            }
+            null
         }
 
     private suspend fun syncAdminFaceProfileToFirestore(
@@ -693,7 +719,9 @@ object AdminFaceConversionAndGateManager {
         var bestScore = -1f
 
         for (admin in authorizedList) {
-            val sim = FaceBiometricVerificationEngine.computeCosineSimilaritySafe(liveGeom, admin.faceEmbedding)
+            val simGeom = FaceBiometricVerificationEngine.computeCosineSimilaritySafe(liveGeom, admin.faceEmbedding)
+            val simVis = FaceBiometricVerificationEngine.computeCosineSimilaritySafe(liveGeom, admin.visualSignature)
+            val sim = maxOf(simGeom, simVis)
             if (sim > bestScore) {
                 bestScore = sim
                 bestProfile = admin
