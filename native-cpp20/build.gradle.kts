@@ -7,6 +7,7 @@ plugins {
 android {
   namespace = "com.wci.nativecxx"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
+  ndkVersion = "27.0.12077973"
 
   defaultConfig {
     minSdk = 26
