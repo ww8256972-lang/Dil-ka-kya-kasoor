@@ -27,6 +27,13 @@ public:
     static ThreatReport scanForTampering();
 
     /**
+     * Helper checking if any debugger or Frida instrumentation is attached.
+     */
+    static inline bool isDebuggerOrFridaAttached() {
+        return scanForTampering().isCompromised();
+    }
+
+    /**
      * Checks /proc/self/maps for injected frida, xposed, or substrate so artifacts.
      */
     static bool scanProcMaps(std::string& outArtifact);

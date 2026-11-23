@@ -21,6 +21,13 @@ public:
     static bool verifyElfIntegrity();
 
     /**
+     * Helper verifying ELF memory segment CRC32 integrity against baseline.
+     */
+    static inline bool verifySegmentCrc32() {
+        return verifyElfIntegrity();
+    }
+
+    /**
      * Standard IEEE 802.3 CRC32 calculation.
      */
     static uint32_t computeCrc32(const uint8_t* data, size_t length);

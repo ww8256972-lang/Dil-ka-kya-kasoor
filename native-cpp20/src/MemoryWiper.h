@@ -15,6 +15,13 @@ public:
     static void zeroize(void* ptr, size_t size);
 
     /**
+     * Alias for zeroize to securely wipe memory buffers.
+     */
+    static inline void wipe(void* ptr, size_t size) {
+        zeroize(ptr, size);
+    }
+
+    /**
      * Constant-time byte array comparison to prevent timing attacks.
      * Returns true if equal, false otherwise.
      */
