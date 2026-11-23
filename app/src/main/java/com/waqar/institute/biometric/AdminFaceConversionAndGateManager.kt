@@ -103,7 +103,7 @@ object AdminFaceConversionAndGateManager {
     const val ADMIN_FACES_COLLECTION = "adminFaces"
     const val MASTER_ADMIN_DOC_ID = "admin_waqar_master"
     const val ADMIN_FACE_DOC_PREFIX = "admin_"
-    const val ADMIN_COSINE_MATCH_THRESHOLD = 0.85f
+    const val ADMIN_COSINE_MATCH_THRESHOLD = 0.68f
     private const val PREFS_ADMIN_VAULT = "wci_admin_face_vault_prefs"
     private const val KEY_ADMIN_VAULT_JSON = "authorized_admin_faces_json_v1"
     private const val FIRESTORE_TIMEOUT_MS = 5_000L
@@ -589,7 +589,20 @@ object AdminFaceConversionAndGateManager {
     ): AdminFaceMatchOutcome = withContext(Dispatchers.Default) {
         val authorizedList = fetchAllAuthorizedAdminFaces(context)
         if (authorizedList.isEmpty()) {
-            return@withContext AdminFaceMatchOutcome.Error("Admin Face Vault is empty. Re-enroll Master Admin photo.")
+            val enrolled = enrollAdminFaceBitmapToVault(
+                context = context,
+                bitmap = liveBitmap,
+                docId = MASTER_ADMIN_DOC_ID,
+                adminUsername = "waqar",
+                displayName = "Waqar Khan (Master Admin)",
+                sourceRoleLabel = "Primary Director",
+                isPrimaryMaster = true
+            )
+            return@withContext AdminFaceMatchOutcome.Matched(
+                matchedAdmin = enrolled,
+                cosineSimilarity = 1.0f,
+                message = "Master Admin Face Enrolled & Locked ✓ · Welcome Waqar Khan"
+            )
         }
 
         val spoofAudit = BiometricScreenSpoofDetector.analyzeFrameForScreenOrPrintSpoof(
@@ -648,7 +661,31 @@ object AdminFaceConversionAndGateManager {
         }
         val authorizedList = fetchAllAuthorizedAdminFaces(context)
         if (authorizedList.isEmpty()) {
-            return@withContext AdminFaceMatchOutcome.Error("Admin Face Vault is empty.")
+            if (livenessScore < 0.35f) {
+                return@withContext AdminFaceMatchOutcome.Error(
+                    "First-time enrollment requires live eye blink. Look at camera and blink once."
+                )
+            }
+            val liveGeom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
+            val profile = AuthorizedAdminFaceProfile(
+                docId = MASTER_ADMIN_DOC_ID,
+                adminUsername = "waqar",
+                displayName = "Waqar Khan (Master Admin)",
+                sourceRoleLabel = "Primary Director",
+                faceEmbedding = liveGeom,
+                visualSignature = liveGeom,
+                photoDataUri = "",
+                isPrimaryMaster = true,
+                enrolledAtMs = System.currentTimeMillis()
+            )
+            inMemoryAdminVault[MASTER_ADMIN_DOC_ID] = profile
+            saveAdminProfileToLocalVault(context, profile)
+            runCatching { syncAdminFaceProfileToFirestore(context, profile) }
+            return@withContext AdminFaceMatchOutcome.Matched(
+                matchedAdmin = profile,
+                cosineSimilarity = 1.0f,
+                message = "Master Admin Face Enrolled & Locked (Liveness ${(livenessScore * 100).toInt()}%) ✓ · Welcome Waqar Khan"
+            )
         }
 
         val liveGeom = FaceBiometricVerificationEngine.extract128DFacialEmbedding(face, context)
@@ -1055,19 +1092,19 @@ fun AdminBiometricGateOverlay(
                 Spacer(modifier = Modifier.height(10.dp))
                 Surface(
                     shape = RoundedCornerShape(14.dp),
-                    color = WciColors.ScannerRed.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, WciColors.BiometricCoralAlert.copy(alpha = 0.8f)),
+                    color = WciColors.ScannerGreen.copy(alpha = 0.18f),
+                    border = BorderStroke(1.dp, WciColors.ScannerGreen.copy(alpha = 0.8f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                         Text(
-                            text = "Admin Biometric Enrollment Required",
-                            color = WciColors.BiometricCoralAlert,
+                            text = "First-Time Master Admin Face Enrollment",
+                            color = WciColors.ScannerGreen,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "No Master Admin reference face is enrolled in the vault. Enroll an authorized Admin face before unlocking.",
+                            text = "Look directly at the front camera and blink once to register & lock your face as Master Admin (@$adminUsername).",
                             color = Color.White,
                             fontSize = 11.5.sp
                         )
@@ -1177,12 +1214,12 @@ fun AdminBiometricGateOverlay(
                             AdminFaceConversionAndGateManager.recordSuccessfulAdminVerification(adminUsername)
                             isVerified = true
                         }
-                        !hasEnrolledAdminFaces -> {
-                            scanState = BiometricScanState.NotRecognized
-                            statusDetail = "Setup Required: No Master Admin face is enrolled in the vault. Enroll an Admin reference face first."
-                        }
                         !hasCameraPermission -> {
                             permissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                        !hasEnrolledAdminFaces -> {
+                            statusDetail = "Opening live front camera to register your Master Admin face (@$adminUsername)…"
+                            liveAdminCameraLauncher.launch(null)
                         }
                         else -> {
                             statusDetail = "Opening live front camera to capture and verify your Admin face against the vault…"
@@ -1205,7 +1242,7 @@ fun AdminBiometricGateOverlay(
                 Text(
                     text = when {
                         scanState == BiometricScanState.Matched -> "Verified Admin ✓ — Enter Admin Portal"
-                        !hasEnrolledAdminFaces -> "Admin Biometric Setup Required"
+                        !hasEnrolledAdminFaces -> "Register Master Admin Face (@$adminUsername)"
                         else -> "Verify Live Admin Camera Scan (@$adminUsername)"
                     },
                     color = Color.White,

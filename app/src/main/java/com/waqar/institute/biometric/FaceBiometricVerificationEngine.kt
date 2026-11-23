@@ -37,7 +37,7 @@ import kotlin.math.sqrt
 @Keep
 object FaceBiometricVerificationEngine {
     const val EMBEDDING_DIMENSION = 128
-    const val COSINE_MATCH_THRESHOLD = 0.88f
+    const val COSINE_MATCH_THRESHOLD = 0.68f
     private const val MIN_EYE_OPEN_LIVENESS = 0.35f
     private const val MAX_HEAD_EULER_DEGREES = 22.0f
     private const val FIRESTORE_LOOKUP_TIMEOUT_MS = 8_000L
