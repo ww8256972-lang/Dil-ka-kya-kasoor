@@ -84,13 +84,13 @@ class EliteSecurityLayersTest {
         var captured: HardwareBiometricAttestor.BiometricActionSignature? = null
         HardwareBiometricAttestor.signCriticalAdminActionWithCryptoObject(
             activity = null,
-            actionType = "UPI_FEE_APPROVED",
-            canonicalPayload = "txn_123|stu_1|50000|UTR123456789012",
+            actionType = "OFFLINE_FEE_RECEIPT_ISSUED",
+            canonicalPayload = "rec_123|stu_1|50000|WCI-REC-2026-00001",
             onSigned = { captured = it },
             onFallback = { captured = it }
         )
         assertNotNull(captured)
-        assertEquals("UPI_FEE_APPROVED", captured!!.actionType)
+        assertEquals("OFFLINE_FEE_RECEIPT_ISSUED", captured!!.actionType)
         assertTrue(captured!!.signatureHex.length >= 32)
     }
 
@@ -115,8 +115,8 @@ class EliteSecurityLayersTest {
         val hash1 = ServerAuditHashChainClient.computeChainLinkHash(
             previousHash = ServerAuditHashChainClient.GENESIS_HASH,
             seq = 1L,
-            eventType = "UPI_FEE_APPROVED",
-            recordId = "upi_001",
+            eventType = "OFFLINE_FEE_RECEIPT_ISSUED",
+            recordId = "rec_001",
             canonicalPayloadJson = payload1,
             serverTimestampMs = ts1
         )
@@ -124,8 +124,8 @@ class EliteSecurityLayersTest {
             seq = 1L,
             previousHash = ServerAuditHashChainClient.GENESIS_HASH,
             currentHash = hash1,
-            eventType = "UPI_FEE_APPROVED",
-            recordId = "upi_001",
+            eventType = "OFFLINE_FEE_RECEIPT_ISSUED",
+            recordId = "rec_001",
             canonicalPayload = payload1,
             serverTimestampMs = ts1
         )

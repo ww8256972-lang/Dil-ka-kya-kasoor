@@ -546,23 +546,16 @@ fun AdminDashboardModule(
                     if (totalPendingPaise > 0L) {
                         Spacer(modifier = Modifier.height(12.dp))
                         ShimmerButton(
-                            text = "Pay Fee Due (${formatInrPaise(totalPendingPaise)}) via UPI",
-                            icon = Icons.Default.Payment,
+                            text = "Campus Counter Fee Due: ${formatInrPaise(totalPendingPaise)}",
+                            icon = Icons.Default.Receipt,
                             onClick = {
-                                runCatching {
-                                    val upiUri = Uri.parse(
-                                        "upi://pay?pa=waqarinstitute@upi&pn=Waqar%20Computer%20Institute&am=${totalPendingPaise / 100L}&cu=INR"
-                                    )
-                                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, upiUri))
-                                }.onFailure {
-                                    onNavigateToModule("M08_FEES")
-                                }
+                                onNavigateToModule("M08_FEES")
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "UPI opens your installed payment app directly. Share the UPI UTR / transaction reference with the institute office so Admin can post and verify your receipt in the Fee Ledger.",
+                            text = "Fees are received exclusively at the Campus Counter (188, DSN College Marg, Unnao). Collect your official Ed25519-signed receipt upon payment.",
                             style = MaterialTheme.typography.bodySmall.copy(color = WciColors.textMuted)
                         )
                     }

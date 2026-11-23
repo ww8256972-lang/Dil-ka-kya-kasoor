@@ -28,5 +28,11 @@ dependencyResolutionManagement {
 
 rootProject.name = "Waqar Institute"
 
+// Multi-Module Architecture per Master PRD Section 8.1
 include(":app")
+include(":ui-liquid-glass")
+include(":core-crypto")
+include(":native-cpp20")
+include(":exam-engine")
+include(":sandbox-runtime")
 include(":security")

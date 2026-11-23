@@ -109,3 +109,27 @@
 -dontwarn okio.**
 -keep class retrofit2.** { *; }
 -dontwarn retrofit2.**
+
+# 9. Additional Master PRD Modules & Libraries (L-01..L-56)
+-keep class com.wci.** { *; }
+-keepclasseswithmembernames class com.wci.nativecxx.** {
+    native <methods>;
+}
+-keepclassmembers class com.wci.nativecxx.** {
+    native <methods>;
+    public *;
+}
+-keep class com.nimbusds.** { *; }
+-dontwarn com.nimbusds.**
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+-keep class com.lambdapioneer.argon2kt.** { *; }
+-dontwarn com.lambdapioneer.argon2kt.**
+-keep class app.cash.quickjs.** { *; }
+-dontwarn app.cash.quickjs.**
+-keep class com.lowagie.text.** { *; }
+-dontwarn com.lowagie.text.**
+-keep class dev.chrisbanes.haze.** { *; }
+-dontwarn dev.chrisbanes.haze.**
+-keep class org.apache.poi.** { *; }
+-dontwarn org.apache.poi.**

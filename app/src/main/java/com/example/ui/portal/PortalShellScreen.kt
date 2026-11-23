@@ -99,7 +99,7 @@ val AllDrawerDestinations = listOf(
     ),
     com.waqar.institute.navigation.AppDrawer.codingSandboxDestination,
     com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination,
-    com.waqar.institute.navigation.AppDrawer.upiAutoEmiVaultDestination,
+    com.waqar.institute.navigation.AppDrawer.offlineFeeLedgerDestination,
     com.waqar.institute.navigation.AppDrawer.tallyPracticeSimulatorDestination,
     // Strictly LAST item in Side Navigation Drawer across all 4 portals
     com.waqar.institute.navigation.AppDrawer.termsAndConditionsDestination
@@ -823,8 +823,8 @@ private fun PortalShellBody(
                                         viewModel = viewModel
                                     )
                                 }
-                                com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND -> {
-                                    com.waqar.institute.upi.UpiAndAutoEmiVaultScreen(
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_OFFLINE_FEE_LEDGER -> {
+                                    com.waqar.institute.ledger.OfflineFeeLedgerScreen(
                                         uiState = state,
                                         viewModel = viewModel
                                     )

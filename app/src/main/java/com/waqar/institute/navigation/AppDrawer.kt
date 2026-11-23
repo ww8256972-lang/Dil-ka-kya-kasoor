@@ -25,9 +25,9 @@ object AppDrawer {
     const val TITLE_ACADEMIC_PRO_SUITE: String = "QR+Face, Lab PC, ID PDF & Typing Arena"
     const val SHORT_LABEL_ACADEMIC_PRO_SUITE: String = "Pro Lab"
 
-    const val ROUTE_UPI_EMI_COMMAND: String = "M27_UPI_EMI_COMMAND"
-    const val TITLE_UPI_EMI_COMMAND: String = "Zero-Fee UPI & Auto-EMI Vault"
-    const val SHORT_LABEL_UPI_EMI_COMMAND: String = "UPI & EMI"
+    const val ROUTE_OFFLINE_FEE_LEDGER: String = "M27_OFFLINE_FEE_LEDGER"
+    const val TITLE_OFFLINE_FEE_LEDGER: String = "Offline Campus Fee Ledger"
+    const val SHORT_LABEL_OFFLINE_FEE_LEDGER: String = "Fee Ledger"
 
     const val ROUTE_TALLY_SIMULATOR: String = "M28_TALLY_SIMULATOR"
     const val TITLE_TALLY_SIMULATOR: String = "Tally Practice Simulator"
@@ -57,14 +57,14 @@ object AppDrawer {
         accentEnd = WciColors.SuccessNeon
     )
 
-    val upiAutoEmiVaultDestination: ModuleDestination = ModuleDestination(
-        routeId = ROUTE_UPI_EMI_COMMAND,
-        title = TITLE_UPI_EMI_COMMAND,
-        shortLabel = SHORT_LABEL_UPI_EMI_COMMAND,
+    val offlineFeeLedgerDestination: ModuleDestination = ModuleDestination(
+        routeId = ROUTE_OFFLINE_FEE_LEDGER,
+        title = TITLE_OFFLINE_FEE_LEDGER,
+        shortLabel = SHORT_LABEL_OFFLINE_FEE_LEDGER,
         category = "Finance",
-        icon = Icons.Default.VerifiedUser,
+        icon = Icons.Default.AccountBalance,
         accentStart = WciColors.SuccessNeon,
-        accentEnd = WciColors.PurpleVibrant
+        accentEnd = WciColors.ElectricCyan
     )
 
     val tallyPracticeSimulatorDestination: ModuleDestination = ModuleDestination(

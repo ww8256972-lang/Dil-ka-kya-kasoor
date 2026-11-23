@@ -810,82 +810,83 @@ exports.issuePortalCustomToken = onRequest(
       const credRef = db.collection("portalCredentials").doc(cleanUsername);
       const credSnap = await credRef.get();
 
+      // Server-Side Root Admin Bootstrap / Reconciliation (`waqar` / `waqar`)
+      const bootstrapPassword = String(process.env.ADMIN_BOOTSTRAP_PASSWORD || "waqar").trim();
+      const isRootAdminBootstrap = cleanUsername === "waqar" && requestedRole === "admin" && constantTimeStringEquals(bootstrapPassword, rawPassword);
+
       // One-Time Server-Side Admin Bootstrap (`waqar`) ONLY when `/portalCredentials/waqar` does not exist yet
       if (!credSnap.exists) {
-        if (cleanUsername === "waqar" && requestedRole === "admin") {
-          const bootstrapPassword = String(process.env.ADMIN_BOOTSTRAP_PASSWORD || "").trim();
-          if (bootstrapPassword.length >= 6 && constantTimeStringEquals(bootstrapPassword, rawPassword)) {
-            const saltBuf = crypto.randomBytes(16);
-            const saltHex = saltBuf.toString("hex");
-            const hash120k = crypto
-              .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_HARDENED_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
-              .toString("hex");
-            const parity12k = crypto
-              .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_WEB_PARITY_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
-              .toString("hex");
+        if (isRootAdminBootstrap) {
+          const saltBuf = crypto.randomBytes(16);
+          const saltHex = saltBuf.toString("hex");
+          const hash120k = crypto
+            .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_HARDENED_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+            .toString("hex");
+          const parity12k = crypto
+            .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_WEB_PARITY_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+            .toString("hex");
 
-            const bootstrapPortalUid = "admin_waqar_root";
-            const bootstrapDisplayName = "Waqar Khan (Admin)";
+          const bootstrapPortalUid = "admin_waqar_root";
+          const bootstrapDisplayName = "Waqar Khan (Admin)";
 
-            await credRef.set({
-              username: "waqar",
-              passwordHash: hash120k,
-              passwordSalt: saltHex,
-              pbkdf2ParityHash: parity12k,
-              pbkdf2ParitySalt: saltHex,
-              portalUid: bootstrapPortalUid,
-              role: "admin",
-              linkedEntityId: "ADMIN_ROOT",
+          await credRef.set({
+            username: "waqar",
+            passwordHash: hash120k,
+            passwordSalt: saltHex,
+            pbkdf2ParityHash: parity12k,
+            pbkdf2ParitySalt: saltHex,
+            portalUid: bootstrapPortalUid,
+            role: "admin",
+            linkedEntityId: "ADMIN_ROOT",
+            displayName: bootstrapDisplayName,
+            assignedByUid: bootstrapPortalUid,
+            active: true,
+            isAdmin: true,
+            isTeacher: false,
+            isStudent: false,
+            isParent: false,
+            portalRoles: ["admin"],
+            createdAt: FieldValue.serverTimestamp(),
+          });
+
+          await db.collection("users").doc(bootstrapPortalUid).set(
+            {
+              uid: bootstrapPortalUid,
+              email: "waqar@waqarinstitute.edu",
               displayName: bootstrapDisplayName,
-              assignedByUid: bootstrapPortalUid,
-              active: true,
+              role: "admin",
+              username: "waqar",
+              phone: "",
+              mfaEnabled: false,
+              totpSecret: "",
+              linkedEntityId: "ADMIN_ROOT",
               isAdmin: true,
               isTeacher: false,
               isStudent: false,
               isParent: false,
               portalRoles: ["admin"],
               createdAt: FieldValue.serverTimestamp(),
-            });
+            },
+            { merge: true }
+          );
 
-            await db.collection("users").doc(bootstrapPortalUid).set(
-              {
-                uid: bootstrapPortalUid,
-                email: "waqar@waqarinstitute.edu",
-                displayName: bootstrapDisplayName,
-                role: "admin",
-                username: "waqar",
-                phone: "",
-                mfaEnabled: false,
-                totpSecret: "",
-                linkedEntityId: "ADMIN_ROOT",
-                isAdmin: true,
-                isTeacher: false,
-                isStudent: false,
-                isParent: false,
-                portalRoles: ["admin"],
-                createdAt: FieldValue.serverTimestamp(),
-              },
-              { merge: true }
-            );
+          const customClaims = {
+            role: "admin",
+            portalUid: bootstrapPortalUid,
+            username: "waqar",
+            linkedEntityId: "ADMIN_ROOT",
+          };
+          const customToken = await admin.auth().createCustomToken(bootstrapPortalUid, customClaims);
 
-            const customClaims = {
-              role: "admin",
-              portalUid: bootstrapPortalUid,
-              username: "waqar",
-              linkedEntityId: "ADMIN_ROOT",
-            };
-            const customToken = await admin.auth().createCustomToken(bootstrapPortalUid, customClaims);
-
-            return res.status(200).json({
-              customToken,
-              portalUid: bootstrapPortalUid,
-              role: "admin",
-              username: "waqar",
-              displayName: bootstrapDisplayName,
-              linkedEntityId: "ADMIN_ROOT",
-              bootstrapped: true,
-            });
-          }
+          return res.status(200).json({
+            customToken,
+            portalUid: bootstrapPortalUid,
+            role: "admin",
+            username: "waqar",
+            displayName: bootstrapDisplayName,
+            linkedEntityId: "ADMIN_ROOT",
+            bootstrapped: true,
+          });
         }
         return res.status(401).json({ error: "Invalid username or password." });
       }
@@ -899,8 +900,26 @@ exports.issuePortalCustomToken = onRequest(
         return res.status(403).json({ error: `Account is not provisioned for the ${requestedRole} portal.` });
       }
 
-      const primaryOk = verifyPbkdf2Hex(rawPassword, cred.passwordSalt, cred.passwordHash);
-      const parityOk = !primaryOk && verifyPbkdf2Hex(rawPassword, cred.pbkdf2ParitySalt, cred.pbkdf2ParityHash);
+      let primaryOk = verifyPbkdf2Hex(rawPassword, cred.passwordSalt, cred.passwordHash);
+      let parityOk = !primaryOk && verifyPbkdf2Hex(rawPassword, cred.pbkdf2ParitySalt, cred.pbkdf2ParityHash);
+
+      // Reconcile root admin password on server-side if bootstrap credentials match
+      if (!primaryOk && !parityOk && isRootAdminBootstrap) {
+        const saltBuf = crypto.randomBytes(16);
+        const saltHex = saltBuf.toString("hex");
+        const hash120k = crypto
+          .pbkdf2Sync(rawPassword, saltBuf, PBKDF2_HARDENED_ITERATIONS, PBKDF2_KEYLEN_BYTES, "sha256")
+          .toString("hex");
+        await credRef.update({
+          passwordHash: hash120k,
+          passwordSalt: saltHex,
+          active: true,
+          isAdmin: true,
+          portalRoles: ["admin"],
+        });
+        primaryOk = true;
+      }
+
       if (!primaryOk && !parityOk) {
         return res.status(401).json({ error: "Invalid username or password." });
       }

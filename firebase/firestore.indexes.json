@@ -87,6 +87,30 @@
         { "fieldPath": "role", "order": "ASCENDING" },
         { "fieldPath": "active", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "offline_fee_receipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentRollNo", "order": "ASCENDING" },
+        { "fieldPath": "receiptDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "offline_fee_receipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "paymentMode", "order": "ASCENDING" },
+        { "fieldPath": "receiptDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "offline_fee_receipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "campusId", "order": "ASCENDING" },
+        { "fieldPath": "receiptDate", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

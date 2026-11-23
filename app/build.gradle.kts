@@ -267,6 +267,11 @@ dependencies {
   debugImplementation(libs.leakcanary.android)
   implementation(libs.androidx.security.crypto)
   implementation(libs.kotlinx.serialization.json)
+  implementation(project(":ui-liquid-glass"))
+  implementation(project(":core-crypto"))
+  implementation(project(":native-cpp20"))
+  implementation(project(":exam-engine"))
+  implementation(project(":sandbox-runtime"))
   implementation(project(":security"))
 
   testImplementation(libs.androidx.compose.ui.test.junit4)

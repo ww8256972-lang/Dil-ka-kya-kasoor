@@ -598,139 +598,93 @@ class MahaBrahmastraAndInstantAdminTest {
     }
 
     @Test
-    fun zeroFeeUpiIntent_fiveSecurityLayers_fsmAndFourMonthAutoEmi() = runBlocking {
-        // 1. Verify Official Merchant VPA & Name
-        assertEquals("9235528409@ptyes", com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.MERCHANT_VPA)
-        assertEquals("Waqar computer institute", com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.MERCHANT_NAME)
+    fun offlineFeeLedger_merkleHashChain_singleCampusAndTamperResistance() = runBlocking {
+        // 1. Verify Master PRD Single-Campus Lock Constants
+        assertEquals("WCI_UNNAO_MAIN", com.waqar.institute.ledger.OfflineFeeLedgerEngine.CAMPUS_ID)
+        assertEquals(26.538162, com.waqar.institute.ledger.OfflineFeeLedgerEngine.CAMPUS_LATITUDE, 0.000001)
+        assertEquals(80.484187, com.waqar.institute.ledger.OfflineFeeLedgerEngine.CAMPUS_LONGITUDE, 0.000001)
+        assertEquals(50.0, com.waqar.institute.ledger.OfflineFeeLedgerEngine.CAMPUS_GEOFENCE_RADIUS_METERS, 0.1)
 
-        // 2. Layer 1: Strict UPI Package Whitelist
-        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.google.android.apps.nbu.paisa.user"))
-        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.phonepe.app"))
-        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("net.one97.paytm"))
-        assertTrue(com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("in.org.npci.upiapp"))
-        assertFalse(
-            "Spoofed UPI package must be rejected",
-            com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.isPackageWhitelisted("com.fake.spoof.upi")
-        )
+        // 2. Compute and verify sequential receipt numbering
+        val recNum1 = com.waqar.institute.ledger.OfflineFeeLedgerEngine.generateSequentialReceiptNumber(1L)
+        val recNum2 = com.waqar.institute.ledger.OfflineFeeLedgerEngine.generateSequentialReceiptNumber(2L)
+        assertEquals("WCI-REC-2026-00001", recNum1)
+        assertEquals("WCI-REC-2026-00002", recNum2)
 
-        // 3. Layer 2: Issue Signed Challenge (Idle -> Challenge -> Dispatched -> PendingApproval)
-        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.resetFsmToIdle()
-        val challengeRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
-            context = null,
-            studentId = "stu_upi_101",
-            studentName = "Aarav Sharma",
-            courseName = "ADCA",
+        // 3. Merkle SHA-256 Hash Chain verification
+        val genesis = com.waqar.institute.ledger.OfflineFeeLedgerEngine.GENESIS_HASH
+        val h1 = com.waqar.institute.ledger.OfflineFeeLedgerEngine.computeChainedFeeRecordHash(
+            receiptId = "rec_01",
+            studentId = "stu_101",
             amountPaise = 150000L,
-            paymentType = "MONTHLY_FEE",
-            preferredPackage = "com.google.android.apps.nbu.paisa.user"
+            paymentMode = "MANUAL_CASH_COUNTER",
+            timestamp = 1731888000000L,
+            prevRecordHash = genesis
         )
-        assertTrue("Challenge issuance must succeed", challengeRes.isSuccess)
-        val challenge = challengeRes.getOrThrow()
-        assertTrue(challenge.upiUriString.contains("pa=9235528409%40ptyes") || challenge.upiUriString.contains("pa=9235528409@ptyes"))
-        assertTrue(challenge.upiUriString.contains("am=1500.00"))
-        assertEquals(64, challenge.intentHashHex.length)
-
-        val launchIntentRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge)
-        assertTrue("Whitelisted launch intent must succeed", launchIntentRes.isSuccess)
-
-        // Automatic UTR extraction from returning UPI Intent (Zero Manual Typing)
-        val validReturnIntent = android.content.Intent().apply {
-            putExtra(
-                "response",
-                "txnId=WCI987654&responseCode=00&Status=SUCCESS&txnRef=${challenge.trRef}&ApprovalRefNo=612345678901"
-            )
-        }
-        val pendingRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
-            context = null,
-            intentData = validReturnIntent,
-            actorUid = "stu_upi_101"
+        val rec1 = com.waqar.institute.ledger.OfflineFeeReceiptRecord(
+            id = "rec_01",
+            receipt_number = recNum1,
+            student_id = "stu_101",
+            student_name = "Aarav Sharma",
+            course_name = "ADCA",
+            amount = 1500.0,
+            amount_paise = 150000L,
+            payment_mode = "MANUAL_CASH_COUNTER",
+            campusId = "WCI_UNNAO_MAIN",
+            prev_record_hash = genesis,
+            record_sha256_hash = h1,
+            chain_index = 1L,
+            timestamp = 1731888000000L
         )
-        assertTrue("Valid UPI return within 120s must transition to PENDING_APPROVAL", pendingRes.isSuccess)
-        val pendingTxn = pendingRes.getOrThrow()
-        assertEquals("PENDING_APPROVAL", pendingTxn.status)
-        assertEquals("612345678901", pendingTxn.utr_number)
-        assertEquals(150000L, pendingTxn.amount_paise)
 
-        // 4. Layer 3: Single-Use Duplicate UTR Replay Lock
-        val challenge2 = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
-            context = null,
-            studentId = "stu_upi_102",
-            studentName = "Rohit Verma",
-            courseName = "CCC",
-            amountPaise = 150000L,
-            paymentType = "MONTHLY_FEE"
-        ).getOrThrow()
-        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge2).getOrThrow()
-
-        val duplicateUtrIntent = android.content.Intent().apply {
-            putExtra(
-                "response",
-                "txnId=WCI999999&responseCode=00&Status=SUCCESS&txnRef=${challenge2.trRef}&ApprovalRefNo=612345678901"
-            )
-        }
-        val duplicateRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
-            context = null,
-            intentData = duplicateUtrIntent,
-            actorUid = "stu_upi_102"
-        )
-        assertTrue("Duplicate UTR replay must be blocked", duplicateRes.isFailure)
-
-        // 5. 120-Second Entropy Window Expiration Enforcement
-        val challenge3 = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.issueSignedPaymentChallenge(
-            context = null,
-            studentId = "stu_upi_103",
-            studentName = "Zoya Khan",
-            courseName = "Tally Prime",
+        val h2 = com.waqar.institute.ledger.OfflineFeeLedgerEngine.computeChainedFeeRecordHash(
+            receiptId = "rec_02",
+            studentId = "stu_102",
             amountPaise = 200000L,
-            paymentType = "AUTO_EMI"
-        ).getOrThrow()
-        com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildWhitelistedLaunchIntent(challenge3).getOrThrow()
-
-        val expiredIntent = android.content.Intent().apply {
-            putExtra(
-                "response",
-                "txnId=WCI777777&responseCode=00&Status=SUCCESS&txnRef=${challenge3.trRef}&ApprovalRefNo=712345678902"
-            )
-        }
-        val expiredRes = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.verifyIntentResultAndSubmitPending(
-            context = null,
-            intentData = expiredIntent,
-            actorUid = "stu_upi_103",
-            overrideNowMs = challenge3.issuedAtMs + 125_000L // > 120s window
+            paymentMode = "MANUAL_CASH_COUNTER",
+            timestamp = 1731888060000L,
+            prevRecordHash = h1
         )
-        assertTrue("Expired (>120s) challenge must be rejected", expiredRes.isFailure)
-
-        // 6. Layer 4: Merchant Notification Parser & 4-Month Overdue Auto-EMI Ledger
-        val parsedAlert = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.extractMerchantAlertUtrAndAmount(
-            "Paytm Business: Received Rs. 1,500.00 in your account. UPI Ref No: 612345678901."
+        val rec2 = com.waqar.institute.ledger.OfflineFeeReceiptRecord(
+            id = "rec_02",
+            receipt_number = recNum2,
+            student_id = "stu_102",
+            student_name = "Rohit Verma",
+            course_name = "CCC",
+            amount = 2000.0,
+            amount_paise = 200000L,
+            payment_mode = "MANUAL_CASH_COUNTER",
+            campusId = "WCI_UNNAO_MAIN",
+            prev_record_hash = h1,
+            record_sha256_hash = h2,
+            chain_index = 2L,
+            timestamp = 1731888060000L
         )
-        assertNotNull(parsedAlert)
-        assertEquals("612345678901", parsedAlert?.first)
-        assertEquals(150000L, parsedAlert?.second)
 
-        val stu = com.example.data.model.StudentRecord(
-            id = "stu_emi_01",
+        assertTrue(com.waqar.institute.ledger.OfflineFeeLedgerEngine.verifyFeeLedgerHashChain(listOf(rec1, rec2)))
+
+        // 4. Tamper detection: Modified amount must break the Merkle chain
+        val tamperedRec1 = rec1.copy(amount_paise = 100L)
+        assertFalse(com.waqar.institute.ledger.OfflineFeeLedgerEngine.verifyFeeLedgerHashChain(listOf(tamperedRec1, rec2)))
+
+        // 5. Student Ledger Balance Sync (Strict Flat Course Fee - Zero EMI)
+        val student = com.example.data.model.StudentRecord(
+            id = "stu_101",
             enrollmentNo = "WCI-2026-501",
-            fullName = "Imran Siddiqui",
+            fullName = "Aarav Sharma",
             courseName = "ADCA",
             totalFeePaise = 1800000L,
             paidFeePaise = 600000L
         )
-        val syncedLedger = com.waqar.institute.upi.ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(
-            student = stu,
-            existing = com.waqar.institute.upi.StudentFeesLedgerRecord(
-                id = stu.id,
-                student_id = stu.id,
-                student_name = stu.fullName,
-                overdue_months = 4,
-                auto_emi_active = true,
-                emi_billing_date = 10
-            )
+        val syncedLedger = com.waqar.institute.ledger.OfflineFeeLedgerEngine.buildOrSyncStudentLedger(
+            student = student,
+            additionalPaidPaise = 400000L,
+            receiptNum = recNum1
         )
-        assertTrue(syncedLedger.isFourMonthOverdueEligible)
-        assertTrue(syncedLedger.auto_emi_active)
-        assertEquals("EMI_ACTIVE", syncedLedger.monthly_payment_status)
-        assertEquals(10, syncedLedger.emi_billing_date)
+        assertEquals(1800000L, syncedLedger.total_fee_paise)
+        assertEquals(1000000L, syncedLedger.paid_fee_paise)
+        assertEquals(800000L, syncedLedger.balancePaise)
+        assertEquals("PENDING", syncedLedger.payment_status)
     }
 }
 

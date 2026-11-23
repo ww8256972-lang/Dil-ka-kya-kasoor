@@ -1402,8 +1402,8 @@ fun FinanceAndPayrollModuleScreen(
 
         when (activeTab) {
             0 -> {
-                item(key = "zero_fee_upi_auto_emi_vault") {
-                    com.waqar.institute.upi.UpiAndAutoEmiEmbeddedSection(
+                item(key = "offline_campus_fee_ledger") {
+                    com.waqar.institute.ledger.OfflineFeeLedgerScreen(
                         uiState = state,
                         viewModel = viewModel
                     )
@@ -1414,7 +1414,7 @@ fun FinanceAndPayrollModuleScreen(
                             icon = Icons.AutoMirrored.Filled.ReceiptLong,
                             title = "No fee invoices or receipts yet",
                             subtitle = if (isAdmin) {
-                                "Collect student fees via UPI, Cash, Card, or Bank Transfer and export official GST-ready PDF receipts."
+                                "Collect student fees via Cash, Bank Transfer, or Demand Draft and export official GST-ready PDF receipts."
                             } else {
                                 "Your official institute fee receipts and GST invoices will appear here once issued."
                             },
@@ -1557,11 +1557,11 @@ fun FinanceAndPayrollModuleScreen(
     if (showCollectFee) {
         var studentName by remember { mutableStateOf(state.students.firstOrNull()?.fullName ?: "") }
         var courseName by remember { mutableStateOf(state.students.firstOrNull()?.courseName ?: "ADCA") }
-        var title by remember { mutableStateOf("Installment 1 - Tuition & Lab Fee") }
+        var title by remember { mutableStateOf("Course Fee - Tuition & Lab") }
         var totalInr by remember { mutableStateOf("12000") }
         var paidInr by remember { mutableStateOf("6000") }
         var discountInr by remember { mutableStateOf("0") }
-        var mode by remember { mutableStateOf("UPI") }
+        var mode by remember { mutableStateOf("CASH") }
 
         AlertDialog(
             onDismissRequest = { showCollectFee = false },
@@ -1571,14 +1571,14 @@ fun FinanceAndPayrollModuleScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = studentName, onValueChange = { studentName = it }, label = { Text("Student Name *") }, singleLine = true)
                     OutlinedTextField(value = courseName, onValueChange = { courseName = it }, label = { Text("Course Name *") }, singleLine = true)
-                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Installment / Particulars") }, singleLine = true)
+                    OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Fee Particulars") }, singleLine = true)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(value = totalInr, onValueChange = { totalInr = it }, label = { Text("Total (₹)") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         OutlinedTextField(value = paidInr, onValueChange = { paidInr = it }, label = { Text("Paid (₹)") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                         OutlinedTextField(value = discountInr, onValueChange = { discountInr = it }, label = { Text("Disc (₹)") }, modifier = Modifier.weight(1f), singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("UPI", "CASH", "CARD", "BANK_TRANSFER").forEach { pm ->
+                        listOf("CASH", "BANK_TRANSFER", "DEMAND_DRAFT").forEach { pm ->
                             LiquidPill(text = pm, selected = mode == pm, onClick = { mode = pm })
                         }
                     }
@@ -1636,7 +1636,7 @@ fun FinanceAndPayrollModuleScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("UPI", "CASH", "CARD", "NEFT").forEach { m ->
+                        listOf("CASH", "BANK_TRANSFER", "DEMAND_DRAFT").forEach { m ->
                             LiquidPill(text = m, selected = mode == m, onClick = { mode = m })
                         }
                     }
@@ -1695,7 +1695,7 @@ fun FinanceAndPayrollModuleScreen(
                     text = "Post Voucher",
                     enabled = title.isNotBlank(),
                     onClick = {
-                        viewModel.addLedgerEntry(entryType, category, title, vendor, amountInr.toLongOrNull() ?: 0L, gstInr.toLongOrNull() ?: 0L, "UPI", "")
+                        viewModel.addLedgerEntry(entryType, category, title, vendor, amountInr.toLongOrNull() ?: 0L, gstInr.toLongOrNull() ?: 0L, "CASH", "")
                         showAddLedger = false
                     }
                 )

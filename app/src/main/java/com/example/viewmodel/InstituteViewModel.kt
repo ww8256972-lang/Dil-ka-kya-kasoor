@@ -27,10 +27,10 @@ import com.example.security.RaspSecurityReport
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
-import com.waqar.institute.upi.InstituteAuditLogRecord
-import com.waqar.institute.upi.StudentFeesLedgerRecord
-import com.waqar.institute.upi.UpiTransactionRecord
-import com.waqar.institute.upi.ZeroFeeUpiPaymentEngine
+import com.waqar.institute.ledger.InstituteAuditLogRecord
+import com.waqar.institute.ledger.OfflineFeeLedgerEngine
+import com.waqar.institute.ledger.OfflineFeeReceiptRecord
+import com.waqar.institute.ledger.StudentFeesLedgerRecord
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -93,7 +93,8 @@ data class InstituteUiState(
     val tickets: List<SupportTicket> = emptyList(),
     val auditLogs: List<SecurityAuditLog> = emptyList(),
     val backupsAndConfigs: List<InstituteBackupOrConfig> = emptyList(),
-    val upiTransactions: List<UpiTransactionRecord> = emptyList(),
+    val feeReceipts: List<OfflineFeeReceiptRecord> = emptyList(),
+    val upiTransactions: List<OfflineFeeReceiptRecord> = emptyList(),
     val studentFeesLedger: List<StudentFeesLedgerRecord> = emptyList(),
     val instituteAuditLogs: List<InstituteAuditLogRecord> = emptyList()
 )
@@ -124,7 +125,8 @@ class InstituteViewModel(
     private var rawGuardians: List<GuardianLink> = emptyList()
     private var rawPayroll: List<PayrollEntry> = emptyList()
     private var rawPortalCredentials: List<PortalCredential> = emptyList()
-    private var rawUpiTransactions: List<UpiTransactionRecord> = emptyList()
+    private var rawFeeReceipts: List<OfflineFeeReceiptRecord> = emptyList()
+    private var rawUpiTransactions: List<OfflineFeeReceiptRecord> = emptyList()
     private var rawStudentFeesLedger: List<StudentFeesLedgerRecord> = emptyList()
     private var rawInstituteAuditLogs: List<InstituteAuditLogRecord> = emptyList()
 
@@ -486,23 +488,19 @@ class InstituteViewModel(
         val allKnownCredentials = (InstituteRepository.localCredentialsCache.values + rawPortalCredentials).distinctBy { it.username.lowercase() }
         val scopedCredentials = if (role == PortalRole.ADMIN) allKnownCredentials else emptyList()
 
-        // Synthesize StudentFeesLedgerRecord for every visible student so Monthly Fee & 4-Month Overdue Auto-EMI are always ready
-        val ledgerByStudentId = (ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache.values + rawStudentFeesLedger)
+        // Offline Campus Fee Ledger & Receipts (F-066..F-080)
+        val ledgerByStudentId = (OfflineFeeLedgerEngine.localStudentFeesLedgerCache.values + rawStudentFeesLedger)
             .distinctBy { it.student_id }
             .associateBy { it.student_id }
 
         val syncedLedgersForAllStudents = allKnownStudents.map { stu ->
-            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(
+            OfflineFeeLedgerEngine.buildOrSyncStudentLedger(
                 student = stu,
                 existing = ledgerByStudentId[stu.id] ?: ledgerByStudentId[stu.enrollmentNo]
             )
         }
         val scopedFeesLedger = when (role) {
-            PortalRole.ADMIN -> syncedLedgersForAllStudents.sortedWith(
-                compareByDescending<StudentFeesLedgerRecord> { it.overdue_months }
-                    .thenByDescending { it.auto_emi_active }
-                    .thenBy { it.student_name }
-            )
+            PortalRole.ADMIN -> syncedLedgersForAllStudents.sortedBy { it.student_name }
             PortalRole.TEACHER -> emptyList()
             PortalRole.STUDENT, PortalRole.PARENT -> syncedLedgersForAllStudents.filter { led ->
                 led.student_id.lowercase() in allowedStudentIds ||
@@ -511,21 +509,21 @@ class InstituteViewModel(
             }
         }
 
-        val allUpiTxns = (ZeroFeeUpiPaymentEngine.localUpiTransactionsCache.values + rawUpiTransactions)
+        val allReceipts = (OfflineFeeLedgerEngine.localOfflineReceiptsCache.values + rawFeeReceipts + rawUpiTransactions)
             .distinctBy { it.id }
             .sortedByDescending { it.timestamp }
-        val scopedUpiTransactions = when (role) {
-            PortalRole.ADMIN -> allUpiTxns
+        val scopedReceipts = when (role) {
+            PortalRole.ADMIN -> allReceipts
             PortalRole.TEACHER -> emptyList()
-            PortalRole.STUDENT, PortalRole.PARENT -> allUpiTxns.filter { txn ->
-                txn.student_id.lowercase() in allowedStudentIds ||
-                    (displayNameKey.isNotEmpty() && txn.student_name.equals(displayNameKey, ignoreCase = true))
+            PortalRole.STUDENT, PortalRole.PARENT -> allReceipts.filter { rec ->
+                rec.student_id.lowercase() in allowedStudentIds ||
+                    (displayNameKey.isNotEmpty() && rec.student_name.equals(displayNameKey, ignoreCase = true))
             }
         }
 
-        val allInstituteAuditLogs = (ZeroFeeUpiPaymentEngine.localInstituteAuditLogsCache.values + rawInstituteAuditLogs)
+        val allInstituteAuditLogs = (OfflineFeeLedgerEngine.localInstituteAuditLogsCache.values + rawInstituteAuditLogs)
             .distinctBy { it.id }
-            .sortedByDescending { it.timestamp }
+            .sortedByDescending { it.timestamp_ms }
         val scopedInstituteAuditLogs = if (role == PortalRole.ADMIN) allInstituteAuditLogs else emptyList()
 
         _uiState.update {
@@ -542,7 +540,8 @@ class InstituteViewModel(
                 guardians = scopedGuardians,
                 payroll = scopedPayroll,
                 portalCredentials = scopedCredentials,
-                upiTransactions = scopedUpiTransactions,
+                feeReceipts = scopedReceipts,
+                upiTransactions = scopedReceipts,
                 studentFeesLedger = scopedFeesLedger,
                 instituteAuditLogs = scopedInstituteAuditLogs
             )
@@ -1225,19 +1224,20 @@ class InstituteViewModel(
             }
         }
         streamJobs += viewModelScope.launch {
-            ZeroFeeUpiPaymentEngine.observeUpiTransactions(repository.firestoreDb()).catch { }.collect { list ->
+            OfflineFeeLedgerEngine.observeOfflineReceipts(repository.firestoreDb()).catch { }.collect { list ->
+                rawFeeReceipts = list
                 rawUpiTransactions = list
                 recomputeRoleScopedData()
             }
         }
         streamJobs += viewModelScope.launch {
-            ZeroFeeUpiPaymentEngine.observeStudentFeesLedger(repository.firestoreDb()).catch { }.collect { list ->
+            OfflineFeeLedgerEngine.observeStudentFeesLedger(repository.firestoreDb()).catch { }.collect { list ->
                 rawStudentFeesLedger = list
                 recomputeRoleScopedData()
             }
         }
         streamJobs += viewModelScope.launch {
-            ZeroFeeUpiPaymentEngine.observeInstituteAuditLogs(repository.firestoreDb()).catch { }.collect { list ->
+            OfflineFeeLedgerEngine.observeInstituteAuditLogs(repository.firestoreDb()).catch { }.collect { list ->
                 rawInstituteAuditLogs = list
                 recomputeRoleScopedData()
             }
@@ -2104,357 +2104,70 @@ class InstituteViewModel(
     }
 
     // =========================================================================
-    // Option B: Zero-Fee Direct UPI Intent + 4-Month Overdue Auto-EMI Controls
+    // Master PRD Module 4: Offline Fee Ledger & Manual Receipt Accounting (F-066..F-080)
+    // 100% Offline Campus Counter Receipts Only • Zero Payment Gateway • Zero EMI
     // =========================================================================
 
-    fun recordVerifiedPendingUpiTransaction(record: UpiTransactionRecord) {
-        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[record.id] = record
-        rawUpiTransactions = listOf(record) + rawUpiTransactions.filterNot { it.id == record.id }
-        recomputeRoleScopedData()
-        postMessage("UTR ${record.utr_number} auto-captured! Sent to Admin Portal for 1-Tap Approval.")
-    }
-
     /**
-     * Admin 1-Tap Confirm for a `PENDING_APPROVAL` UPI transaction:
-     * 1. Marks `upi_transactions/{txnId}` as `VERIFIED_PAID` with Admin's UID.
-     * 2. Credits `StudentRecord.paidFeePaise` and `student_fees_ledger/{studentId}`.
-     * 3. Decrements/resets `overdue_months` if paid via Auto-EMI or Monthly Fee.
-     * 4. Generates an official GST `FeeInvoice` receipt (`WCI-UPI-...`).
-     * 5. Logs an immutable verification entry to `institute_audit_logs`.
+     * Issues an official manual campus counter fee receipt (F-067 / F-069).
+     * Strictly offline: Cash Counter, Bank Deposit, or Demand Draft with Ed25519 signature.
      */
-    fun adminApproveUpiTransaction(
-        txn: UpiTransactionRecord,
-        biometricActionSignatureHex: String = ""
+    fun recordManualOfflineReceipt(
+        student: StudentRecord,
+        amountPaise: Long,
+        paymentMode: String = "MANUAL_CASH_COUNTER",
+        remarks: String = ""
     ) {
         if (!ensureActiveSessionOrSignOut()) return
         val adminUid = currentActorUid() ?: "admin_root"
-        val approvedTxn = txn.copy(
-            status = "VERIFIED_PAID",
-            verified_by_uid = adminUid
-        )
-        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[approvedTxn.id] = approvedTxn
-        rawUpiTransactions = listOf(approvedTxn) + rawUpiTransactions.filterNot { it.id == approvedTxn.id }
 
-        // Update StudentRecord paidFeePaise
-        val targetStudent = (InstituteRepository.localStudentsCache.values + rawStudents)
-            .firstOrNull {
-                it.id.equals(txn.student_id, ignoreCase = true) ||
-                    it.enrollmentNo.equals(txn.student_id, ignoreCase = true) ||
-                    it.fullName.equals(txn.student_name, ignoreCase = true)
-            }
-
-        val updatedStudent = targetStudent?.let { stu ->
-            val newPaid = (stu.paidFeePaise + txn.amount_paise).coerceAtMost(stu.totalFeePaise.coerceAtLeast(stu.paidFeePaise + txn.amount_paise))
-            stu.copy(paidFeePaise = newPaid)
-        }
-        if (updatedStudent != null) {
-            InstituteRepository.localStudentsCache[updatedStudent.id] = updatedStudent
-            rawStudents = listOf(updatedStudent) + rawStudents.filterNot { it.id == updatedStudent.id }
-        }
-
-        // Update StudentFeesLedgerRecord
-        val existingLedger = _uiState.value.studentFeesLedger.firstOrNull {
-            it.student_id.equals(txn.student_id, ignoreCase = true) ||
-                it.enrollment_no.equals(txn.student_id, ignoreCase = true)
-        }
-        val baseLedger = if (updatedStudent != null) {
-            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(updatedStudent, existingLedger)
-        } else {
-            existingLedger
-        }
-        val updatedLedger = baseLedger?.let { led ->
-            val newPaidPaise = updatedStudent?.paidFeePaise ?: (led.paid_fee_paise + txn.amount_paise)
-            val newOverdue = (led.overdue_months - 1).coerceAtLeast(0)
-            val remainingPaise = (led.total_fee_paise - newPaidPaise).coerceAtLeast(0L)
-            val newStatus = when {
-                remainingPaise <= 0L && led.total_fee_paise > 0L -> "PAID"
-                led.auto_emi_active && newOverdue > 0 -> "EMI_ACTIVE"
-                else -> "PAID"
-            }
-            led.copy(
-                paid_fee_paise = newPaidPaise,
-                overdue_months = newOverdue,
-                monthly_payment_status = newStatus,
-                last_utr_number = txn.utr_number,
-                last_emi_notice_iso = "Verified Paid ₹${txn.amount_paise / 100} (UTR: ${txn.utr_number}) on ${todayIso()}",
-                updatedAt = System.currentTimeMillis()
+        viewModelScope.launch {
+            val result = OfflineFeeLedgerEngine.recordOfflineCounterReceipt(
+                db = repository.firestoreDb(),
+                adminUid = adminUid,
+                student = student,
+                amountPaise = amountPaise,
+                paymentMode = paymentMode,
+                remarks = remarks
             )
-        }
-        if (updatedLedger != null) {
-            ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updatedLedger.student_id] = updatedLedger
-            rawStudentFeesLedger = listOf(updatedLedger) + rawStudentFeesLedger.filterNot { it.student_id == updatedLedger.student_id }
-        }
 
-        // Generate Official GST Fee Receipt
-        val receiptNo = "WCI-UPI-${txn.utr_number.takeLast(6).ifBlank { "1001" }}"
-        val feeInvoice = FeeInvoice(
-            id = "fee_upi_${txn.id.takeLast(8)}",
-            receiptNo = receiptNo,
-            studentId = updatedStudent?.id ?: txn.student_id,
-            studentName = txn.student_name,
-            courseName = txn.course_name.ifBlank { updatedStudent?.courseName ?: "Computer Course" },
-            title = "${txn.payment_type} • Direct UPI Intent (UTR: ${txn.utr_number})",
-            totalAmountPaise = txn.amount_paise,
-            paidAmountPaise = txn.amount_paise,
-            discountPaise = 0L,
-            finePaise = 0L,
-            dueDateIso = todayIso(),
-            paidAtIso = todayIso(),
-            paymentMode = "UPI (${txn.utr_number})",
-            status = "PAID",
-            ownerUid = adminUid,
-            createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
-        )
-        rawFees = listOf(feeInvoice) + rawFees.filterNot { it.id == feeInvoice.id }
-        recomputeRoleScopedData()
+            result.onSuccess { rec ->
+                rawFeeReceipts = listOf(rec) + rawFeeReceipts.filterNot { it.id == rec.id }
+                rawUpiTransactions = rawFeeReceipts
+                recomputeRoleScopedData()
 
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val db = repository.firestoreDb()
-                    db.collection("upi_transactions").document(approvedTxn.id)
-                        .set(approvedTxn.toFirestoreMap())
-                    if (updatedStudent != null) {
-                        repository.saveStudent(updatedStudent)
-                    }
-                    if (updatedLedger != null) {
-                        db.collection("student_fees_ledger").document(updatedLedger.student_id)
-                            .set(updatedLedger.toFirestoreMap())
-                    }
-                    repository.saveFeeInvoice(feeInvoice)
-                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
-                        context = appContext,
-                        actorUid = adminUid,
-                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
-                        studentId = txn.student_id,
-                        eventType = "ADMIN_1TAP_UPI_APPROVED",
-                        severity = "INFO",
-                        utrNumber = txn.utr_number,
-                        intentHash = txn.intent_hash,
-                        details = "Admin 1-Tap Confirmed UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name} • Receipt $receiptNo" +
-                            if (biometricActionSignatureHex.isNotBlank()) " [BioSig:${biometricActionSignatureHex.take(16)}]" else ""
-                    )
-                    com.waqar.institute.security.ServerAuditHashChainClient.sealAuditChainEvent(
-                        context = appContext,
-                        eventType = "UPI_FEE_APPROVED",
-                        recordId = approvedTxn.id,
-                        payload = mapOf(
-                            "studentId" to txn.student_id,
-                            "studentName" to txn.student_name,
-                            "amountPaise" to txn.amount_paise,
-                            "utrNumber" to txn.utr_number,
-                            "receiptNo" to receiptNo,
-                            "verifiedByUid" to adminUid
-                        ),
-                        biometricSignatureHex = biometricActionSignatureHex
-                    )
-                }
+                // Generate GST invoice record
+                val feeInvoice = FeeInvoice(
+                    id = "fee_rec_${rec.id.takeLast(8)}",
+                    receiptNo = rec.receipt_number,
+                    studentId = student.id,
+                    studentName = student.fullName,
+                    courseName = student.courseName,
+                    title = "Course Fee Payment • Campus Counter (${rec.receipt_number})",
+                    totalAmountPaise = amountPaise,
+                    paidAmountPaise = amountPaise,
+                    discountPaise = 0L,
+                    finePaise = 0L,
+                    dueDateIso = todayIso(),
+                    paidAtIso = todayIso(),
+                    paymentMode = paymentMode,
+                    status = "PAID",
+                    ownerUid = adminUid,
+                    createdAt = Timestamp.now()
+                )
+                repository.saveFeeInvoice(feeInvoice)
+
+                recordAudit(
+                    action = "OFFLINE_FEE_RECEIPT_ISSUED",
+                    module = "M08_FEES",
+                    targetId = rec.id,
+                    severity = "INFO",
+                    details = "Issued official receipt ${rec.receipt_number} for ₹${amountPaise / 100} to ${student.fullName}"
+                )
+                postMessage("Issued receipt ${rec.receipt_number} (₹${amountPaise / 100}) to ${student.fullName} ✓")
+            }.onFailure { err ->
+                postMessage("Receipt creation failed: ${err.localizedMessage}")
             }
-            recordAudit(
-                action = "APPROVE_UPI_PAYMENT",
-                module = "M08_FEES",
-                targetId = txn.id,
-                severity = "INFO",
-                details = "1-Tap Confirmed UPI UTR ${txn.utr_number} (₹${txn.amount_paise / 100}) for ${txn.student_name}" +
-                    if (biometricActionSignatureHex.isNotBlank()) " [BioSig:${biometricActionSignatureHex.take(16)}]" else ""
-            )
-            postMessage("Verified UTR ${txn.utr_number} • Credited ₹${txn.amount_paise / 100} & Generated Receipt $receiptNo ✓")
-        }
-    }
-
-    /**
-     * Admin 1-Tap Reject for a spoofed or invalid UPI transaction.
-     */
-    fun adminRejectUpiTransaction(txn: UpiTransactionRecord, reason: String = "UTR not found in bank statement") {
-        if (!ensureActiveSessionOrSignOut()) return
-        val adminUid = currentActorUid() ?: "admin_root"
-        val rejectedTxn = txn.copy(
-            status = "REJECTED_FRAUD",
-            verified_by_uid = adminUid
-        )
-        ZeroFeeUpiPaymentEngine.localUpiTransactionsCache[rejectedTxn.id] = rejectedTxn
-        rawUpiTransactions = listOf(rejectedTxn) + rawUpiTransactions.filterNot { it.id == rejectedTxn.id }
-        recomputeRoleScopedData()
-
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    repository.firestoreDb().collection("upi_transactions").document(rejectedTxn.id)
-                        .set(rejectedTxn.toFirestoreMap())
-                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
-                        context = appContext,
-                        actorUid = adminUid,
-                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
-                        studentId = txn.student_id,
-                        eventType = "ADMIN_REJECTED_UPI_FRAUD",
-                        severity = "CRITICAL",
-                        utrNumber = txn.utr_number,
-                        intentHash = txn.intent_hash,
-                        details = "Rejected UPI transaction ${txn.id} (UTR: ${txn.utr_number}): $reason"
-                    )
-                }
-            }
-            recordAudit("REJECT_UPI_FRAUD", "M08_FEES", txn.id, "CRITICAL", "Rejected UTR ${txn.utr_number}: $reason")
-            postMessage("Rejected UPI transaction ${txn.utr_number} & logged fraud alert.")
-        }
-    }
-
-    /**
-     * Layer 4: Parses pasted Paytm Business / PhonePe Business / Bank SMS or Notification text
-     * and auto-approves the matching `PENDING_APPROVAL` UPI transaction.
-     */
-    fun adminReconcileMerchantAlertText(rawAlertText: String) {
-        val parsed = ZeroFeeUpiPaymentEngine.extractMerchantAlertUtrAndAmount(rawAlertText)
-        if (parsed == null) {
-            postMessage("Could not find a valid 12-digit UTR in the notification text.")
-            return
-        }
-        val (utr, amountPaise) = parsed
-        val matchedTxn = _uiState.value.upiTransactions.firstOrNull {
-            it.status == "PENDING_APPROVAL" &&
-                it.utr_number.equals(utr, ignoreCase = true) &&
-                (amountPaise <= 0L || it.amount_paise == amountPaise)
-        }
-        if (matchedTxn == null) {
-            postMessage("No pending transaction found matching UTR $utr" + if (amountPaise > 0) " (₹${amountPaise / 100})" else "")
-            return
-        }
-        adminApproveUpiTransaction(matchedTxn)
-    }
-
-    /**
-     * Admin Master Control for a student's Monthly Fee, Overdue Months (`>= 4` triggers Auto-EMI),
-     * Auto-EMI Master Toggle (`auto_emi_active`), and Monthly Billing Date (`1..28`).
-     */
-    fun configureStudentAutoEmiAndMonthlyFee(
-        studentId: String,
-        monthlyFeeInr: Long,
-        emiInstallmentInr: Long,
-        overdueMonths: Int,
-        autoEmiActive: Boolean,
-        billingDayOfMonth: Int
-    ) {
-        if (!ensureActiveSessionOrSignOut()) return
-        val uid = currentActorUid() ?: "admin_root"
-        val existingLedger = _uiState.value.studentFeesLedger.firstOrNull { it.student_id == studentId }
-        val student = (InstituteRepository.localStudentsCache.values + rawStudents).firstOrNull { it.id == studentId }
-        if (existingLedger == null && student == null) {
-            postMessage("Student not found for Auto-EMI configuration.")
-            return
-        }
-
-        val cleanDay = billingDayOfMonth.coerceIn(1, 28)
-        val cleanOverdue = overdueMonths.coerceIn(0, 120)
-        val monthlyPaise = (monthlyFeeInr.coerceAtLeast(100L)) * 100L
-        val emiPaise = (emiInstallmentInr.coerceAtLeast(100L)) * 100L
-        val nextDueIso = ZeroFeeUpiPaymentEngine.computeNextBillingDateIso(cleanDay)
-
-        val base = if (student != null) {
-            ZeroFeeUpiPaymentEngine.buildOrSyncStudentLedger(student, existingLedger, monthlyPaise)
-        } else {
-            existingLedger!!
-        }
-
-        val status = when {
-            base.balancePaise <= 0L && base.total_fee_paise > 0L -> "PAID"
-            autoEmiActive -> "EMI_ACTIVE"
-            cleanOverdue > 0 -> "OVERDUE"
-            else -> "PENDING"
-        }
-
-        val noticeText = if (autoEmiActive) {
-            "Auto-EMI Active (Overdue: $cleanOverdue mo) • ₹${emiPaise / 100}/mo auto-scheduled on Day $cleanDay ($nextDueIso)"
-        } else if (cleanOverdue >= 4) {
-            "4+ Months Overdue ($cleanOverdue mo) • Ready for Admin Auto-EMI Activation (Day $cleanDay)"
-        } else {
-            "Monthly Fee ₹${monthlyPaise / 100}/mo • Billing Day $cleanDay ($nextDueIso)"
-        }
-
-        val updated = base.copy(
-            monthly_fee_paise = monthlyPaise,
-            emi_installment_paise = emiPaise,
-            overdue_months = cleanOverdue,
-            auto_emi_active = autoEmiActive,
-            emi_billing_date = cleanDay,
-            monthly_payment_status = status,
-            next_due_date_iso = nextDueIso,
-            last_emi_notice_iso = noticeText.take(155),
-            owner_uid = uid,
-            updatedAt = System.currentTimeMillis()
-        )
-
-        ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updated.student_id] = updated
-        rawStudentFeesLedger = listOf(updated) + rawStudentFeesLedger.filterNot { it.student_id == updated.student_id }
-        recomputeRoleScopedData()
-
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    repository.firestoreDb().collection("student_fees_ledger")
-                        .document(updated.student_id)
-                        .set(updated.toFirestoreMap())
-                    ZeroFeeUpiPaymentEngine.logAuditEventInternal(
-                        context = appContext,
-                        actorUid = uid,
-                        actorName = _uiState.value.userProfile?.displayName ?: "Institute Admin",
-                        studentId = updated.student_id,
-                        eventType = if (autoEmiActive) "AUTO_EMI_ACTIVATED_BY_ADMIN" else "MONTHLY_FEE_LEDGER_UPDATED",
-                        severity = "INFO",
-                        utrNumber = "",
-                        intentHash = "",
-                        details = "Updated ${updated.student_name}: overdue=${cleanOverdue}m, autoEmi=$autoEmiActive, billingDay=$cleanDay, emi=₹${emiPaise / 100}"
-                    )
-                }
-            }
-            postMessage(
-                if (autoEmiActive) {
-                    "Auto-EMI Enabled for ${updated.student_name} (₹${emiPaise / 100} on Day $cleanDay of every month) ✓"
-                } else {
-                    "Updated Monthly Fee & Overdue Ledger for ${updated.student_name} ✓"
-                }
-            )
-        }
-    }
-
-    /**
-     * Dispatches an instant Auto-EMI Billing Deduction Alert to the Student & Parent portals
-     * when the student's monthly billing date arrives (or when triggered by Admin).
-     */
-    fun triggerMonthlyEmiDeductionNotice(ledger: StudentFeesLedgerRecord) {
-        if (!ensureActiveSessionOrSignOut()) return
-        val uid = currentActorUid() ?: "admin_root"
-        val installmentInr = (ledger.emi_installment_paise / 100L).coerceAtLeast(100L)
-        val noticeMsg = "Auto-EMI Deduction Due Today (Day ${ledger.emi_billing_date}): Please complete ₹$installmentInr UPI Intent payment to ${ZeroFeeUpiPaymentEngine.MERCHANT_NAME} (${ZeroFeeUpiPaymentEngine.MERCHANT_VPA})."
-        val updated = ledger.copy(
-            last_emi_notice_iso = noticeMsg.take(155),
-            updatedAt = System.currentTimeMillis()
-        )
-        ZeroFeeUpiPaymentEngine.localStudentFeesLedgerCache[updated.student_id] = updated
-        rawStudentFeesLedger = listOf(updated) + rawStudentFeesLedger.filterNot { it.student_id == updated.student_id }
-        recomputeRoleScopedData()
-
-        val announcement = AnnouncementItem(
-            id = "ann_emi_${UUID.randomUUID().toString().take(8)}",
-            title = "Auto-EMI Installment Alert • ${ledger.student_name}",
-            body = noticeMsg,
-            targetAudience = "ALL",
-            channel = "IN_APP",
-            priority = "URGENT",
-            senderName = "WCI Auto-EMI Billing Engine",
-            ownerUid = uid,
-            createdAt = Timestamp(Date(System.currentTimeMillis() - 1000))
-        )
-
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    repository.firestoreDb().collection("student_fees_ledger")
-                        .document(updated.student_id)
-                        .set(updated.toFirestoreMap())
-                    repository.saveAnnouncement(announcement)
-                }
-            }
-            postMessage("Sent Auto-EMI Deduction Alert (₹$installmentInr) to ${ledger.student_name} & Parent Portal ✓")
         }
     }
 

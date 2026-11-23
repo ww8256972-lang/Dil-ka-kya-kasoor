@@ -10,10 +10,10 @@ import com.example.viewmodel.TeacherScopeMatcher
 import com.waqar.institute.academic.AcademicProSuiteEngine
 import com.waqar.institute.exam.ChatGptBulkMcqFileParser
 import com.waqar.institute.exam.PerStudentExamShuffleEngine
+import com.waqar.institute.ledger.OfflineFeeLedgerEngine
+import com.waqar.institute.ledger.OfflineFeeReceiptRecord
 import com.waqar.institute.security.Ed25519DocumentSigner
 import com.waqar.institute.security.InstituteEncryptedBackupManager
-import com.waqar.institute.upi.UpiTransactionRecord
-import com.waqar.institute.upi.ZeroFeeUpiPaymentEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -22,7 +22,7 @@ import org.junit.Test
 
 /**
  * Comprehensive JVM Verification Suite for the Waqar Institute ERP Enterprise Upgrades:
- * - Mandatory UPI Production Cleanup (Zero fake UTR, blocked status when no NPCI app)
+ * - Master PRD Module 4: Offline Fee Ledger SHA-256 Merkle chain integrity & tamper detection
  * - Group A: A3 Ed25519 Signatures, A5 SHA-256 Fee Hash-Chain integrity & tamper detection
  * - Group B: B1 24h Smart Exam Engine + 30s duration, B2 ChatGPT 150-MCQ Bulk Parser,
  *            B3 40-Student Per-Student Shuffling + Exact Percentage Grading
@@ -34,66 +34,59 @@ import org.junit.Test
 class EnterpriseUpgradeVerificationTest {
 
     @Test
-    fun mandatoryUpiCleanup_and_A5_feeHashChainIntegrityAndTamperDetection() {
-        ZeroFeeUpiPaymentEngine.markLaunchBlockedNoUpiApp("com.google.android.apps.nbu.paisa.user")
-        val fsm = ZeroFeeUpiPaymentEngine.fsmState.value
-        assertTrue(fsm is com.waqar.institute.upi.UpiPaymentFsmState.Failed)
-        val failed = fsm as com.waqar.institute.upi.UpiPaymentFsmState.Failed
-        assertEquals("NO_OFFICIAL_UPI_APP_INSTALLED", failed.errorCode)
-        assertTrue(failed.reason.contains("Google Pay", ignoreCase = true))
-
-        val genesis = "GENESIS_WCI_LEDGER"
-        val h1 = ZeroFeeUpiPaymentEngine.computeChainedFeeRecordHash(
-            prevHash = genesis,
-            txnId = "txn_01",
+    fun offlineFeeLedger_and_A5_feeHashChainIntegrityAndTamperDetection() {
+        val genesis = OfflineFeeLedgerEngine.GENESIS_HASH
+        val h1 = OfflineFeeLedgerEngine.computeChainedFeeRecordHash(
+            receiptId = "rec_01",
             studentId = "stu_01",
             amountPaise = 150000L,
-            utrNumber = "556677889901",
-            timestampMs = 1731888000000L
+            paymentMode = "MANUAL_CASH_COUNTER",
+            timestamp = 1731888000000L,
+            prevRecordHash = genesis
         )
-        val chainedR1 = UpiTransactionRecord(
-            id = "txn_01",
+        val chainedR1 = OfflineFeeReceiptRecord(
+            id = "rec_01",
+            receipt_number = "WCI-REC-2026-00001",
             student_id = "stu_01",
             student_name = "Candidate One",
+            course_name = "ADCA",
             amount = 1500.0,
             amount_paise = 150000L,
-            tr_ref = "WCI_REF_001",
-            utr_number = "556677889901",
-            status = "VERIFIED_PAID",
+            payment_mode = "MANUAL_CASH_COUNTER",
             timestamp = 1731888000000L,
             chain_index = 0L,
             prev_record_hash = genesis,
             record_sha256_hash = h1
         )
 
-        val h2 = ZeroFeeUpiPaymentEngine.computeChainedFeeRecordHash(
-            prevHash = h1,
-            txnId = "txn_02",
+        val h2 = OfflineFeeLedgerEngine.computeChainedFeeRecordHash(
+            receiptId = "rec_02",
             studentId = "stu_02",
             amountPaise = 200000L,
-            utrNumber = "556677889902",
-            timestampMs = 1731888060000L
+            paymentMode = "MANUAL_CASH_COUNTER",
+            timestamp = 1731888060000L,
+            prevRecordHash = h1
         )
-        val chainedR2 = UpiTransactionRecord(
-            id = "txn_02",
+        val chainedR2 = OfflineFeeReceiptRecord(
+            id = "rec_02",
+            receipt_number = "WCI-REC-2026-00002",
             student_id = "stu_02",
             student_name = "Candidate Two",
+            course_name = "CCC",
             amount = 2000.0,
             amount_paise = 200000L,
-            tr_ref = "WCI_REF_002",
-            utr_number = "556677889902",
-            status = "VERIFIED_PAID",
+            payment_mode = "MANUAL_CASH_COUNTER",
             timestamp = 1731888060000L,
             chain_index = 1L,
             prev_record_hash = h1,
             record_sha256_hash = h2
         )
 
-        assertTrue(ZeroFeeUpiPaymentEngine.verifyFeeLedgerHashChain(listOf(chainedR1, chainedR2)))
+        assertTrue(OfflineFeeLedgerEngine.verifyFeeLedgerHashChain(listOf(chainedR1, chainedR2)))
 
         // Tamper amount on r1 -> hash chain MUST fail verification
         val tamperedR1 = chainedR1.copy(amount_paise = 100L)
-        assertFalse(ZeroFeeUpiPaymentEngine.verifyFeeLedgerHashChain(listOf(tamperedR1, chainedR2)))
+        assertFalse(OfflineFeeLedgerEngine.verifyFeeLedgerHashChain(listOf(tamperedR1, chainedR2)))
     }
 
     @Test

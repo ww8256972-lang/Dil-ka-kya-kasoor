@@ -3,9 +3,9 @@ name: Android CI — Waqar Computer Institute
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,12 @@ jobs:
       # 1. Checkout repository
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      # 1.1 Static Guardrails Gate (Phase 1 Gate per Master PRD Section 8.3)
+      - name: Gate 1 - Static Guardrails & Zero-Violation Verifier
+        run: |
+          chmod +x scripts/verify_static_guardrails.py
+          python3 scripts/verify_static_guardrails.py
 
       # 2. Set up compatible JDK
       - name: Set up JDK 21
@@ -236,62 +242,4 @@ jobs:
               shred -u "$secret_file" 2>/dev/null || rm -f "$secret_file"
             fi
           done
-
-  deploy-firebase-hosting:
-    name: Deploy Verification Portal to Firebase Hosting
-    needs: build-and-test
-    if: success() && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      group: firebase-hosting-deploy-gen-lang-client-0309263247
-      cancel-in-progress: false
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Verify Firebase Hosting Configuration & Credentials
-        id: check_hosting
-        env:
-          HAS_PRIMARY_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
-          HAS_PROJECT_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247 != '' }}
-          HAS_FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN != '' }}
-        run: |
-          if [ ! -f "firebase.json" ] || [ ! -f ".firebaserc" ]; then
-            echo "ERROR: Missing firebase.json or .firebaserc."
-            exit 1
-          fi
-          if [ ! -f "firebase/hosting-prod/verify/index.html" ] || [ ! -f "firebase/hosting-prod/404.html" ]; then
-            echo "ERROR: Missing Certificate Verification Portal production files in firebase/hosting-prod."
-            exit 1
-          fi
-          if grep -rnE "AUTH_FLOW_TEST_COOKIE_NAME|<title>Cookie check</title>" firebase/hosting-prod/; then
-            echo "ERROR: Template or cookie-check HTML detected inside firebase/hosting-prod. Aborting Hosting deployment."
-            exit 1
-          fi
-          if [ "$HAS_PRIMARY_SA" = "true" ] || [ "$HAS_PROJECT_SA" = "true" ]; then
-            echo "auth_mode=service_account" >> "$GITHUB_OUTPUT"
-          elif [ "$HAS_FIREBASE_TOKEN" = "true" ]; then
-            echo "auth_mode=firebase_token" >> "$GITHUB_OUTPUT"
-          else
-            echo "auth_mode=none" >> "$GITHUB_OUTPUT"
-            echo "::notice title=Firebase Hosting Secret Not Configured::Skipping live Firebase Hosting deployment because FIREBASE_SERVICE_ACCOUNT, FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247, or FIREBASE_TOKEN is not set in GitHub Repository Secrets (Settings -> Secrets and variables -> Actions)."
-          fi
-
-      - name: Deploy to Firebase Hosting (Service Account)
-        if: steps.check_hosting.outputs.auth_mode == 'service_account'
-        uses: FirebaseExtended/action-hosting-deploy@v0
-        with:
-          repoToken: ${{ secrets.GITHUB_TOKEN }}
-          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT || secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0309263247 }}
-          channelId: live
-          projectId: gen-lang-client-0309263247
-
-      - name: Deploy to Firebase Hosting (CLI Token)
-        if: steps.check_hosting.outputs.auth_mode == 'firebase_token'
-        env:
-          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
-        run: |
-          npx --yes firebase-tools deploy --only hosting --project gen-lang-client-0309263247 --non-interactive
           
