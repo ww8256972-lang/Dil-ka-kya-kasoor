@@ -305,7 +305,7 @@ object OfflineFeeLedgerEngine {
         val totalFee = if (existing != null && existing.total_fee_paise > 0L) {
             existing.total_fee_paise
         } else {
-            (student.feeAmountInr.coerceAtLeast(0L)) * 100L
+            student.totalFeePaise.coerceAtLeast(0L)
         }
 
         val paidFee = (existing?.paid_fee_paise ?: 0L) + additionalPaidPaise
@@ -320,7 +320,7 @@ object OfflineFeeLedgerEngine {
             student_name = student.fullName,
             enrollment_no = student.enrollmentNo.ifBlank { student.id.take(8).uppercase() },
             course_name = student.courseName,
-            batch_name = student.batchTime,
+            batch_name = student.batchName,
             total_fee_paise = totalFee,
             paid_fee_paise = paidFee,
             waiver_paise = waiver,

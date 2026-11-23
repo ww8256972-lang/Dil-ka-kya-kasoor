@@ -188,8 +188,7 @@ fun ParentSecurityScreen(
                     }
                     GlassPill(
                         text = "ENCLAVE ACTIVE",
-                        containerColor = Color(0x3310B981),
-                        contentColor = Color(0xFF34D399)
+                        color = Color(0xFF34D399)
                     )
                 }
             }
@@ -416,7 +415,7 @@ fun ParentSecurityScreen(
                                         GlassButton(
                                             text = "Revoke",
                                             onClick = { onRemoteLogoutDevice(session.sessionId) },
-                                            variant = GlassButtonVariant.Secondary
+                                            variant = GlassButtonVariant.SECONDARY
                                         )
                                     }
                                 }
@@ -628,8 +627,7 @@ fun ParentSecurityScreen(
                                     }
                                     GlassPill(
                                         text = log.status,
-                                        containerColor = if (log.status == "SUCCESS") Color(0x3310B981) else Color(0x33EF4444),
-                                        contentColor = if (log.status == "SUCCESS") Color(0xFF34D399) else Color(0xFFF87171)
+                                        color = if (log.status == "SUCCESS") Color(0xFF34D399) else Color(0xFFF87171)
                                     )
                                 }
                             }
@@ -801,7 +799,7 @@ fun ParentSecurityScreen(
                                 otaStatus = "Verified Signed Release: SHA-256 Validated"
                                 isCheckingOta = false
                             },
-                            variant = GlassButtonVariant.Secondary
+                            variant = GlassButtonVariant.SECONDARY
                         )
                     }
                 }
@@ -839,7 +837,7 @@ fun ParentSecurityScreen(
                                 onZeroizeLocalCache()
                                 cacheSanitizedMessage = "Local temp files zeroized. Receipts preserved."
                             },
-                            variant = GlassButtonVariant.Secondary,
+                            variant = GlassButtonVariant.SECONDARY,
                             modifier = Modifier.fillMaxWidth()
                         )
                         cacheSanitizedMessage?.let {
@@ -900,8 +898,7 @@ fun ParentSecurityScreen(
                                     Text(text = ticket.subject, color = GlassShaderTokens.TextMuted, fontSize = 12.sp)
                                     GlassPill(
                                         text = ticket.status,
-                                        containerColor = Color(0x336366F1),
-                                        contentColor = Color(0xFFA5B4FC)
+                                        color = Color(0xFFA5B4FC)
                                     )
                                 }
                             }
@@ -964,7 +961,7 @@ fun ParentSecurityScreen(
                         GlassButton(
                             text = "View 10-Rule Institutional Terms",
                             onClick = onOpenTermsAndConditions,
-                            variant = GlassButtonVariant.Secondary,
+                            variant = GlassButtonVariant.SECONDARY,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }

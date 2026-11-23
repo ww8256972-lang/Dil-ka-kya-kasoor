@@ -43,7 +43,14 @@ enum class GlassButtonVariant {
     PRIMARY,
     SECONDARY,
     DANGER,
-    ACCENT
+    ACCENT;
+
+    companion object {
+        val Secondary: GlassButtonVariant = SECONDARY
+        val Primary: GlassButtonVariant = PRIMARY
+        val Danger: GlassButtonVariant = DANGER
+        val Accent: GlassButtonVariant = ACCENT
+    }
 }
 
 @Composable
@@ -225,14 +232,20 @@ fun GlassPill(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = GlassShaderTokens.BrandCyan,
+    containerColor: Color? = null,
+    contentColor: Color? = null,
     leadingIcon: @Composable (() -> Unit)? = null
 ) {
     val shape = RoundedCornerShape(GlassShaderTokens.CornerRadiusPill)
+    val textColor = contentColor ?: color
+    val bgColor = containerColor ?: color.copy(alpha = 0.15f)
+    val borderColor = containerColor?.copy(alpha = 0.40f) ?: color.copy(alpha = 0.40f)
+
     Box(
         modifier = modifier
             .clip(shape)
-            .background(color.copy(alpha = 0.15f))
-            .border(1.dp, color.copy(alpha = 0.40f), shape)
+            .background(bgColor)
+            .border(1.dp, borderColor, shape)
             .padding(horizontal = 10.dp, vertical = 4.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -243,7 +256,7 @@ fun GlassPill(
             }
             Text(
                 text = text,
-                color = color,
+                color = textColor,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium
             )

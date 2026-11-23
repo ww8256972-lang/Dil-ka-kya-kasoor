@@ -31,13 +31,16 @@ fun GlassSurface(
     borderBrush: Brush = GlassShaderTokens.SpecularBorderGradient,
     borderWidth: Dp = 1.dp,
     elevation: Dp = 4.dp,
+    containerColor: Color? = null,
+    contentColor: Color? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val effectiveBg = containerColor ?: backgroundColor
     Box(
         modifier = modifier
             .shadow(elevation = elevation, shape = shape, clip = false)
             .clip(shape)
-            .background(backgroundColor)
+            .background(effectiveBg)
             .border(width = borderWidth, brush = borderBrush, shape = shape),
         content = content
     )
@@ -57,6 +60,8 @@ fun GlassCard(
     elevation: Dp = 6.dp,
     contentPadding: Dp = 16.dp,
     onClick: (() -> Unit)? = null,
+    containerColor: Color? = null,
+    contentColor: Color? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val clickableModifier = if (onClick != null) {
@@ -68,10 +73,12 @@ fun GlassCard(
     GlassSurface(
         modifier = modifier.then(clickableModifier),
         shape = shape,
-        backgroundColor = backgroundColor,
+        backgroundColor = containerColor ?: backgroundColor,
         borderBrush = borderBrush,
         borderWidth = borderWidth,
-        elevation = elevation
+        elevation = elevation,
+        containerColor = containerColor,
+        contentColor = contentColor
     ) {
         Box(
             modifier = Modifier.padding(contentPadding),

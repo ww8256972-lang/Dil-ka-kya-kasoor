@@ -119,6 +119,8 @@ object WciColors {
     val NeonMagenta = Color(0xFFFF5894)
     val NeonPinkCoral = Color(0xFFFF6B8B)
     val NeonOrchid = Color(0xFFE879F9)
+    val ElectricCyan = Color(0xFF00E5FF)
+    val ErrorNeon = Color(0xFFFF4D79)
     val IndigoAccent = Color(0xFF818CF8)
     val BlueAccent = Color(0xFF3B82F6)
     val CyanBright = Color(0xFF00C6FF)

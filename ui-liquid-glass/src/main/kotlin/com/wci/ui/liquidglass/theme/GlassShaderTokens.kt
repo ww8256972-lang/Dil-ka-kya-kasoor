@@ -73,4 +73,10 @@ object GlassShaderTokens {
 
     // Noise Texture Alpha
     const val GlassNoiseAlpha = 0.035f
+
+    // Semantic Tokens & Screen Compatibility Aliases (WCAG AAA)
+    val DeepBackgroundVoid = BrandNavy
+    val SpecularHighlight = Color(0xFFFFFFFF)
+    val TextMuted = Color(0x99FFFFFF)
+    val AccentCyan = BrandCyan
 }

@@ -144,7 +144,7 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_OFFLINE_FEE_LEDGER,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
@@ -161,7 +161,7 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             "M24_SETTINGS",
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
-            com.waqar.institute.navigation.AppDrawer.ROUTE_UPI_EMI_COMMAND,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_OFFLINE_FEE_LEDGER,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )

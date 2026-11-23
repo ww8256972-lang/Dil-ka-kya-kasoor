@@ -158,8 +158,7 @@ fun TermsAndConditionsScreen(
                     }
                     GlassPill(
                         text = "ISO 9001:2015",
-                        containerColor = Color(0x336366F1),
-                        contentColor = Color(0xFFA5B4FC)
+                        color = Color(0xFFA5B4FC)
                     )
                 }
             }
@@ -195,8 +194,7 @@ fun TermsAndConditionsScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 GlassPill(
                                     text = "Rule ${rule.ruleNumber}",
-                                    containerColor = Color(0x3338BDF8),
-                                    contentColor = Color(0xFF38BDF8)
+                                    color = Color(0xFF38BDF8)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
@@ -208,8 +206,7 @@ fun TermsAndConditionsScreen(
                             }
                             GlassPill(
                                 text = rule.ruleCategory,
-                                containerColor = Color(0x22FFFFFF),
-                                contentColor = GlassShaderTokens.TextMuted
+                                color = GlassShaderTokens.TextMuted
                             )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
