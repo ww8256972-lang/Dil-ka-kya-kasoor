@@ -20,7 +20,7 @@ android {
 
   defaultConfig {
     applicationId = "com.aistudio.waqarinstitute.wciapp"
-    minSdk = 24
+    minSdk = 26
     targetSdk = 36
     val resolvedVersionCode = (
       System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()

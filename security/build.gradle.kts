@@ -16,7 +16,7 @@ android {
     compileSdk { version = release(36) { minorApiLevel = 1 } }
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 26
 
         buildConfigField("String", "GATEWAY_URL", "\"${prop("gateway.url", "https://asia-east1-gen-lang-client-0309263247.cloudfunctions.net")}\"")
         buildConfigField("String", "TLS_PINS", "\"${prop("tls.pins")}\"")
