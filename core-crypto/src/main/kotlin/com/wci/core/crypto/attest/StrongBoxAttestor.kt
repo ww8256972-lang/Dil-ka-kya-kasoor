@@ -136,7 +136,7 @@ object StrongBoxAttestor {
      */
     fun verify(alias: String, payload: ByteArray, signatureBytes: ByteArray): Boolean {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val cert: Certificate? = keyStore.getCertificate(alias) ?: return false
+        val cert = keyStore.getCertificate(alias) ?: return false
         val signature = Signature.getInstance("SHA256withECDSA")
         signature.initVerify(cert.publicKey)
         signature.update(payload)
