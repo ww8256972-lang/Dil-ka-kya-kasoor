@@ -41,7 +41,9 @@ class WaqarUniversalAppBootstrapper : Application() {
         runCatching { GlobalExceptionHandler.install() }
         runCatching { ensureFirebaseInitialized(appCtx) }
         SecurityKit.identityProvider = {
-            FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token.orEmpty()
+            runCatching {
+                FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token.orEmpty()
+            }.getOrDefault("")
         }
 
         bootstrapScope.launch {
