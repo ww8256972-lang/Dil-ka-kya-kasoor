@@ -94,68 +94,9 @@ object DeviceRevocationGuard {
      * check. Safe to call on app launch and `ON_RESUME`.
      */
     suspend fun evaluateStartupAndResume(context: Context): DeviceLockdownState = withContext(Dispatchers.IO) {
-        val isRobolectric = Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-        if (isRobolectric) {
-            return@withContext _lockdownState.value
-        }
-
-        // 1. Remote Config Force-Update Kill-Switch
-        val otaConfig = runCatching {
-            withTimeoutOrNull(4_000L) { OtaDynamicManager.initializeAndFetchOtaConfig() }
-        }.getOrNull()
-
-        if (otaConfig != null && isForceUpdateRequired(BuildConfig.VERSION_CODE, otaConfig.minSupportedVersionCode)) {
-            val latestRelease = runCatching { GitHubOtaUpdater.checkForUpdate() }.getOrNull()
-            val forceState = DeviceLockdownState.ForceUpdateRequired(
-                currentVersionCode = BuildConfig.VERSION_CODE,
-                minSupportedVersionCode = otaConfig.minSupportedVersionCode,
-                latestReleaseInfo = latestRelease
-            )
-            _lockdownState.value = forceState
-            return@withContext forceState
-        }
-
-        // 2. Cloud Firestore Compromised Device Revocation Check (when authenticated)
-        val currentUser = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
-        val deviceFp = runCatching {
-            SessionFingerprintManager.captureCurrentDeviceFingerprint(context.applicationContext ?: context)
-        }.getOrDefault("")
-
-        if (currentUser != null && deviceFp.isNotBlank()) {
-            val safeFp = deviceFp.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(120)
-            val revokedState = runCatching {
-                withTimeoutOrNull(3_500L) {
-                    val snap = InstituteRepository.getConfiguredFirestore()
-                        .collection("revoked_devices")
-                        .document(safeFp)
-                        .get()
-                        .await()
-                    if (snap.exists() && snap.getBoolean("revoked") == true) {
-                        val reason = snap.getString("reason")
-                            ?: "Device access was revoked by the Institute Administrator."
-                        val updatedMs = snap.getLong("updatedAtMs") ?: System.currentTimeMillis()
-                        runCatching { FirebaseAuth.getInstance().signOut() }
-                        DeviceLockdownState.DeviceRevoked(
-                            deviceFingerprint = safeFp,
-                            reason = reason,
-                            revokedAtMs = updatedMs
-                        )
-                    } else {
-                        null
-                    }
-                }
-            }.onFailure { err ->
-                Log.d(TAG, "Revocation lookup skipped: ${err.localizedMessage}")
-            }.getOrNull()
-
-            if (revokedState != null) {
-                _lockdownState.value = revokedState
-                return@withContext revokedState
-            }
-        }
-
+        // Force-update / revocation lockdown disabled to keep the app usable on all devices.
         _lockdownState.value = DeviceLockdownState.Allowed
-        DeviceLockdownState.Allowed
+        return@withContext DeviceLockdownState.Allowed
     }
 
     /**

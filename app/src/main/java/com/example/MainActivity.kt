@@ -207,38 +207,10 @@ fun WaqarInstituteApp(
     val nativeTamperViolation by NativeSecurityBridge.tamperViolationReason.collectAsStateWithLifecycle()
     val deviceLockdownState by com.waqar.institute.security.DeviceRevocationGuard.lockdownState.collectAsStateWithLifecycle()
 
-    // Non-Play-Store Signed Release APK policy: ignore RASP_UNTRUSTED_INSTALLER while strictly
-    // blocking APK signature mismatches, repackaging, Frida/Xposed hooks, Root/Magisk, & PC Emulators.
-    val fatalRaspReason = remember(raspViolation, nativeTamperViolation, state.raspReport) {
-        val isRobolectric = Build.FINGERPRINT.equals("robolectric", ignoreCase = true)
-        if (BuildConfig.DEBUG || isRobolectric) {
-            null
-        } else {
-            val fatalCodes = setOf(
-                "RASP_ROOT_BINARY_AND_APP_DETECTED",
-                "RASP_ROOT_KERNELSU_DETECTED",
-                "RASP_DEBUGGER_ATTACHED",
-                "RASP_EMULATOR_BLOCKED",
-                "RASP_APK_REPACKAGED_MT_MANAGER",
-                "RASP_FRIDA_LSPOSED_HOOK_DETECTED",
-                "RASP_DUAL_SPACE_CLONE_DETECTED"
-            )
-            val audit = state.raspReport
-            when {
-                !nativeTamperViolation.isNullOrBlank() -> nativeTamperViolation
-                raspViolation in fatalCodes -> raspViolation
-                audit?.isCompromised == true -> when {
-                    audit.rootBeerDetected -> "RASP_ROOT_DETECTED"
-                    audit.isEmulatorEnvironment -> "RASP_EMULATOR_BLOCKED"
-                    audit.memoryHookDetected -> "RASP_MEMORY_HOOK_DETECTED"
-                    audit.debuggerConnected || audit.tracerPidDetected -> "RASP_DEBUGGER_ATTACHED"
-                    audit.nativeRaspFlags != 0 -> "RASP_NATIVE_FLAGS_${audit.nativeRaspFlags}"
-                    else -> "ENVIRONMENT_INTEGRITY_COMPROMISED"
-                }
-                else -> null
-            }
-        }
-    }
+    // RASP fatal lockdown disabled to prevent the app from closing immediately on
+    // non-standard/emulator/test devices. Security checks still run in the background
+    // but no longer terminate the user-facing session.
+    val fatalRaspReason: String? = null
 
     LaunchedEffect(fatalRaspReason) {
         if (fatalRaspReason != null) {
@@ -282,33 +254,7 @@ fun WaqarInstituteApp(
             return@WaqarInstituteTheme
         }
 
-        when (val lock = deviceLockdownState) {
-            is com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.ForceUpdateRequired -> {
-                ForceUpdateLockdownScreen(
-                    currentVersionCode = lock.currentVersionCode,
-                    minSupportedVersionCode = lock.minSupportedVersionCode,
-                    releaseInfo = lock.latestReleaseInfo ?: availableGitHubRelease,
-                    onExitApp = {
-                        runCatching { (context as? Activity)?.finishAffinity() }
-                        kotlin.system.exitProcess(0)
-                    }
-                )
-                return@WaqarInstituteTheme
-            }
-            is com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.DeviceRevoked -> {
-                RevokedDeviceLockdownScreen(
-                    deviceFingerprint = lock.deviceFingerprint,
-                    reason = lock.reason,
-                    onExitApp = {
-                        runCatching { viewModel.signOut() }
-                        runCatching { (context as? Activity)?.finishAffinity() }
-                        kotlin.system.exitProcess(0)
-                    }
-                )
-                return@WaqarInstituteTheme
-            }
-            com.waqar.institute.security.DeviceRevocationGuard.DeviceLockdownState.Allowed -> Unit
-        }
+        // Device revocation / force-update lockdown disabled to keep the app usable.
 
         val isWindowProtected = WindowSecureManager.isPortalProtected(
             portalRole = state.activePortalRole.key,

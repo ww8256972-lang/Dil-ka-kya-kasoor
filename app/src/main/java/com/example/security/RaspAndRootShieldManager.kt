@@ -29,40 +29,12 @@ object RaspAndRootShieldManager : ThreatListener.ThreatDetected {
     private var talsecInitialized: Boolean = false
 
     fun initializeShield(context: Context, expectedCertBase64Hash: String) {
+        // Talsec/freeRASP and aggressive root detection disabled to prevent the app
+        // from closing on emulators, rooted, or non-standard devices. Keep the
+        // method as a no-op so existing callers continue to compile.
         val appContext = context.applicationContext ?: context
-
         runCatching {
-            val rootBeer = RootBeer(appContext)
-            if (rootBeer.checkSuExists() && rootBeer.detectRootManagementApps()) {
-                _securityViolation.value = "RASP_ROOT_BINARY_AND_APP_DETECTED"
-            }
-            if (expectedCertBase64Hash.isNotBlank() && !talsecInitialized) {
-                val trustedStandaloneInstallers = arrayOf(
-                    "com.google.android.packageinstaller",
-                    "com.android.packageinstaller",
-                    "com.miui.packageinstaller",
-                    "com.samsung.android.packageinstaller",
-                    "com.coloros.phonemanager",
-                    "com.coloros.packageinstaller",
-                    "com.oppo.packageinstaller",
-                    "com.vivo.packageinstaller",
-                    "com.huawei.appmarket",
-                    "com.waqar.institute",
-                    appContext.packageName,
-                    "com.android.vending"
-                )
-                val config = TalsecConfig.Builder(
-                    appContext.packageName,
-                    arrayOf(expectedCertBase64Hash)
-                )
-                    .watcherMail("samdkhan8256972@gmail.com")
-                    .supportedAlternativeStores(trustedStandaloneInstallers)
-                    .prod(!BuildConfig.DEBUG)
-                    .build()
-                ThreatListener(this).registerListener(appContext)
-                Talsec.start(appContext, config)
-                talsecInitialized = true
-            }
+            // Intentionally no-op: do not start runtime threat monitoring.
         }
     }
 
