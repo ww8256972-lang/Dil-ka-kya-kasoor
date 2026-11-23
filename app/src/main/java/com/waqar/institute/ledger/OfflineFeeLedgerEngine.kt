@@ -308,7 +308,8 @@ object OfflineFeeLedgerEngine {
             student.totalFeePaise.coerceAtLeast(0L)
         }
 
-        val paidFee = (existing?.paid_fee_paise ?: 0L) + additionalPaidPaise
+        val basePaid = existing?.paid_fee_paise ?: student.paidFeePaise.coerceAtLeast(0L)
+        val paidFee = basePaid + additionalPaidPaise
         val waiver = existing?.waiver_paise ?: 0L
         val balance = (totalFee - paidFee - waiver).coerceAtLeast(0L)
         val status = if (balance == 0L && totalFee > 0L) "CLEARED" else "PENDING"
