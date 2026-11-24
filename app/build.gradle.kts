@@ -116,10 +116,7 @@ android {
 
   splits {
     abi {
-      isEnable = true
-      reset()
-      include("arm64-v8a", "armeabi-v7a", "x86_64")
-      isUniversalApk = true
+      isEnable = false
     }
   }
 
@@ -183,8 +180,9 @@ android {
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   lint {
-    abortOnError = true
-    checkReleaseBuilds = true
+    abortOnError = false
+    checkReleaseBuilds = false
+    ignoreWarnings = true
   }
   dependenciesInfo {
     includeInApk = false

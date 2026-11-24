@@ -42,6 +42,10 @@ class InstituteApp : WaqarUniversalAppBootstrapper(), Configuration.Provider {
 
         // 2. Schedule 24h Periodic Storage Cleanup Work
         scheduleStorageCleanupWork(appCtx)
+
+        // 3. Initialize Advanced Mathematical Security & Performance Integrity Orchestrators
+        com.waqar.security.advanced.AdvancedSecurityOrchestrator.initialize(appCtx)
+        com.waqar.performance.PerformanceIntegrityOrchestrator.initialize(appCtx)
     }
 
     private fun scheduleStorageCleanupWork(context: Context) {

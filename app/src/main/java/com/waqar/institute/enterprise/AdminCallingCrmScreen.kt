@@ -19,7 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.InstituteUiState
+import com.example.viewmodel.InstituteUiState
 import com.example.ui.designsystem.JetBrainsMono
 import com.example.ui.designsystem.ShimmerButton
 import com.example.ui.designsystem.WciColors

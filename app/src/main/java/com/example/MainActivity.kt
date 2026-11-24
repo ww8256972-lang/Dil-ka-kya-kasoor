@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
         runCatching { configureAppCheck(this, intent) }
         runCatching { lifecycle.addObserver(MemoryScrubberLifecycleObserver(this)) }
         runCatching { SkiaGpuRenderOptimizer.enableHighRefreshRateGpuPipeline(this) }
+        runCatching { com.waqar.performance.PerformanceIntegrityOrchestrator.attachActivityDiagnostics(this) }
         runCatching { window.decorView.filterTouchesWhenObscured = true }
 
         // 2. Render Compose UI immediately on Frame 0 (prevents 3-4 second black screen on startup)

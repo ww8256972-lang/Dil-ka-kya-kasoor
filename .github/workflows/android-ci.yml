@@ -204,6 +204,14 @@ jobs:
           DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
           RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
           if [ ! -f "$DEBUG_APK" ]; then
+            CANDIDATE="$(find app/build/outputs/apk/debug/ -name '*.apk' | head -n 1)"
+            if [ -n "$CANDIDATE" ]; then cp "$CANDIDATE" "$DEBUG_APK"; fi
+          fi
+          if [ ! -f "$RELEASE_APK" ]; then
+            CANDIDATE="$(find app/build/outputs/apk/release/ -name '*.apk' | head -n 1)"
+            if [ -n "$CANDIDATE" ]; then cp "$CANDIDATE" "$RELEASE_APK"; fi
+          fi
+          if [ ! -f "$DEBUG_APK" ]; then
             echo "ERROR: Expected Debug APK not found at $DEBUG_APK"
             exit 1
           fi

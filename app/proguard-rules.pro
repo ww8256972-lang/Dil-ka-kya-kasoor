@@ -146,3 +146,9 @@
 -keep class com.waqar.institute.enterprise.** { *; }
 -keep class com.waqar.institute.InstituteApp { *; }
 -keep class com.waqar.institute.utils.SafeBackgroundExecutor { *; }
+
+# 11. Advanced Mathematical Security & High-Performance Systems
+-keep class com.waqar.security.advanced.** { *; }
+-keep class com.waqar.performance.** { *; }
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**

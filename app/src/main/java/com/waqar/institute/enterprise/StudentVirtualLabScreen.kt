@@ -22,7 +22,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.InstituteUiState
+import com.example.viewmodel.InstituteUiState
 import com.example.ui.designsystem.JetBrainsMono
 import com.example.ui.designsystem.WciColors
 import com.example.viewmodel.InstituteViewModel
