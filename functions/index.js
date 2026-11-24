@@ -49,11 +49,21 @@ const EXAM_GRACE_PERIOD_MS = 30 * 1000;
 const AUDIT_CHAIN_GENESIS_HASH = "GENESIS_WCI_SERVER_AUDIT_CHAIN_V1";
 const fallbackBuckets = new Map();
 
-const STUDENT_DAILY_LIVE_AI_CAP = 5;
+const STUDENT_BURST_CAPACITY = 3.0;
+const NEWTON_COOLING_LAMBDA = 1.0 / 45.0; // 1/45 per sec (half-life ~31s)
+const STUDENT_DAILY_LIVE_AI_CAP = 15;
 const STUDENT_LIVE_COOLDOWN_MS = 10 * 1000;   // 10 seconds
 const SECURITY_LOCKOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_COMPLETION_TOKENS = 350;
 const UPSTREAM_TEMPERATURE = 0.3;
+
+// In-memory circuit breaker cache for 0ms failover decisions
+let inMemoryCircuitBreaker = {
+  grokCircuitState: "CLOSED", // "CLOSED" | "OPEN"
+  trippedAt: 0,
+  tripReason: "",
+  resetAt: 0,
+};
 
 const BOOTSTRAP_ADMIN_EMAIL = "samdkhan8256972@gmail.com";
 
@@ -84,13 +94,14 @@ const STOPWORDS = new Set([
 
 const HACKING_INJECTION_PATTERNS = [
   /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|rules?|prompts?)\b/i,
-  /\b(system\s+prompt|developer\s+prompt|reveal\s+instructions?|show\s+hidden\s+prompt)\b/i,
-  /\b(jailbreak|dan\s+mode|bypass\s+(security|auth|login|exam|fee|fees|lock|guardrail|firewall))\b/i,
+  /\b(system\s+prompt|developer\s+prompt|reveal\s+instructions?|show\s+hidden\s+prompt|internal\s+prompt)\b/i,
+  /\b(jailbreak|dan\s+mode|bypass\s+(security|auth|login|exam|fee|fees|lock|guardrail|firewall|anti[-_]?tamper))\b/i,
   /\b(sql\s*injection|sqli|union\s+select|'\s*or\s*1\s*=\s*1|drop\s+table)\b/i,
   /\b(xss|cross[\s-]site\s+scripting|<script\b|document\.cookie)\b/i,
-  /\b(frida|jadx|apktool|smali|decompile|reverse\s+engineer|mod\s+apk|apk\s+mod|crack\s+(apk|app|password|exam|license))\b/i,
+  /\b(frida|jadx|apktool|smali|decompile|reverse\s*engineer|mod\s*apk|apk\s*mod|crack\s*(apk|app|password|exam|license)|dump\s*dex|ghidra|ida\s*pro|xposed)\b/i,
   /\b(hack\s+(app|apk|exam|fees?|portal|firebase|admin|bank|wifi|account|password|server|database))\b/i,
-  /\b(steal|dump|extract|leak|find)\s+(api[\s_-]?key|secret|token|password|credentials?|database|firestore|answer\s+key)\b/i,
+  /\b(steal|dump|extract|leak|find)\s+(api[\s_-]?key|secret|token|password|credentials?|database|firestore|answer\s*key|system\s*prompt)\b/i,
+  /\b(grok_api|gemini_api|groq_api|cloudfunctions\.net|firestore\.rules|database\s*schema)\b/i,
   /\b(exploit|payload|shellcode|rootkit|keylogger|phishing|ddos|brute[\s-]?force|ransomware|malware\s+code)\b/i,
 ];
 
@@ -614,7 +625,7 @@ async function evaluatePromptGuardServer(userPrompt, groqKey, cfGatewayUrl, cfTo
   }
 }
 
-async function recordSecurityStrikeAndLockIfRepeated(db, studentUid, username, reason, promptSnippet) {
+async function recordSecurityStrikeAndLockIfRepeated(db, studentUid, username, reason, promptSnippet, req = null) {
   const now = Date.now();
   const lockRef = db.collection("ai_tutor_locks").doc(studentUid);
   const outcome = await db.runTransaction(async (tx) => {
@@ -624,46 +635,76 @@ async function recordSecurityStrikeAndLockIfRepeated(db, studentUid, username, r
     if (existingLockedUntil > now) {
       return { strikeCount: Number(data.strikeCount || 2), locked: true, lockedUntilMs: existingLockedUntil };
     }
-    const prevStrikes = Number(data.strikeCount || 0);
-    const nextStrikes = prevStrikes + 1;
-    const shouldLock = nextStrikes >= 2;
-    const lockedUntilMs = shouldLock ? now + SECURITY_LOCKOUT_MS : 0;
+    // Zero-Tolerance Auto-Block: Any intrusion/prompt-injection attempt locks immediately for 24 hours
+    const lockedUntilMs = now + SECURITY_LOCKOUT_MS;
 
     tx.set(
       lockRef,
       {
         uid: studentUid,
         username: String(username || studentUid).slice(0, 100),
-        strikeCount: nextStrikes,
-        locked: shouldLock,
+        strikeCount: 2,
+        locked: true,
         lockedUntilMs,
         lastReason: String(reason || "PROMPT_INJECTION").slice(0, 160),
         lastViolationAt: FieldValue.serverTimestamp(),
-        lockedAt: shouldLock ? FieldValue.serverTimestamp() : (data.lockedAt || null),
+        lockedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
-    return { strikeCount: nextStrikes, locked: shouldLock, lockedUntilMs };
+    return { strikeCount: 2, locked: true, lockedUntilMs };
   });
 
-  const severity = outcome.locked ? "CRITICAL" : "HIGH";
+  // Mirror 24-hour lockout to student's user profile document (aiBlockedUntil)
+  db.collection("users").doc(studentUid).set(
+    { aiBlockedUntil: outcome.lockedUntilMs },
+    { merge: true }
+  ).catch(() => {});
+
+  const deviceId = req
+    ? String(req.header("X-WCI-Device-Fp") || req.header("X-Device-Id") || "DEVICE_UNKNOWN").slice(0, 128)
+    : "DEVICE_UNKNOWN";
+
+  // 1. High-Priority Log to `admin_security_alerts` collection
+  const adminAlertDoc = {
+    studentId: studentUid,
+    studentName: String(username || studentUid).slice(0, 100),
+    deviceId,
+    timestamp: FieldValue.serverTimestamp(),
+    maliciousPrompt: String(promptSnippet || "").slice(0, 1000),
+    severity: "CRITICAL",
+    reason: String(reason || "Zero-Cost AI Intrusion / System Prompt Extraction Attempt").slice(0, 180),
+    detectedBy: "Zero-Cost Heuristic Security Firewall",
+    status: "LOCKED_24H",
+    lockedUntilMs: outcome.lockedUntilMs,
+    createdAt: FieldValue.serverTimestamp(),
+  };
+  db.collection("admin_security_alerts").add(adminAlertDoc).catch(() => {});
+
+  // 2. Backward-compatible log to `securityAlerts` collection
   const alertId = `ai_sec_${now}_${crypto.randomBytes(3).toString("hex")}`;
   await db.collection("securityAlerts").doc(alertId).set({
     id: alertId,
-    type: outcome.locked ? "AI_TUTOR_LOCKED_24H" : "AI_TUTOR_SECURITY_WARNING",
-    severity,
+    type: "AI_TUTOR_LOCKED_24H",
+    severity: "CRITICAL",
     studentUid,
     username: String(username || studentUid).slice(0, 100),
     strikeCount: outcome.strikeCount,
     lockedUntilMs: outcome.lockedUntilMs,
-    details: `${reason} | snippet=${String(promptSnippet || "").slice(0, 180)}`,
+    details: `${reason} | device=${deviceId} | snippet=${String(promptSnippet || "").slice(0, 180)}`,
     createdAt: FieldValue.serverTimestamp(),
-  });
+  }).catch(() => {});
 
   return outcome;
 }
 
+/**
+ * Mathematical & Physics-Inspired Rate Limiting:
+ * Token Bucket + Newton's Law of Cooling (Exponential Decay).
+ * Burst capacity: 3 questions; Refills slowly via Newton's Cooling exponential curve;
+ * Capped at strict daily free limit (15 questions/day) to guarantee 100% Zero-Billing forever.
+ */
 async function checkAndConsumeDailyStudentQuota(db, studentUid) {
   const now = Date.now();
   const todayUtc = new Date(now).toISOString().slice(0, 10);
@@ -674,18 +715,8 @@ async function checkAndConsumeDailyStudentQuota(db, studentUid) {
     const data = snap.exists ? snap.data() : {};
     const sameDay = data.dateUtc === todayUtc;
     const usedToday = sameDay ? Number(data.liveCallsUsed || 0) : 0;
-    const lastCallMs = Number(data.lastLiveCallMs || 0);
 
-    if (lastCallMs > 0 && now - lastCallMs < STUDENT_LIVE_COOLDOWN_MS) {
-      const waitSec = Math.max(1, Math.ceil((STUDENT_LIVE_COOLDOWN_MS - (now - lastCallMs)) / 1000));
-      return {
-        allowed: false,
-        reason: "COOLDOWN",
-        waitSeconds: waitSec,
-        remainingToday: Math.max(0, STUDENT_DAILY_LIVE_AI_CAP - usedToday),
-      };
-    }
-
+    // Strict Daily Free Quota Cap (15 questions/day)
     if (usedToday >= STUDENT_DAILY_LIVE_AI_CAP) {
       const midnightUtc = Date.UTC(
         new Date(now).getUTCFullYear(),
@@ -698,15 +729,45 @@ async function checkAndConsumeDailyStudentQuota(db, studentUid) {
         reason: "DAILY_CAP",
         waitSeconds: waitSec,
         remainingToday: 0,
+        tokensRemaining: 0,
       };
     }
 
+    // Token Bucket + Newton's Law of Cooling (Exponential Decay)
+    const prevTokens = typeof data.tokens === "number"
+      ? Math.min(STUDENT_BURST_CAPACITY, Math.max(0, data.tokens))
+      : STUDENT_BURST_CAPACITY;
+    const lastDecayMs = Number(data.lastDecayTimeMs || (now - 60000));
+    const deltaSec = Math.max(0, (now - lastDecayMs) / 1000);
+
+    // Newton's Cooling: T(t) = B - (B - T_prev) * e^(-lambda * delta_t)
+    const cooledTokens = Math.min(
+      STUDENT_BURST_CAPACITY,
+      STUDENT_BURST_CAPACITY - (STUDENT_BURST_CAPACITY - prevTokens) * Math.exp(-NEWTON_COOLING_LAMBDA * deltaSec)
+    );
+
+    if (cooledTokens < 1.0) {
+      const ratio = (STUDENT_BURST_CAPACITY - 1.0) / Math.max(0.01, STUDENT_BURST_CAPACITY - cooledTokens);
+      const waitSec = Math.max(5, Math.ceil(-Math.log(ratio) / NEWTON_COOLING_LAMBDA));
+      return {
+        allowed: false,
+        reason: "COOLDOWN",
+        waitSeconds: waitSec,
+        remainingToday: Math.max(0, STUDENT_DAILY_LIVE_AI_CAP - usedToday),
+        tokensRemaining: Math.floor(cooledTokens),
+      };
+    }
+
+    const nextTokens = Math.max(0, cooledTokens - 1.0);
     const nextUsed = usedToday + 1;
+
     tx.set(
       quotaRef,
       {
         uid: studentUid,
         dateUtc: todayUtc,
+        tokens: nextTokens,
+        lastDecayTimeMs: now,
         liveCallsUsed: nextUsed,
         dailyCap: STUDENT_DAILY_LIVE_AI_CAP,
         lastLiveCallMs: now,
@@ -721,8 +782,271 @@ async function checkAndConsumeDailyStudentQuota(db, studentUid) {
       reason: "OK",
       waitSeconds: 0,
       remainingToday: Math.max(0, STUDENT_DAILY_LIVE_AI_CAP - nextUsed),
+      tokensRemaining: Math.floor(nextTokens),
     };
   });
+}
+
+/**
+ * Circuit Breaker Physics for Grok API (Primary) -> Google Gemini API (Free Tier Secondary)
+ */
+async function getCircuitBreakerState(db) {
+  const now = Date.now();
+  if (inMemoryCircuitBreaker.grokCircuitState === "OPEN" && inMemoryCircuitBreaker.resetAt > now) {
+    return inMemoryCircuitBreaker;
+  }
+  try {
+    const snap = await db.collection("system_circuits").doc("ai_circuit_breaker").get();
+    if (snap.exists) {
+      const data = snap.data() || {};
+      const resetAt = Number(data.resetAt || 0);
+      if (data.grokCircuitState === "OPEN" && resetAt > now) {
+        inMemoryCircuitBreaker = {
+          grokCircuitState: "OPEN",
+          trippedAt: Number(data.trippedAt || now),
+          tripReason: String(data.tripReason || "QUOTA_EXHAUSTED"),
+          resetAt,
+        };
+        return inMemoryCircuitBreaker;
+      }
+    }
+  } catch (_) {}
+  inMemoryCircuitBreaker.grokCircuitState = "CLOSED";
+  return inMemoryCircuitBreaker;
+}
+
+async function tripCircuitBreaker(db, reason) {
+  const now = Date.now();
+  const nextMidnightUtc = Date.UTC(
+    new Date(now).getUTCFullYear(),
+    new Date(now).getUTCMonth(),
+    new Date(now).getUTCDate() + 1
+  );
+  inMemoryCircuitBreaker = {
+    grokCircuitState: "OPEN",
+    trippedAt: now,
+    tripReason: reason,
+    resetAt: nextMidnightUtc,
+  };
+  try {
+    await db.collection("system_circuits").doc("ai_circuit_breaker").set(
+      {
+        grokCircuitState: "OPEN",
+        trippedAt: now,
+        tripReason: reason,
+        resetAt: nextMidnightUtc,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (_) {}
+}
+
+async function callGrokApi(grokKey, cfGatewayUrl, cfToken, systemPrompt, userPrompt) {
+  const isXaiKey = grokKey.startsWith("xai-");
+  const endpoint = isXaiKey
+    ? "https://api.x.ai/v1/chat/completions"
+    : buildGroqEndpointUrl(cfGatewayUrl);
+  const model = isXaiKey ? "grok-beta" : "llama-3.3-70b-versatile";
+
+  const headers = isXaiKey
+    ? {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${grokKey}`,
+      }
+    : buildUpstreamHeaders(grokKey, cfToken, Boolean(cfGatewayUrl));
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  // Circuit Breaker: strict 6-second timeout
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      stream: true,
+      temperature: UPSTREAM_TEMPERATURE,
+      max_tokens: MAX_COMPLETION_TOKENS,
+      max_completion_tokens: MAX_COMPLETION_TOKENS,
+      messages,
+    }),
+    signal: AbortSignal.timeout(6000),
+  });
+
+  return { resp, model };
+}
+
+async function streamGrokSseResponse(grokResp, res, chosenModel, cacheHash, featureType, languageCode, userPrompt, db) {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let fullText = "";
+  const reader = grokResp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") continue;
+
+      try {
+        const parsed = JSON.parse(payload);
+        const delta =
+          parsed?.choices?.[0]?.delta?.content ||
+          parsed?.choices?.[0]?.message?.content ||
+          "";
+        if (delta) {
+          fullText += delta;
+          res.write(`data: ${JSON.stringify({ delta, model: chosenModel })}\n\n`);
+        }
+      } catch (_) {}
+    }
+  }
+
+  res.write("data: [DONE]\n\n");
+  res.end();
+
+  if (fullText.trim().length > 0) {
+    db.collection("ai_shared_cache").doc(cacheHash).set(
+      {
+        promptHash: cacheHash,
+        featureType,
+        languageCode,
+        canonicalPrompt: userPrompt.trim().toLowerCase().slice(0, 1000),
+        promptText: userPrompt.slice(0, 1000),
+        responseText: fullText.trim().slice(0, 8000),
+        modelName: chosenModel,
+        hitCount: 1,
+        updatedAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  }
+}
+
+async function callGeminiApi(geminiKey, systemPrompt, userPrompt, res, cacheHash, featureType, languageCode, db) {
+  const modelName = "gemini-2.5-flash";
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse&key=${geminiKey}`;
+
+  const payload = {
+    system_instruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: userPrompt }],
+      },
+    ],
+    generationConfig: {
+      temperature: UPSTREAM_TEMPERATURE,
+      maxOutputTokens: MAX_COMPLETION_TOKENS,
+    },
+  };
+
+  let upstreamResp;
+  try {
+    upstreamResp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (_) {
+    // If 2.5-flash timed out, try gemini-1.5-flash
+    const fbEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=${geminiKey}`;
+    upstreamResp = await fetch(fbEndpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000),
+    });
+  }
+
+  if (!upstreamResp || !upstreamResp.ok) {
+    throw new Error(`Gemini API error (HTTP ${upstreamResp ? upstreamResp.status : "unknown"})`);
+  }
+
+  return streamGeminiSseResponse(upstreamResp, res, modelName, cacheHash, featureType, languageCode, userPrompt, db);
+}
+
+async function streamGeminiSseResponse(geminiResp, res, modelTag, cacheHash, featureType, languageCode, userPrompt, db) {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let fullText = "";
+  const reader = geminiResp.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line.startsWith("data:")) continue;
+      const dataStr = line.slice(5).trim();
+      if (!dataStr || dataStr === "[DONE]") continue;
+
+      try {
+        const parsed = JSON.parse(dataStr);
+        const parts = parsed?.candidates?.[0]?.content?.parts;
+        if (Array.isArray(parts)) {
+          for (const p of parts) {
+            const textChunk = p.text || "";
+            if (textChunk) {
+              fullText += textChunk;
+              res.write(`data: ${JSON.stringify({ delta: textChunk, model: `gemini/${modelTag}` })}\n\n`);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  res.write("data: [DONE]\n\n");
+  res.end();
+
+  if (fullText.trim().length > 0) {
+    db.collection("ai_shared_cache").doc(cacheHash).set(
+      {
+        promptHash: cacheHash,
+        featureType,
+        languageCode,
+        canonicalPrompt: userPrompt.trim().toLowerCase().slice(0, 1000),
+        promptText: userPrompt.slice(0, 1000),
+        responseText: fullText.trim().slice(0, 8000),
+        modelName: `gemini/${modelTag}`,
+        hitCount: 1,
+        updatedAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  }
 }
 
 /**
@@ -1084,7 +1408,8 @@ exports.streamInstituteAiTutor = onRequest(
     }
 
     // Read server-only AI proxy credentials from Firebase Functions runtime environment (`functions/.env`)
-    const groqKey = String(process.env.GROQ_API_KEY || "").trim();
+    const groqKey = String(process.env.GROK_API_KEY || process.env.XAI_API_KEY || process.env.GROQ_API_KEY || "").trim();
+    const geminiKey = String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_KEY || "").trim();
     const cfGatewayUrl = String(process.env.CF_AI_GATEWAY_URL || "").trim();
     const cfToken = String(process.env.CF_AI_TOKEN || "").trim();
 
@@ -1096,10 +1421,11 @@ exports.streamInstituteAiTutor = onRequest(
         studentUid,
         username,
         `Stage A Guard Blocked (${guardVerdict.source})`,
-        userPrompt
+        userPrompt,
+        req
       );
       res.status(403).json({
-        error: strikeOutcome.locked ? SECURITY_STRIKE_2_LOCK_MESSAGE : SECURITY_STRIKE_1_MESSAGE,
+        error: SECURITY_STRIKE_2_LOCK_MESSAGE,
         securityStrike: strikeOutcome.strikeCount,
         locked: strikeOutcome.locked,
         lockedUntilMs: strikeOutcome.lockedUntilMs,
@@ -1160,60 +1486,50 @@ exports.streamInstituteAiTutor = onRequest(
       }
     }
 
-    // 10. Stage B — Header-Aware Zero-Bill Model Cascade (Groq 3,000 RPD via Cloudflare AI Gateway -> Cloudflare Workers AI)
-    const groqEndpoint = buildGroqEndpointUrl(cfGatewayUrl);
-    const messages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ];
+    // 10. Stage B — Zero-Cost Instant Failover (Circuit Breaker: Grok API -> Google Gemini API Free Tier)
+    const circuitState = await getCircuitBreakerState(db);
+    const grokAllowed = circuitState.grokCircuitState !== "OPEN" && Boolean(grokKey);
 
-    let chosenResponse = null;
-    let chosenModel = "";
-    let groqExhaustedCount = 0;
+    let chosenGrokResp = null;
+    let chosenGrokModel = "";
 
-    if (groqKey) {
-      const now = Date.now();
-      for (const candidateModel of GROQ_MODEL_CASCADE) {
-        const cooldownUntil = groqModelCooldownUntilMs.get(candidateModel) || 0;
-        if (cooldownUntil > now) {
-          groqExhaustedCount++;
-          continue;
+    if (grokAllowed) {
+      try {
+        const { resp, model } = await callGrokApi(grokKey, cfGatewayUrl, cfToken, systemPrompt, userPrompt);
+        if (resp.status === 429 || resp.status >= 500) {
+          // Trip circuit breaker on 429 quota exhaustion or 5xx server error
+          await tripCircuitBreaker(db, `Grok HTTP ${resp.status}`);
+        } else if (resp.ok && resp.body) {
+          chosenGrokResp = resp;
+          chosenGrokModel = `grok/${model}`;
+        } else {
+          await tripCircuitBreaker(db, `Grok unexpected HTTP ${resp.status}`);
         }
-
-        try {
-          const upstreamResp = await fetch(groqEndpoint, {
-            method: "POST",
-            headers: buildUpstreamHeaders(groqKey, cfToken, Boolean(cfGatewayUrl)),
-            body: JSON.stringify({
-              model: candidateModel,
-              stream: true,
-              temperature: UPSTREAM_TEMPERATURE,
-              max_completion_tokens: MAX_COMPLETION_TOKENS,
-              messages,
-            }),
-          });
-
-          const hitRateLimit = inspectGroqRateHeadersAndMarkCooldown(candidateModel, upstreamResp);
-          if (hitRateLimit || upstreamResp.status === 429 || upstreamResp.status === 503) {
-            groqExhaustedCount++;
-            continue;
-          }
-
-          if (upstreamResp.ok && upstreamResp.body) {
-            chosenResponse = upstreamResp;
-            chosenModel = `groq/${candidateModel}`;
-            break;
-          }
-        } catch (_) {
-          // Try next model in cascade
-        }
+      } catch (grokErr) {
+        // Timeout >6s or fetch network error: trip circuit breaker immediately
+        const isTimeout = grokErr.name === "TimeoutError" || String(grokErr.message).includes("timed out");
+        await tripCircuitBreaker(db, isTimeout ? "Grok Timeout (>6s)" : `Grok Error: ${grokErr.message}`);
       }
-    } else {
-      groqExhaustedCount = GROQ_MODEL_CASCADE.length;
     }
 
-    // 10B. Fallback 1 (ONLY when all 3 Groq models are exhausted): Cloudflare Workers AI Free Tier
-    if (!chosenResponse && cfGatewayUrl && cfToken) {
+    // 10A. If Grok succeeded, stream line-by-line SSE response to client and cache to L3 Firestore
+    if (chosenGrokResp) {
+      await streamGrokSseResponse(chosenGrokResp, res, chosenGrokModel, cacheHash, featureType, languageCode, userPrompt, db);
+      return;
+    }
+
+    // 10B. FAILOVER: Instant Zero-Delay Google Gemini API (Free Tier e.g. gemini-2.5-flash)
+    if (geminiKey) {
+      try {
+        await callGeminiApi(geminiKey, systemPrompt, userPrompt, res, cacheHash, featureType, languageCode, db);
+        return;
+      } catch (geminiErr) {
+        console.error("Gemini failover error:", geminiErr.message);
+      }
+    }
+
+    // 10C. Secondary Fallback: Cloudflare Workers AI Free Tier (if configured)
+    if (cfGatewayUrl && cfToken) {
       const cfWorkersUrl = buildWorkersAiEndpointUrl(cfGatewayUrl, CF_WORKERS_AI_FALLBACK_MODEL);
       if (cfWorkersUrl) {
         try {
@@ -1225,11 +1541,15 @@ exports.streamInstituteAiTutor = onRequest(
               "cf-aig-authorization": `Bearer ${cfToken}`,
             },
             body: JSON.stringify({
-              messages,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userPrompt },
+              ],
               max_tokens: MAX_COMPLETION_TOKENS,
               temperature: UPSTREAM_TEMPERATURE,
               stream: false,
             }),
+            signal: AbortSignal.timeout(10000),
           });
 
           if (cfResp.ok) {
@@ -1253,7 +1573,7 @@ exports.streamInstituteAiTutor = onRequest(
                   promptHash: cacheHash,
                   featureType,
                   languageCode,
-                  canonicalPrompt: canonicalizePromptForCache(featureType, languageCode, userPrompt).slice(0, 1000),
+                  canonicalPrompt: userPrompt.trim().toLowerCase().slice(0, 1000),
                   promptText: userPrompt.slice(0, 1000),
                   responseText: cfText.slice(0, 8000),
                   modelName: `cloudflare/${CF_WORKERS_AI_FALLBACK_MODEL}`,
@@ -1266,93 +1586,16 @@ exports.streamInstituteAiTutor = onRequest(
               return;
             }
           }
-        } catch (_) {
-          // Fall through to exhaustion check
-        }
+        } catch (_) {}
       }
     }
 
-    // 10C. Fallback 2 (EXHAUSTION SIGNAL): ONLY when BOTH Groq (all 3 models) AND Cloudflare Workers AI are exhausted
-    if (!chosenResponse) {
-      res.status(429).json({
-        fallbackEligible: "GEMINI_FREE_LAST_RESORT",
-        reason: "GROQ_AND_CLOUDFLARE_EXHAUSTED",
-        groqModelsExhausted: groqExhaustedCount,
-        error: "Both Groq Free Tier and Cloudflare Workers AI free quotas are exhausted. Eligible for strict last-resort Gemini Free Tier.",
-      });
-      return;
-    }
-
-    // 11. Stream SSE Response Line-by-Line & Persist to L3 Shared Firestore Cache
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders?.();
-
-    let fullText = "";
-    try {
-      const reader = chosenResponse.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trim();
-          if (payload === "[DONE]") {
-            continue;
-          }
-          try {
-            const parsed = JSON.parse(payload);
-            const delta =
-              parsed?.choices?.[0]?.delta?.content ||
-              parsed?.choices?.[0]?.message?.content ||
-              "";
-            if (delta) {
-              fullText += delta;
-              res.write(`data: ${JSON.stringify({ delta, model: chosenModel })}\n\n`);
-            }
-          } catch (_) {
-            // Ignore partial JSON frame
-          }
-        }
-      }
-
-      res.write("data: [DONE]\n\n");
-      res.end();
-
-      if (fullText.trim().length > 0) {
-        db.collection("ai_shared_cache").doc(cacheHash).set(
-          {
-            promptHash: cacheHash,
-            featureType,
-            languageCode,
-            canonicalPrompt: canonicalizePromptForCache(featureType, languageCode, userPrompt).slice(0, 1000),
-            promptText: userPrompt.slice(0, 1000),
-            responseText: fullText.trim().slice(0, 8000),
-            modelName: chosenModel,
-            hitCount: 1,
-            updatedAt: FieldValue.serverTimestamp(),
-            createdAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        ).catch(() => {});
-      }
-    } catch (err) {
-      res.write(
-        `data: ${JSON.stringify({ error: err.message || "Streaming proxy failure" })}\n\n`
-      );
-      res.write("data: [DONE]\n\n");
-      res.end();
-    }
+    // 10D. If BOTH Grok and Gemini (and Cloudflare) free tiers are exhausted, return clear exhaustion payload
+    res.status(429).json({
+      fallbackEligible: "GEMINI_FREE_LAST_RESORT",
+      reason: "GROQ_AND_CLOUDFLARE_EXHAUSTED",
+      error: "Primary (Grok) and Secondary (Gemini) Free Tiers exhausted. Switch to offline syllabus study notes.",
+    });
   }
 );
 

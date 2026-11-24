@@ -1,5 +1,8 @@
 package com.waqar.institute.ui.student
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,26 +14,35 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.waqar.institute.ai.AiTutorViewModel
 import com.wci.ui.liquidglass.components.GlassButton
 import com.wci.ui.liquidglass.components.GlassButtonVariant
 import com.wci.ui.liquidglass.components.GlassCard
@@ -46,24 +58,32 @@ data class TutorMessage(
 
 /**
  * ZeroBillAiTutorScreen (M3.6: F-389 to F-402)
- * 4-Tier Free AI Study Tutor Cascade:
- * L1 RAM -> L2 Local SQLCipher -> L3 Shared Firestore Cache -> Free-tier LLM
- * - Automatic blackout lock during active live exams
+ *
+ * 5-Stage Zero-Bill AI Study Tutor Cascade:
+ * L1 RAM -> L2 SQLCipher -> L3 Cloud Cache -> Grok API (Primary) -> Gemini Flash (Failover)
+ *
+ * Security & Zero-Billing Enforcements:
+ * - Automatic blackout lock during active live examinations (Rule S-18).
+ * - Live 24-Hour Intrusion & Prompt-Injection Lockout with 1-second countdown ticker.
+ * - Client-side anti-spam debounce and local cooldown pacer (prevents button spamming).
+ * - Real-time Server-Sent Events (SSE) progressive token streaming.
  */
 @Composable
 fun ZeroBillAiTutorScreen(
     isExamActive: Boolean = false,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    viewModel: AiTutorViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsState()
     var queryInput by remember { mutableStateOf("") }
-    val messages = remember {
-        mutableStateListOf(
-            TutorMessage(
-                sender = "AI Tutor",
-                text = "Hello! I am your Waqar Institute 24/7 Study Tutor. Ask me any conceptual question about ADCA, Tally Prime, Python, C++, or CCC.",
-                tierSource = "L1 System"
-            )
-        )
+    val listState = rememberLazyListState()
+
+    // Auto-scroll to bottom on new message / streaming chunk
+    LaunchedEffect(uiState.messages.size, uiState.messages.lastOrNull()?.text) {
+        if (uiState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.messages.size - 1)
+        }
     }
 
     if (isExamActive) {
@@ -119,7 +139,7 @@ fun ZeroBillAiTutorScreen(
             // Header
             GlassCard(
                 modifier = Modifier.fillMaxWidth(),
-                contentPadding = 18.dp
+                contentPadding = 16.dp
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -142,48 +162,116 @@ fun ZeroBillAiTutorScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "L1 RAM → L2 SQLCipher → L3 Cloud Cache",
+                                text = "L1 RAM → L2 SQLCipher → L3 Cloud Cache → Grok/Gemini",
                                 color = GlassShaderTokens.BrandCyan,
-                                fontSize = 11.sp
+                                fontSize = 10.sp
                             )
                         }
                     }
 
                     GlassPill(
-                        text = "FREE TIER CASCADE",
-                        color = GlassShaderTokens.BrandEmerald
+                        text = if (uiState.isLocked) "SECURITY LOCKED" else "FREE TIER CASCADE",
+                        color = if (uiState.isLocked) GlassShaderTokens.BrandRuby else GlassShaderTokens.BrandEmerald
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // Live 24-Hour Security Lockout Banner with Real-Time Countdown Ticker
+            AnimatedVisibility(
+                visible = uiState.isLocked,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    GlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        backgroundColor = GlassShaderTokens.BrandRuby.copy(alpha = 0.2f),
+                        contentPadding = 14.dp
+                    ) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = "Security Lock",
+                                    tint = GlassShaderTokens.BrandRuby,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "SECURITY LOCKOUT (24 HOURS ACTIVE)",
+                                    color = GlassShaderTokens.BrandRuby,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Intrusion, reverse-engineering, or system prompt extraction attempt detected. Your AI Tutor has been automatically locked for 24 hours and high-priority incident telemetry logged to Admin.",
+                                color = Color(0xEEFFFFFF),
+                                fontSize = 11.5.sp,
+                                lineHeight = 16.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Timer,
+                                    contentDescription = "Countdown",
+                                    tint = GlassShaderTokens.BrandAmber,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Unlock Countdown: ${uiState.lockoutCountdownFormatted.ifBlank { "23:59:59" }}",
+                                    color = GlassShaderTokens.BrandAmber,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
 
-            // Conversation Messages
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Conversation Messages Feed
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(messages) { msg ->
+                items(uiState.messages) { msg ->
                     val isUser = msg.sender == "Student"
+                    val isSecurityAlert = msg.sender.contains("Security", ignoreCase = true) || msg.sender.contains("Firewall", ignoreCase = true)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
                     ) {
                         GlassCard(
-                            modifier = Modifier.fillMaxWidth(0.85f),
-                            backgroundColor = if (isUser) GlassShaderTokens.BrandAccentBlue.copy(alpha = 0.25f) else GlassShaderTokens.BrandMidnight,
+                            modifier = Modifier.fillMaxWidth(if (isSecurityAlert) 0.95f else 0.85f),
+                            backgroundColor = when {
+                                isSecurityAlert -> GlassShaderTokens.BrandRuby.copy(alpha = 0.25f)
+                                isUser -> GlassShaderTokens.BrandAccentBlue.copy(alpha = 0.25f)
+                                else -> GlassShaderTokens.BrandMidnight
+                            },
                             contentPadding = 12.dp
                         ) {
                             Column {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
                                         text = msg.sender,
-                                        color = if (isUser) GlassShaderTokens.BrandCyan else GlassShaderTokens.BrandPurple,
+                                        color = when {
+                                            isSecurityAlert -> GlassShaderTokens.BrandRuby
+                                            isUser -> GlassShaderTokens.BrandCyan
+                                            else -> GlassShaderTokens.BrandPurple
+                                        },
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold
                                     )
@@ -206,9 +294,54 @@ fun ZeroBillAiTutorScreen(
                         }
                     }
                 }
+
+                if (uiState.isStreaming) {
+                    item {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = GlassShaderTokens.BrandCyan,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Streaming progressive study completion...",
+                                color = GlassShaderTokens.BrandCyan,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+
+            // Anti-Spam Local Cooldown Indicator
+            if (uiState.localCooldownSeconds > 0) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Timer,
+                        contentDescription = "Cooldown",
+                        tint = GlassShaderTokens.BrandCyan,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Anti-Spam Pacer: wait ${uiState.localCooldownSeconds}s before next query (prevents quota burn)",
+                        color = GlassShaderTokens.BrandCyan,
+                        fontSize = 11.sp
+                    )
+                }
+            }
 
             // Input Dock
             Row(
@@ -218,32 +351,34 @@ fun ZeroBillAiTutorScreen(
             ) {
                 GlassTextField(
                     value = queryInput,
-                    onValueChange = { queryInput = it },
-                    placeholder = "Ask doubt (e.g. How to pass journal entry for GST?)...",
+                    onValueChange = {
+                        if (!uiState.isLocked) {
+                            queryInput = it
+                        }
+                    },
+                    placeholder = if (uiState.isLocked) {
+                        "Locked due to 24h security cage policy..."
+                    } else if (uiState.localCooldownSeconds > 0) {
+                        "Pacing query (${uiState.localCooldownSeconds}s cooldown)..."
+                    } else {
+                        "Ask doubt (e.g. How to pass journal entry for GST?)..."
+                    },
                     modifier = Modifier.weight(1f)
                 )
 
                 GlassButton(
-                    text = "Ask",
+                    text = if (uiState.localCooldownSeconds > 0) "${uiState.localCooldownSeconds}s" else "Ask",
                     onClick = {
-                        val q = queryInput.trim()
-                        if (q.isNotBlank()) {
-                            messages.add(TutorMessage("Student", q, "Local Input"))
+                        if (queryInput.isNotBlank() && uiState.canSend && !uiState.isLocked) {
+                            val promptToSend = queryInput
                             queryInput = ""
-                            // Deterministic study tutor answer from local knowledge base
-                            messages.add(
-                                TutorMessage(
-                                    sender = "AI Tutor",
-                                    text = "In Tally Prime, to record GST on Purchases:\n1. Open F9: Purchase Voucher.\n2. Select Supplier Ledger.\n3. Add Item details.\n4. Apply Input CGST and Input SGST (or Input IGST if inter-state).\n5. Verify that E-way Bill details match campus invoice records.",
-                                    tierSource = "L2 SQLCipher Cache"
-                                )
-                            )
+                            viewModel.sendQuery(promptToSend)
                         }
                     },
-                    variant = GlassButtonVariant.PRIMARY,
+                    variant = if (uiState.isLocked) GlassButtonVariant.OUTLINE else GlassButtonVariant.PRIMARY,
                     icon = {
                         Icon(
-                            imageVector = Icons.Default.Send,
+                            imageVector = if (uiState.isLocked) Icons.Default.Lock else Icons.Default.Send,
                             contentDescription = "Send",
                             tint = Color.White,
                             modifier = Modifier.size(16.dp)

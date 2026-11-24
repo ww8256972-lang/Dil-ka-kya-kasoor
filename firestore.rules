@@ -755,6 +755,12 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    match /admin_security_alerts/{alertId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
     match /feesLedger/{ledgerId} {
       allow read: if isStaffOrAdmin() || (isSignedIn() && matchesAuthenticatedIdentity(resource.data.get('studentId', '')));
       allow create, update, delete: if isAdmin();
@@ -976,6 +982,11 @@ service cloud.firestore {
 
     match /ai_tutor_locks/{uid} {
       allow read: if isAdmin() || (request.auth != null && request.auth.uid == uid);
+      allow write: if isAdmin();
+    }
+
+    match /system_circuits/{circuitId} {
+      allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
