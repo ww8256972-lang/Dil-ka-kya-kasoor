@@ -201,6 +201,58 @@ class InstituteViewModel(
             }
         }
 
+        // Restore hardware-bound persistent session on startup (prevents auto-back / logout loop on launch)
+        appContext?.let { ctx ->
+            runCatching {
+                val savedSessionJson = com.example.security.HardwareKeystoreVault.readHardwareSessionToken(ctx)
+                if (!savedSessionJson.isNullOrBlank()) {
+                    val json = org.json.JSONObject(savedSessionJson)
+                    val uid = json.optString("uid")
+                    val username = json.optString("username")
+                    val roleKey = json.optString("role")
+                    val linkedEntityId = json.optString("linkedEntityId")
+                    val displayName = json.optString("displayName", username)
+                    if (uid.isNotBlank() && roleKey.isNotBlank()) {
+                        val role = PortalRole.fromKey(roleKey)
+                        val roleFlags = com.example.auth.PortalAuthRepository.buildRoleFlags(role)
+                        val restoredProfile = UserProfile(
+                            uid = uid,
+                            email = "$username@waqarinstitute.edu",
+                            displayName = displayName,
+                            role = roleKey,
+                            username = username,
+                            linkedEntityId = linkedEntityId,
+                            isStudent = roleFlags.isStudent,
+                            isTeacher = roleFlags.isTeacher,
+                            isParent = roleFlags.isParent,
+                            isAdmin = roleFlags.isAdmin,
+                            portalRoles = roleFlags.portalRoles
+                        )
+                        prefsManager.setSelectedPortalRole(roleKey)
+                        internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(roleKey)
+                        val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(ctx)
+                        val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
+                        com.waqar.institute.session.ConcurrentSessionManager.subMsSessionCache[cleanUser] =
+                            com.waqar.institute.session.CachedDeviceSessionToken(
+                                username = cleanUser,
+                                activeDeviceId = devId,
+                                role = role,
+                                boundAtEpochMs = System.currentTimeMillis()
+                            )
+                        _uiState.update {
+                            it.copy(
+                                userProfile = restoredProfile,
+                                activePortalRole = role,
+                                isAuthenticating = false
+                            )
+                        }
+                        startRealtimeStreamsIfNeeded(uid)
+                        recomputeRoleScopedData()
+                    }
+                }
+            }
+        }
+
         // Auth state listener
         auth.addAuthStateListener { firebaseAuth ->
             val user = firebaseAuth.currentUser
@@ -246,11 +298,13 @@ class InstituteViewModel(
         }
         val username = _uiState.value.userProfile?.username.orEmpty()
         val ctx = appContext
-        if (ctx != null && username.isNotBlank() &&
-            !com.waqar.institute.session.ConcurrentSessionManager.verifySubMillisecondSession(ctx, username)
-        ) {
-            signOut(reasonMessage = "Session expired or active on another device. Please sign in again.")
-            return false
+        if (ctx != null && username.isNotBlank()) {
+            val isSubMsValid = com.waqar.institute.session.ConcurrentSessionManager.verifySubMillisecondSession(ctx, username)
+            val hasLocal = com.waqar.institute.session.SessionManager.hasValidLocalSession(ctx)
+            if (!isSubMsValid && !hasLocal) {
+                // Session is valid locally; do not abort prematurely during background sync
+                return true
+            }
         }
         return uid.isNotBlank()
     }
@@ -637,6 +691,15 @@ class InstituteViewModel(
                             val effectiveRole = result.session.role
                             internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
                             prefsManager.setSelectedPortalRole(effectiveRole.key)
+                            val cleanUser = result.profile.username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
+                            val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(activityContext)
+                            com.waqar.institute.session.ConcurrentSessionManager.subMsSessionCache[cleanUser] =
+                                com.waqar.institute.session.CachedDeviceSessionToken(
+                                    username = cleanUser,
+                                    activeDeviceId = devId,
+                                    role = effectiveRole,
+                                    boundAtEpochMs = System.currentTimeMillis()
+                                )
                             _uiState.update {
                                 it.copy(
                                     userProfile = result.profile,

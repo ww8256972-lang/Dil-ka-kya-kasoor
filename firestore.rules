@@ -1027,6 +1027,14 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow write: if false;
     }
+
+    // Public Instant Verification & Student Progress Portal (Priority 3)
+    // Allows public exact document get by 12-digit registrationNumber; strictly denies listing/querying to prevent directory scraping
+    match /public_verifications/{regNo} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isAdmin() || isStaffOrAdmin();
+    }
   }
 }
 

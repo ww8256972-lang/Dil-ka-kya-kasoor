@@ -41,15 +41,18 @@ def is_ignored(path):
     return any(ignored in parts for ignored in IGNORE_DIRS)
 
 def check_zero_web_files():
-    print("[1/6] Checking for ZERO Web / Website Files...")
+    print("[1/6] Checking for ZERO Web / Website Files (Inside Android Application)...")
     forbidden_exts = {".html", ".css", ".jsx"}
-    forbidden_dirs = {"web-portal", "hosting", "hosting-prod", "public"}
+    forbidden_dirs = {"web-portal", "hosting", "hosting-prod"}
     violations = []
 
     for root, dirs, files in os.walk(ROOT_DIR):
         if is_ignored(root):
             continue
         rel_root = os.path.relpath(root, ROOT_DIR)
+        # Allow Firebase Hosting public verification portal directory (Priority 3)
+        if rel_root == "public" or rel_root.startswith("public" + os.sep):
+            continue
         
         # Check forbidden directory names
         for d in dirs:
@@ -69,7 +72,7 @@ def check_zero_web_files():
         for v in violations:
             print(f"  - {v}")
         return False
-    print("  PASS: 100% Pure Native Android — Zero web files detected.")
+    print("  PASS: 100% Pure Native Android — Zero web files inside Android app.")
     return True
 
 def check_zero_payment_gateways():

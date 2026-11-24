@@ -4,6 +4,28 @@
     "rules": "firebase/firestore.rules",
     "indexes": "firebase/firestore.indexes.json"
   },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/verify**",
+        "destination": "/verify.html"
+      },
+      {
+        "source": "/search**",
+        "destination": "/search.html"
+      },
+      {
+        "source": "/portal**",
+        "destination": "/search.html"
+      }
+    ]
+  },
   "functions": {
     "source": "cloud-functions"
   },

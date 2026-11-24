@@ -133,3 +133,16 @@
 -dontwarn dev.chrisbanes.haze.**
 -keep class org.apache.poi.** { *; }
 -dontwarn org.apache.poi.**
+
+# 10. Performance, WorkManager, Coroutines, Coil & Caching Modules
+-keep class androidx.work.** { *; }
+-dontwarn androidx.work.**
+-keep class kotlinx.coroutines.** { *; }
+-dontwarn kotlinx.coroutines.**
+-keep class coil.** { *; }
+-dontwarn coil.**
+-keep class com.waqar.institute.workers.** { *; }
+-keep class com.waqar.institute.di.** { *; }
+-keep class com.waqar.institute.enterprise.** { *; }
+-keep class com.waqar.institute.InstituteApp { *; }
+-keep class com.waqar.institute.utils.SafeBackgroundExecutor { *; }

@@ -276,13 +276,19 @@ fun TeacherBiometricGateOverlay(
 
     val scope = rememberCoroutineScope()
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
+    val sessionVerified = TeacherBiometricGateManager.isTeacherVerifiedForCurrentLogin(teacherUid)
     var isVerified by remember(teacherUid) {
-        mutableStateOf(TeacherBiometricGateManager.isTeacherVerifiedForCurrentLogin(teacherUid))
+        mutableStateOf(sessionVerified)
     }
 
-    if (isVerified) {
+    if (isVerified || sessionVerified) {
         portalContent()
         return
+    }
+
+    // Prevent accidental back navigation from terminating session while on biometric gate
+    androidx.activity.compose.BackHandler(enabled = !isVerified && !sessionVerified) {
+        // Stay on Teacher Biometric Gate until verified or explicit Sign Out is tapped
     }
 
     // Lock screenshots and screen capture while biometric authentication is active

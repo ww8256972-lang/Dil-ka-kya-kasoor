@@ -23,7 +23,7 @@ import kotlinx.coroutines.tasks.await
  * - Pre-warms named Cloud Firestore instance asynchronously on Dispatchers.IO so Frame 0 renders
  *   immediately without black screen or ANR stalls.
  */
-class WaqarUniversalAppBootstrapper : Application() {
+open class WaqarUniversalAppBootstrapper : Application() {
 
     private val bootstrapScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

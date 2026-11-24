@@ -823,11 +823,12 @@ fun AdminBiometricGateOverlay(
     val scope = rememberCoroutineScope()
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
 
+    val sessionVerified = AdminFaceConversionAndGateManager.isAdminVerifiedForCurrentSession(adminUsername)
     var isVerified by remember(adminUsername) {
-        mutableStateOf(AdminFaceConversionAndGateManager.isAdminVerifiedForCurrentSession(adminUsername))
+        mutableStateOf(sessionVerified)
     }
 
-    if (isVerified) {
+    if (isVerified || sessionVerified) {
         portalContent()
         return
     }

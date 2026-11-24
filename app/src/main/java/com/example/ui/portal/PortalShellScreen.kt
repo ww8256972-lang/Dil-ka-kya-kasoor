@@ -101,6 +101,17 @@ val AllDrawerDestinations = listOf(
     com.waqar.institute.navigation.AppDrawer.academicProSuiteDestination,
     com.waqar.institute.navigation.AppDrawer.offlineFeeLedgerDestination,
     com.waqar.institute.navigation.AppDrawer.tallyPracticeSimulatorDestination,
+    // 10 Enterprise-Grade Modules (Priority 4)
+    com.waqar.institute.navigation.AppDrawer.adminMultiBranchDestination,
+    com.waqar.institute.navigation.AppDrawer.adminErpPayrollDestination,
+    com.waqar.institute.navigation.AppDrawer.adminCallingCrmDestination,
+    com.waqar.institute.navigation.AppDrawer.adminDrmShieldDestination,
+    com.waqar.institute.navigation.AppDrawer.teacherLabControlDestination,
+    com.waqar.institute.navigation.AppDrawer.teacherAiEvaluatorDestination,
+    com.waqar.institute.navigation.AppDrawer.student3dLabDestination,
+    com.waqar.institute.navigation.AppDrawer.studentProjectSyncDestination,
+    com.waqar.institute.navigation.AppDrawer.studentCareerMatchDestination,
+    com.waqar.institute.navigation.AppDrawer.parentLiveTrackingDestination,
     // Strictly LAST item in Side Navigation Drawer across all 4 portals
     com.waqar.institute.navigation.AppDrawer.termsAndConditionsDestination
 )
@@ -125,6 +136,8 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX,
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TEACHER_LAB_CONTROL,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_TEACHER_AI_EVALUATOR,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
         PortalRole.STUDENT -> setOf(
@@ -146,6 +159,9 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
             com.waqar.institute.navigation.AppDrawer.ROUTE_OFFLINE_FEE_LEDGER,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_3D_LAB,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_PROJECT_SYNC,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_CAREER_MATCH,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
         PortalRole.PARENT -> setOf(
@@ -163,6 +179,7 @@ fun allowedDrawerDestinationsForRole(role: PortalRole): List<ModuleDestination> 
             com.waqar.institute.navigation.AppDrawer.ROUTE_ACADEMIC_PRO_SUITE,
             com.waqar.institute.navigation.AppDrawer.ROUTE_OFFLINE_FEE_LEDGER,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR,
+            com.waqar.institute.navigation.AppDrawer.ROUTE_PARENT_LIVE_TRACKING,
             com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS
         )
     }
@@ -346,16 +363,27 @@ private fun PortalShellBody(
         }
     }
 
-    // Ensure non-default routes or open drawer return smoothly on Back press
-    BackHandler(enabled = drawerState.isOpen || currentRoute != "M01_DASHBOARD") {
+    var lastBackPressTime by remember { mutableLongStateOf(0L) }
+    val portalContext = androidx.compose.ui.platform.LocalContext.current
+
+    // Ensure non-default routes or open drawer return smoothly on Back press, with double-back exit guard
+    BackHandler(enabled = true) {
         if (drawerState.isOpen) {
             scope.launch {
                 if (!drawerState.isAnimationRunning) {
                     drawerState.close()
                 }
             }
-        } else {
+        } else if (currentRoute != "M01_DASHBOARD") {
             currentRoute = "M01_DASHBOARD"
+        } else {
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastBackPressTime < 2000L) {
+                (portalContext as? android.app.Activity)?.finish()
+            } else {
+                lastBackPressTime = currentTime
+                android.widget.Toast.makeText(portalContext, "Press back again to exit", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -770,15 +798,78 @@ private fun PortalShellBody(
                             label = "moduleCrossfade"
                         ) { route ->
                             when (route) {
-                                "M01_DASHBOARD" -> AdminDashboardModule(
-                                    state = state,
-                                    viewModel = viewModel,
-                                    onNavigateToModule = { target ->
-                                        if (drawerDestinations.any { it.routeId == target } || AllDrawerDestinations.any { it.routeId == target }) {
-                                            currentRoute = target
+                                "M01_DASHBOARD" -> {
+                                    when (activeRole) {
+                                        PortalRole.ADMIN -> AdminDashboardModule(
+                                            state = state,
+                                            viewModel = viewModel,
+                                            onNavigateToModule = { target ->
+                                                if (drawerDestinations.any { it.routeId == target } || AllDrawerDestinations.any { it.routeId == target }) {
+                                                    currentRoute = target
+                                                }
+                                            }
+                                        )
+                                        PortalRole.TEACHER -> {
+                                            val teacherName = state.userProfile?.displayName?.ifBlank { "Faculty Member" } ?: "Faculty Member"
+                                            val teacherUid = state.userProfile?.linkedEntityId?.ifBlank { state.userProfile?.uid.orEmpty() } ?: ""
+                                            com.waqar.institute.ui.teacher.TeacherDashboardScreen(
+                                                teacherName = teacherName,
+                                                teacherUid = teacherUid,
+                                                assignedBatches = state.batches.map { b ->
+                                                    com.waqar.institute.ui.teacher.TeacherBatchSlot(
+                                                        batchId = b.id,
+                                                        courseName = b.courseName,
+                                                        timeSlot = b.timing,
+                                                        room = b.roomNo,
+                                                        enrolledCount = b.enrolledCount
+                                                    )
+                                                },
+                                                onNavigateToProctor = { currentRoute = "M10_EXAMS" },
+                                                onNavigateToGrading = { currentRoute = "M11_RESULTS" }
+                                            )
+                                        }
+                                        PortalRole.STUDENT -> {
+                                            val stu = state.students.firstOrNull { it.id == state.userProfile?.linkedEntityId } ?: state.students.firstOrNull()
+                                            val dashData = com.waqar.institute.ui.student.StudentDashboardData(
+                                                rollNo = stu?.enrollmentNo ?: "WCI-STU",
+                                                fullName = stu?.fullName ?: state.userProfile?.displayName ?: "Student",
+                                                courseName = stu?.courseName ?: "Computer Science",
+                                                batchName = stu?.batchName ?: "Batch A",
+                                                attendancePercent = stu?.attendancePercent ?: 92,
+                                                syllabusPercent = stu?.syllabusCompletedPercent ?: 75,
+                                                isFeeClear = (stu?.pendingFeesPaise ?: 0L) <= 0L
+                                            )
+                                            com.waqar.institute.ui.student.StudentDashboardScreen(
+                                                data = dashData,
+                                                onLaunchExam = { currentRoute = "M10_EXAMS" },
+                                                onLaunchCoding = { currentRoute = com.waqar.institute.navigation.AppDrawer.ROUTE_CODING_SANDBOX },
+                                                onLaunchTally = { currentRoute = com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR },
+                                                onLaunchAiTutor = { currentRoute = "M18_AI_HUB" }
+                                            )
+                                        }
+                                        PortalRole.PARENT -> {
+                                            val guardianName = state.userProfile?.displayName ?: "Parent"
+                                            val children = state.students.map { child ->
+                                                com.waqar.institute.ui.parent.ChildSummary(
+                                                    rollNo = child.enrollmentNo,
+                                                    name = child.fullName,
+                                                    courseName = child.courseName,
+                                                    attendancePercent = child.attendancePercent,
+                                                    isPresentToday = true,
+                                                    feeBalancePaisa = child.pendingFeesPaise
+                                                )
+                                            }
+                                            com.waqar.institute.ui.parent.ParentDashboardScreen(
+                                                guardianName = guardianName,
+                                                children = children,
+                                                onNavigateToAttendance = { currentRoute = "M07_ATTENDANCE" },
+                                                onNavigateToFees = { currentRoute = "M08_FEES" },
+                                                onNavigateToResults = { currentRoute = "M11_RESULTS" },
+                                                onNavigateToChat = { currentRoute = "M16_ANNOUNCEMENTS" }
+                                            )
                                         }
                                     }
-                                )
+                                }
                                 "M03_STUDENTS" -> StudentsModuleScreen(state = state, viewModel = viewModel)
                                 "M04_ADMISSIONS" -> AdmissionsCrmModuleScreen(state = state, viewModel = viewModel)
                                 "M05_COURSES" -> CoursesAndBatchesModuleScreen(state = state, viewModel = viewModel, initialTab = 0)
@@ -831,6 +922,36 @@ private fun PortalShellBody(
                                 }
                                 com.waqar.institute.navigation.AppDrawer.ROUTE_TALLY_SIMULATOR -> {
                                     com.waqar.institute.tally.TallyPracticeSimulatorScreen()
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_ADMIN_MULTI_BRANCH -> {
+                                    com.waqar.institute.enterprise.AdminMultiBranchScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_ADMIN_ERP_PAYROLL -> {
+                                    com.waqar.institute.enterprise.AdminErpPayrollScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_ADMIN_CALLING_CRM -> {
+                                    com.waqar.institute.enterprise.AdminCallingCrmScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_ADMIN_DRM_SHIELD -> {
+                                    com.waqar.institute.enterprise.AdminDrmShieldScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_TEACHER_LAB_CONTROL -> {
+                                    com.waqar.institute.enterprise.TeacherLabControlScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_TEACHER_AI_EVALUATOR -> {
+                                    com.waqar.institute.enterprise.TeacherAiEvaluatorScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_3D_LAB -> {
+                                    com.waqar.institute.enterprise.StudentVirtualLabScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_PROJECT_SYNC -> {
+                                    com.waqar.institute.enterprise.StudentProjectSyncScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_STUDENT_CAREER_MATCH -> {
+                                    com.waqar.institute.enterprise.StudentCareerMatchScreen(state = state, viewModel = viewModel)
+                                }
+                                com.waqar.institute.navigation.AppDrawer.ROUTE_PARENT_LIVE_TRACKING -> {
+                                    com.waqar.institute.enterprise.ParentLiveTrackingScreen(state = state, viewModel = viewModel)
                                 }
                                 com.waqar.institute.navigation.AppDrawer.ROUTE_TERMS_AND_CONDITIONS -> {
                                     com.waqar.institute.ui.legal.TermsAndConditionsScreen()

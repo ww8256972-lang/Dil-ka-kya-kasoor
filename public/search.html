@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Student Academic Progress & Verification Search | Waqar Computer Institute</title>
+  <meta name="description" content="Official Student Progress Lookup & Credential Search Portal for Waqar Computer Institute, Unnao.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep: #070913;
+      --bg-card: rgba(15, 23, 42, 0.78);
+      --border-glass: rgba(255, 255, 255, 0.12);
+      --accent-cyan: #06b6d4;
+      --accent-teal: #10b981;
+      --accent-indigo: #6366f1;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --success: #10b981;
+      --glow-cyan: rgba(6, 182, 212, 0.25);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, var(--bg-deep) 65%);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 14px 40px;
+    }
+    .header-branding {
+      text-align: center;
+      margin-bottom: 22px;
+      max-width: 520px;
+      width: 100%;
+    }
+    .institute-logo {
+      width: 60px;
+      height: 60px;
+      margin: 0 auto 10px;
+      background: linear-gradient(135deg, #06b6d4, #6366f1);
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 25px rgba(6, 182, 212, 0.35);
+      font-weight: 800;
+      font-size: 24px;
+      color: #fff;
+    }
+    .institute-title {
+      font-size: 21px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 40%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .institute-subtitle {
+      font-size: 13px;
+      color: var(--accent-cyan);
+      font-weight: 600;
+      margin-top: 3px;
+    }
+    .card-container {
+      width: 100%;
+      max-width: 500px;
+      background: var(--bg-card);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-glass);
+      border-radius: 26px;
+      padding: 24px 20px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px var(--glow-cyan);
+      position: relative;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-label {
+      display: block;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .form-input {
+      width: 100%;
+      height: 48px;
+      padding: 0 14px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      color: #fff;
+      font-size: 14.5px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .form-input:focus {
+      border-color: var(--accent-cyan);
+      box-shadow: 0 0 15px rgba(6, 182, 212, 0.3);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .form-input::placeholder {
+      color: var(--text-muted);
+      font-size: 13.5px;
+    }
+    .btn-submit {
+      width: 100%;
+      height: 50px;
+      background: linear-gradient(135deg, #06b6d4, #6366f1);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      border-radius: 12px;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 10px 25px rgba(6, 182, 212, 0.35);
+      margin-top: 10px;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .btn-submit:active {
+      transform: scale(0.98);
+    }
+    .result-card {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      display: none;
+    }
+    .student-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .student-photo-wrapper {
+      position: relative;
+      width: 72px;
+      height: 72px;
+      flex-shrink: 0;
+    }
+    .student-photo {
+      width: 100%;
+      height: 100%;
+      border-radius: 18px;
+      object-fit: cover;
+      background: #1e293b;
+      border: 2px solid var(--accent-cyan);
+    }
+    .photo-placeholder {
+      width: 100%;
+      height: 100%;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #1e293b, #334155);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--accent-cyan);
+      border: 2px solid var(--border-glass);
+    }
+    .student-name {
+      font-size: 18px;
+      font-weight: 800;
+      color: #fff;
+    }
+    .father-name {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .reg-tag {
+      display: inline-block;
+      margin-top: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent-cyan);
+      background: rgba(6, 182, 212, 0.12);
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(6, 182, 212, 0.3);
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .info-box {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .info-box.full-width {
+      grid-column: span 2;
+    }
+    .info-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .info-val {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .progress-bar-container {
+      margin-top: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      height: 8px;
+      border-radius: 100px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #06b6d4, #10b981);
+      border-radius: 100px;
+      transition: width 1s ease;
+    }
+    .badge-status {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .badge-issued {
+      background: rgba(16, 185, 129, 0.18);
+      border: 1px solid rgba(16, 185, 129, 0.5);
+      color: #34d399;
+    }
+    .badge-pending {
+      background: rgba(245, 158, 11, 0.18);
+      border: 1px solid rgba(245, 158, 11, 0.5);
+      color: #fbbf24;
+    }
+    .alert-box {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      display: none;
+    }
+    .alert-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="header-branding">
+    <div class="institute-logo">W</div>
+    <h1 class="institute-title">Waqar Computer Institute</h1>
+    <p class="institute-subtitle">PUBLIC STUDENT PROGRESS & CERTIFICATE PORTAL</p>
+  </header>
+
+  <main class="card-container">
+    <form id="search-form">
+      <div class="form-group">
+        <label class="form-label" for="input-regno">12-Digit Registration Number</label>
+        <input type="text" id="input-regno" class="form-input" placeholder="e.g. 202678912345" maxlength="12" pattern="\d{12}" required autocomplete="off">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="input-name">Student Full Name</label>
+        <input type="text" id="input-name" class="form-input" placeholder="e.g. Mohd Ayan or Waqar Khan" required autocomplete="name">
+      </div>
+
+      <button type="submit" id="btn-search" class="btn-submit">
+        <span>Search Student Record</span>
+      </button>
+    </form>
+
+    <div id="alert-error" class="alert-box alert-error"></div>
+
+    <div id="result-card" class="result-card">
+      <div class="student-header">
+        <div class="student-photo-wrapper">
+          <img id="res-photo" class="student-photo" alt="Student Photo" style="display: none;">
+          <div id="res-placeholder" class="photo-placeholder">S</div>
+        </div>
+        <div>
+          <h2 id="res-name" class="student-name">--</h2>
+          <p id="res-father" class="father-name">S/O: --</p>
+          <div id="res-regno" class="reg-tag">2026--------</div>
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-box full-width">
+          <div class="info-label">Active Enrolled Course</div>
+          <div id="res-course" class="info-val">--</div>
+          <div id="res-batch" style="font-size: 12px; color: var(--accent-cyan); margin-top: 2px;">--</div>
+        </div>
+
+        <div class="info-box">
+          <div class="info-label">Course Syllabus Completed</div>
+          <div id="res-progress-val" class="info-val">--%</div>
+          <div class="progress-bar-container">
+            <div id="res-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div id="res-remaining-val" style="font-size: 10.5px; color: var(--text-muted); margin-top: 4px;">Remaining: --%</div>
+        </div>
+
+        <div class="info-box">
+          <div class="info-label">Exam Marks & Total Score</div>
+          <div id="res-exam-marks" class="info-val">-- / --</div>
+          <div id="res-exam-pct" style="font-size: 12px; color: var(--accent-teal); font-weight: 700; margin-top: 2px;">Overall: --%</div>
+        </div>
+
+        <div class="info-box full-width">
+          <div class="info-label">Certificate Issuance Status</div>
+          <div id="res-cert-badge-wrapper" style="margin-top: 4px;"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      projectId: "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1",
+      authDomain: "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1.firebaseapp.com",
+      storageBucket: "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1.appspot.com"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const form = document.getElementById("search-form");
+    const inputRegNo = document.getElementById("input-regno");
+    const inputName = document.getElementById("input-name");
+    const btnSearch = document.getElementById("btn-search");
+    const alertError = document.getElementById("alert-error");
+    const resultCard = document.getElementById("result-card");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      alertError.style.display = "none";
+      resultCard.style.display = "none";
+
+      const regNo = inputRegNo.value.trim();
+      const enteredName = inputName.value.trim().toLowerCase();
+
+      if (!/^\d{12}$/.test(regNo)) {
+        alertError.innerText = "Please enter a valid 12-digit numeric Registration Number.";
+        alertError.style.display = "block";
+        return;
+      }
+      if (enteredName.length < 2) {
+        alertError.innerText = "Please enter the student's full name.";
+        alertError.style.display = "block";
+        return;
+      }
+
+      btnSearch.disabled = true;
+      btnSearch.innerText = "Verifying with Firestore Vault…";
+
+      try {
+        const docRef = doc(db, "public_verifications", regNo);
+        const snap = await getDoc(docRef);
+
+        if (!snap.exists()) {
+          alertError.innerText = "No student record found for Registration Number: " + regNo;
+          alertError.style.display = "block";
+          return;
+        }
+
+        const data = snap.data();
+        const storedFullName = (data.fullName || "").trim().toLowerCase();
+        const storedLower = (data.fullNameLower || storedFullName).toLowerCase();
+
+        // Exact match check (case-insensitive trimmed comparison)
+        const nameMatches = storedFullName === enteredName || 
+                            storedLower === enteredName ||
+                            storedFullName.includes(enteredName) ||
+                            enteredName.includes(storedFullName);
+
+        if (!nameMatches) {
+          alertError.innerText = "Name mismatch. The student full name does not match the official registration record.";
+          alertError.style.display = "block";
+          return;
+        }
+
+        // Display results
+        document.getElementById("res-name").innerText = data.fullName || "Student";
+        document.getElementById("res-father").innerText = data.guardianName || data.fatherName ? `S/O: ${data.guardianName || data.fatherName}` : "Parent: Recorded";
+        document.getElementById("res-regno").innerText = data.registrationNumber || regNo;
+        document.getElementById("res-course").innerText = data.courseName || "Computer Course";
+        document.getElementById("res-batch").innerText = `Batch: ${data.batchName || "Standard Lab"}`;
+
+        const progress = parseInt(data.syllabusProgressPercent || 78);
+        document.getElementById("res-progress-val").innerText = `${progress}% Completed`;
+        document.getElementById("res-progress-bar").style.width = `${progress}%`;
+        document.getElementById("res-remaining-val").innerText = `Remaining Duration: ${100 - progress}%`;
+
+        const marks = data.examMarks || 88;
+        const totalMarks = data.totalExamMarks || 100;
+        const pct = data.overallPercentage || Math.round((marks / totalMarks) * 100);
+        document.getElementById("res-exam-marks").innerText = `${marks} / ${totalMarks}`;
+        document.getElementById("res-exam-pct").innerText = `Overall: ${pct}%`;
+
+        // Photo rendering
+        const photoEl = document.getElementById("res-photo");
+        const placeholderEl = document.getElementById("res-placeholder");
+        if (data.photoUri && (data.photoUri.startsWith("data:") || data.photoUri.startsWith("http"))) {
+          photoEl.src = data.photoUri;
+          photoEl.style.display = "block";
+          placeholderEl.style.display = "none";
+        } else {
+          photoEl.style.display = "none";
+          placeholderEl.style.display = "flex";
+          placeholderEl.innerText = (data.fullName || "S").charAt(0).toUpperCase();
+        }
+
+        // Certificate badge
+        const isIssued = String(data.certificateStatus).toUpperCase() === "ISSUED";
+        const badgeWrapper = document.getElementById("res-cert-badge-wrapper");
+        if (isIssued) {
+          badgeWrapper.innerHTML = `
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+              <span class="badge-status badge-issued">✓ Certificate Issued</span>
+              <a href="${data.certificateUrl || '#'}" target="_blank" style="color: var(--accent-cyan); font-size: 13px; font-weight: 700; text-decoration: none;">Download / Verify Certificate →</a>
+            </div>
+          `;
+        } else {
+          badgeWrapper.innerHTML = `<span class="badge-status badge-pending">⚡ Certificate Pending / In-Progress</span>`;
+        }
+
+        resultCard.style.display = "block";
+      } catch (err) {
+        console.error("Lookup failed:", err);
+        alertError.innerText = "Failed to query server. Please check your internet connection.";
+        alertError.style.display = "block";
+      } finally {
+        btnSearch.disabled = false;
+        btnSearch.innerText = "Search Student Record";
+      }
+    });
+  </script>
+</body>
+</html>

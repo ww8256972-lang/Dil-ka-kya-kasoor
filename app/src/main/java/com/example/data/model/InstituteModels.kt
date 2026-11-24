@@ -187,6 +187,7 @@ data class PortalCredential(
 data class StudentRecord(
     val id: String = "",
     val enrollmentNo: String = "",
+    val registrationNumber: String = "",
     val fullName: String = "",
     val email: String = "",
     val phone: String = "",
@@ -206,28 +207,35 @@ data class StudentRecord(
     val createdAt: Timestamp = Timestamp.now()
 ) {
     val dueFeePaise: Long get() = (totalFeePaise - paidFeePaise).coerceAtLeast(0L)
+    val effectiveRegNo: String get() = registrationNumber.ifBlank { enrollmentNo }
 
-    fun toMap(): Map<String, Any> = mapOf(
-        "id" to id,
-        "enrollmentNo" to enrollmentNo,
-        "fullName" to fullName,
-        "email" to email,
-        "phone" to phone,
-        "guardianName" to guardianName,
-        "guardianPhone" to guardianPhone,
-        "courseId" to courseId,
-        "courseName" to courseName,
-        "batchId" to batchId,
-        "batchName" to batchName,
-        "status" to status,
-        "totalFeePaise" to totalFeePaise,
-        "paidFeePaise" to paidFeePaise,
-        "attendancePercent" to attendancePercent,
-        "photoUri" to photoUri,
-        "attachmentName" to attachmentName,
-        "ownerUid" to ownerUid,
-        "createdAt" to createdAt
-    )
+    fun toMap(): Map<String, Any> {
+        val map = mutableMapOf<String, Any>(
+            "id" to id,
+            "enrollmentNo" to enrollmentNo,
+            "fullName" to fullName,
+            "email" to email,
+            "phone" to phone,
+            "guardianName" to guardianName,
+            "guardianPhone" to guardianPhone,
+            "courseId" to courseId,
+            "courseName" to courseName,
+            "batchId" to batchId,
+            "batchName" to batchName,
+            "status" to status,
+            "totalFeePaise" to totalFeePaise,
+            "paidFeePaise" to paidFeePaise,
+            "attendancePercent" to attendancePercent,
+            "photoUri" to photoUri,
+            "attachmentName" to attachmentName,
+            "ownerUid" to ownerUid,
+            "createdAt" to createdAt
+        )
+        if (registrationNumber.isNotBlank()) {
+            map["registrationNumber"] = registrationNumber
+        }
+        return map
+    }
 }
 
 data class AdmissionEnquiry(
