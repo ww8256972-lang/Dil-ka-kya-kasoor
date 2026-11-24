@@ -72,6 +72,20 @@ object ConcurrentSessionManager {
     }
 
     /**
+     * Pre-warms the in-memory sub-millisecond session cache synchronously.
+     */
+    fun prewarmLocalSessionToken(username: String, deviceId: String, role: PortalRole) {
+        val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
+        if (cleanUser.isBlank()) return
+        subMsSessionCache[cleanUser] = CachedDeviceSessionToken(
+            username = cleanUser,
+            activeDeviceId = deviceId,
+            role = role,
+            boundAtEpochMs = System.currentTimeMillis()
+        )
+    }
+
+    /**
      * Binds the active login session to this device in Cloud Firestore and starts real-time
      * single-device enforcement across Admin, Teacher, Student, and Parent accounts.
      */

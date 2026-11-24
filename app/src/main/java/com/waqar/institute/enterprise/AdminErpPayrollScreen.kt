@@ -40,8 +40,10 @@ fun AdminErpPayrollScreen(
     viewModel: InstituteViewModel
 ) {
     val totalRevenuePaise = remember(state.fees) { state.fees.sumOf { it.paidAmountPaise } }
-    val totalSalariesPaise = remember(state.payroll) { state.payroll.sumOf { it.netSalaryPaise } }
-    val netProfitPaise = remember(totalRevenuePaise, totalSalariesPaise) {
+    val totalSalariesPaise: Long = remember(state.payroll) {
+        state.payroll.sumOf { entry -> entry.netSalaryPaise }
+    }
+    val netProfitPaise: Long = remember(totalRevenuePaise, totalSalariesPaise) {
         totalRevenuePaise - totalSalariesPaise
     }
 

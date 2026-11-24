@@ -208,6 +208,8 @@ data class StudentRecord(
 ) {
     val dueFeePaise: Long get() = (totalFeePaise - paidFeePaise).coerceAtLeast(0L)
     val effectiveRegNo: String get() = registrationNumber.ifBlank { enrollmentNo }
+    val pendingFeesPaise: Long get() = dueFeePaise
+    val syllabusCompletedPercent: Int get() = 75
 
     fun toMap(): Map<String, Any> {
         val map = mutableMapOf<String, Any>(
@@ -237,6 +239,8 @@ data class StudentRecord(
         return map
     }
 }
+
+typealias Student = StudentRecord
 
 data class AdmissionEnquiry(
     val id: String = "",
@@ -318,6 +322,9 @@ data class BatchRecord(
     val ownerUid: String = "",
     val createdAt: Timestamp = Timestamp.now()
 ) {
+    val timing: String get() = "$startTime - $endTime"
+    val roomNo: String get() = roomName
+
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
         "code" to code,
@@ -341,6 +348,8 @@ data class BatchRecord(
         "createdAt" to createdAt
     )
 }
+
+typealias Batch = BatchRecord
 
 data class AttendanceRecord(
     val id: String = "",
@@ -620,6 +629,9 @@ data class StaffMember(
     val ownerUid: String = "",
     val createdAt: Timestamp = Timestamp.now()
 ) {
+    val name: String get() = fullName
+    val baseSalaryPaise: Long get() = monthlySalaryPaise
+
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
         "employeeCode" to employeeCode,
@@ -652,6 +664,10 @@ data class PayrollEntry(
     val ownerUid: String = "",
     val createdAt: Timestamp = Timestamp.now()
 ) {
+    val name: String get() = staffName
+    val baseSalaryPaise: Long get() = basicPaise
+    val netSalaryPaise: Long get() = netPayPaise
+
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
         "staffId" to staffId,

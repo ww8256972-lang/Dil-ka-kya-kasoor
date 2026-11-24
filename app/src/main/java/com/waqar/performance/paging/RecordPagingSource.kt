@@ -5,7 +5,7 @@ import androidx.paging.PagingConfig
 import androidx.paging.PagingData
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
-import com.example.data.model.Student
+import com.example.data.model.StudentRecord
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -18,17 +18,17 @@ import kotlinx.coroutines.flow.Flow
  * - Prevents OutOfMemoryError and guarantees locked 60/120 FPS scrolling over 100,000+ entries.
  */
 class RecordPagingSource(
-    private val fetchPage: suspend (page: Int, pageSize: Int) -> List<Student>
-) : PagingSource<Int, Student>() {
+    private val fetchPage: suspend (page: Int, pageSize: Int) -> List<StudentRecord>
+) : PagingSource<Int, StudentRecord>() {
 
-    override fun getRefreshKey(state: PagingState<Int, Student>): Int? {
+    override fun getRefreshKey(state: PagingState<Int, StudentRecord>): Int? {
         return state.anchorPosition?.let { anchor ->
             val anchorPage = state.closestPageToPosition(anchor)
             anchorPage?.prevKey?.plus(1) ?: anchorPage?.nextKey?.minus(1)
         }
     }
 
-    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, Student> {
+    override suspend fun load(params: LoadParams<Int>): LoadResult<Int, StudentRecord> {
         val currentPage = params.key ?: 0
         return try {
             val data = fetchPage(currentPage, params.loadSize)
@@ -43,7 +43,7 @@ class RecordPagingSource(
     }
 
     companion object {
-        fun createPager(fetchPage: suspend (page: Int, pageSize: Int) -> List<Student>): Flow<PagingData<Student>> {
+        fun createPager(fetchPage: suspend (page: Int, pageSize: Int) -> List<StudentRecord>): Flow<PagingData<StudentRecord>> {
             return Pager(
                 config = PagingConfig(
                     pageSize = 30,

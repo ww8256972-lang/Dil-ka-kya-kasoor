@@ -228,17 +228,11 @@ class InstituteViewModel(
                             isAdmin = roleFlags.isAdmin,
                             portalRoles = roleFlags.portalRoles
                         )
-                        prefsManager.setSelectedPortalRole(roleKey)
+                        viewModelScope.launch { prefsManager.setSelectedPortalRole(roleKey) }
                         internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(roleKey)
                         val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(ctx)
                         val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
-                        com.waqar.institute.session.ConcurrentSessionManager.subMsSessionCache[cleanUser] =
-                            com.waqar.institute.session.CachedDeviceSessionToken(
-                                username = cleanUser,
-                                activeDeviceId = devId,
-                                role = role,
-                                boundAtEpochMs = System.currentTimeMillis()
-                            )
+                        com.waqar.institute.session.ConcurrentSessionManager.prewarmLocalSessionToken(cleanUser, devId, role)
                         _uiState.update {
                             it.copy(
                                 userProfile = restoredProfile,
@@ -693,13 +687,7 @@ class InstituteViewModel(
                             prefsManager.setSelectedPortalRole(effectiveRole.key)
                             val cleanUser = result.profile.username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
                             val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(activityContext)
-                            com.waqar.institute.session.ConcurrentSessionManager.subMsSessionCache[cleanUser] =
-                                com.waqar.institute.session.CachedDeviceSessionToken(
-                                    username = cleanUser,
-                                    activeDeviceId = devId,
-                                    role = effectiveRole,
-                                    boundAtEpochMs = System.currentTimeMillis()
-                                )
+                            com.waqar.institute.session.ConcurrentSessionManager.prewarmLocalSessionToken(cleanUser, devId, effectiveRole)
                             _uiState.update {
                                 it.copy(
                                     userProfile = result.profile,
@@ -3256,6 +3244,7 @@ class InstituteViewModel(
     fun setReduceMotion(reduce: Boolean) = viewModelScope.launch { prefsManager.setReduceMotion(reduce) }
     fun setBiometricLockEnabled(enabled: Boolean) = viewModelScope.launch { prefsManager.setBiometricLock(enabled) }
     fun setFlagSecureEnabled(enabled: Boolean) = viewModelScope.launch { prefsManager.setFlagSecure(enabled) }
+    fun setFlagSecure(enabled: Boolean) = setFlagSecureEnabled(enabled)
 
     fun saveInstituteBranding(
         name: String,

@@ -1,7 +1,7 @@
 package com.waqar.performance.crypto
 
 import android.util.Log
-import org.conscrypt.Conscrypt
+import java.security.Provider
 import java.security.Security
 
 /**
@@ -25,10 +25,14 @@ object ConscryptHardwareProvider {
     fun install() {
         if (isInstalled) return
         runCatching {
-            val provider = Conscrypt.newProvider()
-            Security.insertProviderAt(provider, 1)
-            isInstalled = true
-            Log.d(TAG, "Google Conscrypt (BoringSSL) hardware provider installed at priority 1.")
+            val clazz = Class.forName("org.conscrypt.Conscrypt")
+            val method = clazz.getMethod("newProvider")
+            val provider = method.invoke(null) as? Provider
+            if (provider != null) {
+                Security.insertProviderAt(provider, 1)
+                isInstalled = true
+                Log.d(TAG, "Google Conscrypt (BoringSSL) hardware provider installed at priority 1.")
+            }
         }.onFailure { err ->
             Log.w(TAG, "Notice installing Conscrypt provider: ${err.localizedMessage}")
         }
