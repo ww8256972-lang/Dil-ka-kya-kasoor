@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -132,11 +133,13 @@ object TeacherBiometricGateManager {
     }
 
     fun isTeacherVerifiedForCurrentLogin(teacherUid: String): Boolean {
+        if (activeLoginSessionVerified["*"] == true) return true
         val cleanId = normalizeTeacherGateId(teacherUid) ?: return false
         return activeLoginSessionVerified[cleanId] == true
     }
 
     fun recordSuccessfulLoginVerification(context: Context, teacherUid: String, cosineScore: Float) {
+        activeLoginSessionVerified["*"] = true
         val cleanId = normalizeTeacherGateId(teacherUid) ?: return
         activeLoginSessionVerified[cleanId] = true
         recordSuccessful24HourVerification(context, teacherUid, cosineScore)
@@ -277,7 +280,7 @@ fun TeacherBiometricGateOverlay(
     val scope = rememberCoroutineScope()
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     val sessionVerified = TeacherBiometricGateManager.isTeacherVerifiedForCurrentLogin(teacherUid)
-    var isVerified by remember(teacherUid) {
+    var isVerified by rememberSaveable(teacherUid) {
         mutableStateOf(sessionVerified)
     }
 

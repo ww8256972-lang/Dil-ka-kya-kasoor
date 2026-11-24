@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
         runCatching { lifecycle.addObserver(MemoryScrubberLifecycleObserver(this)) }
         runCatching { SkiaGpuRenderOptimizer.enableHighRefreshRateGpuPipeline(this) }
         runCatching { com.waqar.performance.PerformanceIntegrityOrchestrator.attachActivityDiagnostics(this) }
-        runCatching { window.decorView.filterTouchesWhenObscured = true }
+        runCatching { window.decorView.filterTouchesWhenObscured = false }
 
         // 2. Render Compose UI immediately on Frame 0 (prevents 3-4 second black screen on startup)
         enableEdgeToEdge()
@@ -149,10 +149,9 @@ class MainActivity : ComponentActivity() {
 
     override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
         if (ev != null) {
-            val allowed = runCatching {
+            runCatching {
                 com.waqar.institute.security.BrahmastraUnifiedWiringOrchestrator.inspectGlobalActivityTouch(ev)
-            }.getOrDefault(true)
-            if (!allowed) return true
+            }
         }
         return super.dispatchTouchEvent(ev)
     }
@@ -282,6 +281,7 @@ fun WaqarInstituteApp(
                         },
                         onCredentialLogin = { actCtx, role, username, password ->
                             SessionManager.clearForceLogoutNotice()
+                            com.waqar.institute.session.ConcurrentSessionManager.clearSessionExpiredAlert()
                             viewModel.authenticateWithPortalCredentials(actCtx, role, username, password)
                         },
                         onCompleteFirstRunAdminSetup = { actCtx, username, password ->

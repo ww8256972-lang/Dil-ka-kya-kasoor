@@ -157,6 +157,7 @@ object ConcurrentSessionManager {
         activeWatchJob?.cancel()
         activeWatchJob = null
         subMsSessionCache.clear()
+        _sessionExpiredMessage.value = null
         SessionManager.clearLocalSession(lastBoundContext)
     }
 }

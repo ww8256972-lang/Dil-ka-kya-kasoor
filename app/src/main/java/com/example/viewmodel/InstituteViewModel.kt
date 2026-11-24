@@ -284,17 +284,20 @@ class InstituteViewModel(
 
     private fun ensureActiveSessionOrSignOut(): Boolean {
         val uid = currentActorUid() ?: return false
+        val ctx = appContext
+        val hasLocal = ctx != null && com.waqar.institute.session.SessionManager.hasValidLocalSession(ctx)
         val forceReason = com.waqar.institute.session.SessionManager.sessionForceLogoutEvent.value
             ?: com.waqar.institute.session.ConcurrentSessionManager.sessionExpiredMessage.value
-        if (!forceReason.isNullOrBlank()) {
+        if (!forceReason.isNullOrBlank() && !hasLocal) {
             signOut(reasonMessage = forceReason)
             return false
+        } else if (hasLocal && !forceReason.isNullOrBlank()) {
+            com.waqar.institute.session.SessionManager.clearForceLogoutNotice()
+            com.waqar.institute.session.ConcurrentSessionManager.clearSessionExpiredAlert()
         }
         val username = _uiState.value.userProfile?.username.orEmpty()
-        val ctx = appContext
         if (ctx != null && username.isNotBlank()) {
             val isSubMsValid = com.waqar.institute.session.ConcurrentSessionManager.verifySubMillisecondSession(ctx, username)
-            val hasLocal = com.waqar.institute.session.SessionManager.hasValidLocalSession(ctx)
             if (!isSubMsValid && !hasLocal) {
                 // Session is valid locally; do not abort prematurely during background sync
                 return true
@@ -681,6 +684,8 @@ class InstituteViewModel(
                         is AuthPortalResult.Success -> {
                             failedAuthAttempts = 0
                             authLockoutUntilEpochMs = 0L
+                            com.waqar.institute.session.SessionManager.clearForceLogoutNotice()
+                            com.waqar.institute.session.ConcurrentSessionManager.clearSessionExpiredAlert()
                             com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
                             val effectiveRole = result.session.role
                             internal_compose_brahmastra.RoleCapabilityGate.refreshVerifiedJwtRoleFromFirebase()
@@ -1376,6 +1381,8 @@ class InstituteViewModel(
 
     fun signOut(reasonMessage: String? = null) {
         internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(null)
+        com.waqar.institute.session.SessionManager.clearForceLogoutNotice()
+        com.waqar.institute.session.ConcurrentSessionManager.clearSessionExpiredAlert()
         com.waqar.institute.biometric.TeacherBiometricGateManager.clearLoginVerificationOnAuthChange()
         com.waqar.institute.session.ConcurrentSessionManager.stopWatchingSession()
         authServiceProvider.signOut(appContext)

@@ -363,27 +363,16 @@ private fun PortalShellBody(
         }
     }
 
-    var lastBackPressTime by remember { mutableLongStateOf(0L) }
-    val portalContext = androidx.compose.ui.platform.LocalContext.current
-
-    // Ensure non-default routes or open drawer return smoothly on Back press, with double-back exit guard
-    BackHandler(enabled = true) {
+    // Ensure non-default routes or open drawer return smoothly on Back press
+    BackHandler(enabled = drawerState.isOpen || currentRoute != "M01_DASHBOARD") {
         if (drawerState.isOpen) {
             scope.launch {
                 if (!drawerState.isAnimationRunning) {
                     drawerState.close()
                 }
             }
-        } else if (currentRoute != "M01_DASHBOARD") {
-            currentRoute = "M01_DASHBOARD"
         } else {
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastBackPressTime < 2000L) {
-                (portalContext as? android.app.Activity)?.finish()
-            } else {
-                lastBackPressTime = currentTime
-                android.widget.Toast.makeText(portalContext, "Press back again to exit", android.widget.Toast.LENGTH_SHORT).show()
-            }
+            currentRoute = "M01_DASHBOARD"
         }
     }
 

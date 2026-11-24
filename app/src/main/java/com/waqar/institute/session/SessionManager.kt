@@ -120,6 +120,7 @@ object SessionManager {
 
     fun clearForceLogoutNotice() {
         _sessionForceLogoutEvent.value = null
+        ConcurrentSessionManager.clearSessionExpiredAlert()
     }
 
     fun stopSessionWatcher() {
@@ -127,6 +128,7 @@ object SessionManager {
         watchSetupJob = null
         activeListener?.remove()
         activeListener = null
+        _sessionForceLogoutEvent.value = null
     }
 
     /**

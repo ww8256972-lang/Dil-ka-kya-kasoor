@@ -26,8 +26,7 @@ object ComposePhantomTouchGuard {
         touchMinorPx: Float = 14f,
         pressure: Float = 0.45f
     ): TouchSecurityAudit {
-        val isObscured = (motionFlags and MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0 ||
-            (motionFlags and MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED) != 0
+        val isObscured = (motionFlags and MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0
         if (isObscured) {
             return TouchSecurityAudit(
                 allowed = false,
