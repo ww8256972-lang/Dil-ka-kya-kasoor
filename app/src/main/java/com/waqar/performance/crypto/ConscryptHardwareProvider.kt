@@ -24,6 +24,12 @@ object ConscryptHardwareProvider {
      */
     fun install() {
         if (isInstalled) return
+        val vmName = System.getProperty("java.vm.name").orEmpty()
+        val isAndroidRuntime = vmName.contains("Dalvik", ignoreCase = true) || vmName.contains("ART", ignoreCase = true)
+        if (!isAndroidRuntime) {
+            Log.d(TAG, "Host JVM environment detected ($vmName); skipping Conscrypt native provider registration.")
+            return
+        }
         runCatching {
             val clazz = Class.forName("org.conscrypt.Conscrypt")
             val method = clazz.getMethod("newProvider")

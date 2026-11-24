@@ -33,15 +33,20 @@ class InstituteApp : WaqarUniversalAppBootstrapper(), Configuration.Provider {
         super.onCreate()
         val appCtx = applicationContext ?: this
 
-        // 1. Install Performance Module Coil ImageLoader
-        runCatching {
-            PerformanceModule.installCoilImageLoader(appCtx)
-        }.onFailure { err ->
-            Log.w(TAG, "PerformanceModule Coil setup notice: ${err.localizedMessage}")
-        }
+        val vmName = System.getProperty("java.vm.name").orEmpty()
+        val isAndroidRuntime = vmName.contains("Dalvik", ignoreCase = true) || vmName.contains("ART", ignoreCase = true)
 
-        // 2. Schedule 24h Periodic Storage Cleanup Work
-        scheduleStorageCleanupWork(appCtx)
+        if (isAndroidRuntime) {
+            // 1. Install Performance Module Coil ImageLoader
+            runCatching {
+                PerformanceModule.installCoilImageLoader(appCtx)
+            }.onFailure { err ->
+                Log.w(TAG, "PerformanceModule Coil setup notice: ${err.localizedMessage}")
+            }
+
+            // 2. Schedule 24h Periodic Storage Cleanup Work
+            scheduleStorageCleanupWork(appCtx)
+        }
 
         // 3. Initialize Advanced Mathematical Security & Performance Integrity Orchestrators
         com.waqar.security.advanced.AdvancedSecurityOrchestrator.initialize(appCtx)
