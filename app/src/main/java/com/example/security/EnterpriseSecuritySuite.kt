@@ -38,6 +38,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import okhttp3.CertificatePinner
 import okhttp3.ConnectionSpec
@@ -595,8 +596,11 @@ object StringShield {
 }
 
 object BaselineProfileOptimization {
+    // Structured IO scope for background baseline profile installation.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun installAsync(context: Context) {
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             runCatching {
                 ProfileInstaller.writeProfile(context.applicationContext)
             }

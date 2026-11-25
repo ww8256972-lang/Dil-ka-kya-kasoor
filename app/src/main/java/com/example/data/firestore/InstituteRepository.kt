@@ -613,7 +613,7 @@ class InstituteRepository(
      * Cursor-based pagination for Cloud Firestore `students` collection (Part 7 Scalability).
      */
     suspend fun fetchStudentsPage(
-        limit: Long = 100L,
+        limit: Long = 50L,
         lastDocument: com.google.firebase.firestore.DocumentSnapshot? = null
     ): Pair<List<StudentRecord>, com.google.firebase.firestore.DocumentSnapshot?> {
         var query = db.collection("students")

@@ -337,22 +337,21 @@ fun AdminDashboardModule(
                         )
                     )
                     Spacer(modifier = Modifier.height(14.dp))
-                    val countdownTriple by produceState(
-                        initialValue = Triple("--", "--", "--"),
-                        key1 = nextStartMs
-                    ) {
-                        if (nextStartMs == null) {
-                            value = Triple("--", "--", "--")
-                        } else {
-                            while (true) {
+                    val countdownTriple by remember { mutableStateOf(Triple("--", "--", "--")) }
+
+                    if (nextStartMs != null) {
+                        LaunchedEffect(nextStartMs) {
+                            while (isActive) {
                                 val diffSec = ((nextStartMs - System.currentTimeMillis()) / 1000L).coerceAtLeast(0L)
                                 val d = (diffSec / 86400L).toString().padStart(2, '0')
                                 val h = ((diffSec % 86400L) / 3600L).toString().padStart(2, '0')
                                 val m = ((diffSec % 3600L) / 60L).toString().padStart(2, '0')
-                                value = Triple(d, h, m)
-                                kotlinx.coroutines.delay(30_000L)
+                                countdownTriple = Triple(d, h, m)
+                                delay(30_000L)
                             }
                         }
+                    } else {
+                        countdownTriple = Triple("--", "--", "--")
                     }
                     Column(
                         modifier = Modifier.fillMaxWidth(),

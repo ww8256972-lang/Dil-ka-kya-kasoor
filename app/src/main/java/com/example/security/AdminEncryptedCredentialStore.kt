@@ -139,11 +139,13 @@ object AdminEncryptedCredentialStore {
     }
 
     /**
-     * Returns `true` as the secure obfuscated admin credentials are authenticated and active out of the box.
+     * Returns `true` only after the Institute Administrator has customized the Admin
+     * credentials via First-Run Setup. Returns `false` for a fresh install where no
+     * custom Admin password has been set — fail-closed, no default credentials.
      */
     fun isAdminConfigured(context: Context): Boolean {
         ensureInitialized(context)
-        return true
+        return isCustomizedByAdmin(context)
     }
 
     fun getActiveAdminUsername(context: Context): String {
@@ -195,41 +197,34 @@ object AdminEncryptedCredentialStore {
         val cleanInputUser = normalizeAdminUsername(rawUsername)
         val isCustomized = isCustomizedByAdmin(context)
 
-        val activeUsername = if (isCustomized) {
-            prefs.getString(KEY_ADMIN_USERNAME, null)?.takeIf { it.isNotBlank() }
-                ?: getObfuscatedDefaultAdminUsername()
-        } else {
-            getObfuscatedDefaultAdminUsername()
+        // Fail-closed: if Admin has not customized credentials via First-Run Setup,
+        // there are no default/fallback passwords. Reject immediately.
+        if (!isCustomized) {
+            return AdminVerifyResult.NotConfigured
         }
+
+        val activeUsername = prefs.getString(KEY_ADMIN_USERNAME, null)?.takeIf { it.isNotBlank() }
+            ?: return AdminVerifyResult.NotConfigured
 
         if (cleanInputUser != activeUsername) {
             return AdminVerifyResult.UsernameNotMatched(
                 activeAdminUsername = activeUsername,
-                isCustomized = isCustomized
+                isCustomized = true
             )
         }
 
-        val matched = if (isCustomized) {
-            val storedArgon2 = prefs.getString(KEY_ADMIN_PASSWORD_ARGON2, null)
-                ?: return AdminVerifyResult.PasswordMismatch(isCustomized = true)
-            Argon2CredentialHasher.verifyPasswordConstantTime(
-                passwordChars = passwordChars,
-                storedEncodedHash = storedArgon2
-            )
-        } else {
-            val defaultArgon2 = getObfuscatedDefaultAdminArgon2Hash()
-            val defaultSaltHex = getObfuscatedDefaultSaltHex()
-            Argon2CredentialHasher.verifyPasswordConstantTime(
-                passwordChars = passwordChars,
-                storedEncodedHash = defaultArgon2,
-                legacySaltHex = defaultSaltHex
-            )
-        }
+        val storedArgon2 = prefs.getString(KEY_ADMIN_PASSWORD_ARGON2, null)
+            ?: return AdminVerifyResult.PasswordMismatch(isCustomized = true)
+
+        val matched = Argon2CredentialHasher.verifyPasswordConstantTime(
+            passwordChars = passwordChars,
+            storedEncodedHash = storedArgon2
+        )
 
         return if (matched) {
-            AdminVerifyResult.Verified(username = activeUsername, isCustomized = isCustomized)
+            AdminVerifyResult.Verified(username = activeUsername, isCustomized = true)
         } else {
-            AdminVerifyResult.PasswordMismatch(isCustomized = isCustomized)
+            AdminVerifyResult.PasswordMismatch(isCustomized = true)
         }
     }
 

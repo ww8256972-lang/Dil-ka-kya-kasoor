@@ -78,10 +78,6 @@ class ChaosEntropySeeder(context: Context) : SensorEventListener {
         }
     }
 
-    fun unregister() {
-        sensorManager?.unregisterListener(this)
-    }
-
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
         // No-op for entropy collection
     }
