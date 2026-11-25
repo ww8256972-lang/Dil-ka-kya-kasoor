@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object EnterpriseRateLimiter {
 
-    const val MAX_REQUESTS_PER_WINDOW: Int = 5
+    const val MAX_REQUESTS_PER_WINDOW: Int = 35
     const val STRICT_BRUTE_FORCE_LIMIT: Int = 5
     const val WINDOW_MS: Long = 60_000L          // 60 seconds
     const val BLOCK_DURATION_MS: Long = 300_000L // 5 minutes (300 seconds)
