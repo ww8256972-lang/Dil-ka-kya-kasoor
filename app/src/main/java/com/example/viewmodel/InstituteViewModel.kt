@@ -3388,6 +3388,11 @@ class InstituteViewModel(
     private fun todayIso(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
+    override fun onCleared() {
+        super.onCleared()
+        cancelRealtimeStreams()
+    }
+
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -3439,10 +3444,5 @@ internal object TeacherScopeMatcher {
         (stu.batchId.isNotBlank() && normKey(stu.batchId) in teacherBatchIds) ||
             (stu.batchName.isNotBlank() && normKey(stu.batchName) in teacherBatchNames) ||
             (stu.batchId.isBlank() && stu.batchName.isBlank() && normKey(stu.courseName) in teacherCourseNames)
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        cancelRealtimeStreams()
     }
 }

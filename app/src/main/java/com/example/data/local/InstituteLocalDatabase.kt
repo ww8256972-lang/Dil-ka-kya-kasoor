@@ -17,6 +17,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.security.HardwareKeystoreVault
 import java.util.Arrays
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Entity(
