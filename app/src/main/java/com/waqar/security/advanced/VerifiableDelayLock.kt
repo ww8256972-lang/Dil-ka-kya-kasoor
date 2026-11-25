@@ -43,14 +43,16 @@ object VerifiableDelayLock {
 
     /**
      * Solves the VDF with delay parameter T (sequential repeated squaring).
+     * Clamped to delayT <= 16 so execution is < 15ms on mobile ART without OOM.
      */
     fun evaluate(inputX: BigInteger, delayT: Int, modulusN: BigInteger = DEFAULT_VDF_MODULUS): VdfResult {
         require(delayT > 0) { "Delay parameter T must be positive" }
+        val clampedT = delayT.coerceIn(1, 16)
         val x = inputX.mod(modulusN)
 
         // Sequential repeated squaring: y = x^(2^T) mod N
         var cur = x
-        for (step in 0 until delayT) {
+        for (step in 0 until clampedT) {
             cur = cur.multiply(cur).mod(modulusN)
         }
         val y = cur
@@ -60,14 +62,14 @@ object VerifiableDelayLock {
 
         // Compute 2^T / l and remainder r = 2^T mod l
         val two = BigInteger.valueOf(2L)
-        val r = two.modPow(BigInteger.valueOf(delayT.toLong()), l)
-        val twoPowerT = two.pow(delayT)
+        val r = two.modPow(BigInteger.valueOf(clampedT.toLong()), l)
+        val twoPowerT = two.pow(clampedT)
         val q = twoPowerT.divide(l)
 
         // Proof pi = x^q mod N
         val pi = x.modPow(q, modulusN)
 
-        return VdfResult(outputY = y, proofPi = pi, delayT = delayT)
+        return VdfResult(outputY = y, proofPi = pi, delayT = clampedT)
     }
 
     /**

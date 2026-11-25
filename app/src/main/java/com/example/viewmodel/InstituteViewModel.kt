@@ -1326,6 +1326,13 @@ class InstituteViewModel(
         }
     }
 
+    fun setKeepSessionActive(enabled: Boolean) {
+        _uiState.update { it.copy(preferences = it.preferences.copy(keepSessionActive = enabled)) }
+        viewModelScope.launch {
+            prefsManager.setKeepSessionActive(enabled)
+        }
+    }
+
     fun verifyTotpMfa(code: String): Boolean {
         val actorKey = _uiState.value.userProfile?.uid ?: _uiState.value.userProfile?.username ?: "mfa_default"
         val rateDecision = com.example.security.EnterpriseRateLimiter.checkAndConsume(

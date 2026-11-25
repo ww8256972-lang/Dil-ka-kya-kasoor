@@ -275,6 +275,8 @@ fun WaqarInstituteApp(
                         isAuthenticating = state.isAuthenticating,
                         externalStatusMessage = forceLogoutMsg ?: state.statusMessage,
                         pendingAdminSetupUsername = state.pendingAdminSetupUsername,
+                        keepSessionActive = state.preferences.keepSessionActive,
+                        onKeepSessionToggled = { enabled -> viewModel.setKeepSessionActive(enabled) },
                         onRoleSelected = { role -> viewModel.switchPortalRole(role) },
                         onLanguageToggle = {
                             viewModel.setLanguage("EN")

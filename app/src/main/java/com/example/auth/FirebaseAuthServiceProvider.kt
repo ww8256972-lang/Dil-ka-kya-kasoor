@@ -30,6 +30,7 @@ import org.json.JSONObject
 import org.lsposed.lsparanoid.Obfuscate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -148,6 +149,10 @@ class FirebaseAuthServiceProvider(
             .writeTimeout(3, TimeUnit.SECONDS)
             .build()
     }
+
+    // Structured IO scope for all fire-and-forget background work (audit logging, session sealing,
+    // credential provisioning). Tied to this instance lifecycle — cancelled when the provider is GC'd.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private sealed class CustomTokenExchangeOutcome {
         data class Authenticated(val session: AuthenticatedPortalSession) : CustomTokenExchangeOutcome()
@@ -393,7 +398,11 @@ class FirebaseAuthServiceProvider(
         val derivedSecret = derivePortalAuthSecret(cleanPassword)
 
         try {
-            val signInRes = auth.signInWithEmailAndPassword(authEmail, derivedSecret).await()
+            val signInRes = runCatching {
+                withTimeoutOrNull(3500L) {
+                    auth.signInWithEmailAndPassword(authEmail, derivedSecret).await()
+                }
+            }.getOrNull() ?: return null
             val signedInUser = signInRes.user ?: auth.currentUser
             val resolvedUid = signedInUser?.uid ?: "cred_$cleanUsername"
             val safeNow = Timestamp(Date(System.currentTimeMillis() - 1000L))
@@ -449,7 +458,7 @@ class FirebaseAuthServiceProvider(
                         pbkdf2ParitySalt = pbkdf2Parity.saltHex
                     )
                     InstituteRepository.cacheCredentialLocally(adminCred)
-                    CoroutineScope(Dispatchers.IO).launch {
+                    ioScope.launch {
                         runCatching { repository.savePortalCredentialWithConfirmation(adminCred) }
                     }
                 } catch (_: Exception) {
@@ -518,7 +527,7 @@ class FirebaseAuthServiceProvider(
                 deviceFingerprint = deviceFp
             )
         } catch (_: FirebaseAuthInvalidUserException) {
-            if (selectedRole == PortalRole.ADMIN && cleanUsername == "waqar") {
+            if (selectedRole == PortalRole.ADMIN && AdminEncryptedCredentialStore.isAdminConfigured(context ?: activityContext)) {
                 val adminCtx = context ?: activityContext
                 val chkChars = cleanPassword.toCharArray()
                 val localCheck = try {
@@ -528,6 +537,9 @@ class FirebaseAuthServiceProvider(
                 }
                 if (localCheck is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch) {
                     throw SecurityException("Invalid username or password.")
+                }
+                if (localCheck is AdminEncryptedCredentialStore.AdminVerifyResult.NotConfigured) {
+                    throw SecurityException("Admin credentials not configured. Please complete First-Run Admin Setup before signing in as Admin.")
                 }
 
                 val createRes = try {
@@ -713,7 +725,7 @@ class FirebaseAuthServiceProvider(
                     portalRoles = roleFlags.portalRoles,
                     createdAt = safeNow
                 )
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     val existing = runCatching {
                         portalAuthRepository.fetchUserProfileCrossDevice(session.sessionUid)
                     }.getOrNull()
@@ -836,7 +848,7 @@ class FirebaseAuthServiceProvider(
                 portalRoles = listOf(PortalRole.ADMIN.key),
                 createdAt = safeNow
             )
-            CoroutineScope(Dispatchers.IO).launch {
+            ioScope.launch {
                 runCatching { sealSessionInKeystore(activityContext, session) }
             }
             AuthPortalResult.Success(profile = profile, session = session)
@@ -867,7 +879,7 @@ class FirebaseAuthServiceProvider(
             identityKey = "${selectedRole.key}:$cleanUsername"
         )
         if (!rateDecision.allowed) {
-            CoroutineScope(Dispatchers.IO).launch {
+            ioScope.launch {
                 logSecurityAuditEvent(
                     actorUid = auth.currentUser?.uid ?: "unauthenticated",
                     actorName = cleanUsername,
@@ -893,75 +905,7 @@ class FirebaseAuthServiceProvider(
         val isPermittedAdminCandidate = cleanUsername in setOf("admin", "waqar", "waqar_admin") || isBootstrappedOwner
         val deviceFp = SessionFingerprintManager.captureCurrentDeviceFingerprint(activityContext)
 
-        // 0. Zero-Trust Server Custom Token Exchange (mints signed Firebase JWT with { role, portalUid } claims;
-        //    no Google Sign-In required for Admin, Teacher, Student, or Parent).
-        val tokenOutcome = exchangePortalCredentialsForCustomToken(cleanUsername, cleanPassword, selectedRole, deviceFp)
-        when (tokenOutcome) {
-            is CustomTokenExchangeOutcome.Authenticated -> {
-                val verifiedSession = tokenOutcome.session
-                CoroutineScope(Dispatchers.IO).launch {
-                    runCatching {
-                        val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
-                        repository.saveBoundPortalSession(
-                            uid = verifiedSession.sessionUid,
-                            actorId = verifiedSession.linkedEntityId.ifBlank { verifiedSession.sessionUid },
-                            username = verifiedSession.username,
-                            role = verifiedSession.role.key,
-                            deviceFingerprint = deviceFp,
-                            expiresAt = expiresAt
-                        )
-                        logSecurityAuditEvent(
-                            actorUid = verifiedSession.sessionUid,
-                            actorName = verifiedSession.displayName,
-                            eventType = "PORTAL_CUSTOM_TOKEN_LOGIN_SUCCESS",
-                            severity = "INFO",
-                            details = "Authenticated '${verifiedSession.username}' (${verifiedSession.role.key}) via signed Firebase Custom Token (fp=$deviceFp)"
-                        )
-                        sealSessionInKeystore(activityContext, verifiedSession)
-                    }
-                }
-                return@runCatching verifiedSession
-            }
-            is CustomTokenExchangeOutcome.Rejected -> {
-                throw SecurityException(tokenOutcome.message)
-            }
-            is CustomTokenExchangeOutcome.Unavailable -> {
-                // Spark-Plan Native Firebase Auth fallback (`signInWithEmailAndPassword` / first-run `waqar` bootstrap)
-                val sparkSession = signInWithSparkPlanFirebaseAuth(
-                    activityContext = activityContext,
-                    selectedRole = selectedRole,
-                    cleanUsername = cleanUsername,
-                    cleanPassword = cleanPassword,
-                    deviceFp = deviceFp
-                )
-                if (sparkSession != null) {
-                    CoroutineScope(Dispatchers.IO).launch {
-                        runCatching {
-                            val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
-                            repository.saveBoundPortalSession(
-                                uid = sparkSession.sessionUid,
-                                actorId = sparkSession.linkedEntityId.ifBlank { sparkSession.sessionUid },
-                                username = sparkSession.username,
-                                role = sparkSession.role.key,
-                                deviceFingerprint = deviceFp,
-                                expiresAt = expiresAt
-                            )
-                            logSecurityAuditEvent(
-                                actorUid = sparkSession.sessionUid,
-                                actorName = sparkSession.displayName,
-                                eventType = "SPARK_NATIVE_AUTH_LOGIN_SUCCESS",
-                                severity = "INFO",
-                                details = "Authenticated '${sparkSession.username}' (${sparkSession.role.key}) via Native Firebase Auth (fp=$deviceFp)"
-                            )
-                            sealSessionInKeystore(activityContext, sparkSession)
-                        }
-                    }
-                    return@runCatching sparkSession
-                }
-            }
-        }
-
-        // 0b. Instant Offline Admin Portal Authentication via Encrypted Argon2id Store (only when explicitly configured)
+        // 0a. Instant Offline/Online Admin Portal Authentication via Encrypted Argon2id Store
         if (selectedRole == PortalRole.ADMIN) {
             val adminCtx = context ?: activityContext
             val localPassChars = cleanPassword.toCharArray()
@@ -1013,7 +957,7 @@ class FirebaseAuthServiceProvider(
                         linkedEntityId = existingLocal?.linkedEntityId?.ifBlank { "ADMIN_ROOT" } ?: "ADMIN_ROOT",
                         deviceFingerprint = deviceFp
                     )
-                    CoroutineScope(Dispatchers.IO).launch {
+                    ioScope.launch {
                         runCatching {
                             val syncedCred = existingLocal ?: run {
                                 val argonDigest = Argon2CredentialHasher.hashPasswordArgon2id(cleanPassword.toCharArray())
@@ -1052,6 +996,81 @@ class FirebaseAuthServiceProvider(
                 }
             } else if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.PasswordMismatch) {
                 throw SecurityException("Invalid username or password for Admin portal.")
+            } else if (adminVerify is AdminEncryptedCredentialStore.AdminVerifyResult.NotConfigured) {
+                throw SecurityException("Admin credentials not configured. Please complete First-Run Admin Setup before signing in as Admin.")
+            }
+        }
+
+        // 0b. Zero-Trust Server Custom Token Exchange with strict 3.5s timeout (mints signed Firebase JWT with { role, portalUid } claims;
+        //    no Google Sign-In required for Admin, Teacher, Student, or Parent).
+        val tokenOutcome = runCatching {
+            withTimeoutOrNull(3500L) {
+                exchangePortalCredentialsForCustomToken(cleanUsername, cleanPassword, selectedRole, deviceFp)
+            }
+        }.getOrNull() ?: CustomTokenExchangeOutcome.Unavailable(networkFailure = true, errorMessage = "Connection timed out")
+
+        when (tokenOutcome) {
+            is CustomTokenExchangeOutcome.Authenticated -> {
+                val verifiedSession = tokenOutcome.session
+                ioScope.launch {
+                    runCatching {
+                        val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
+                        repository.saveBoundPortalSession(
+                            uid = verifiedSession.sessionUid,
+                            actorId = verifiedSession.linkedEntityId.ifBlank { verifiedSession.sessionUid },
+                            username = verifiedSession.username,
+                            role = verifiedSession.role.key,
+                            deviceFingerprint = deviceFp,
+                            expiresAt = expiresAt
+                        )
+                        logSecurityAuditEvent(
+                            actorUid = verifiedSession.sessionUid,
+                            actorName = verifiedSession.displayName,
+                            eventType = "PORTAL_CUSTOM_TOKEN_LOGIN_SUCCESS",
+                            severity = "INFO",
+                            details = "Authenticated '${verifiedSession.username}' (${verifiedSession.role.key}) via signed Firebase Custom Token (fp=$deviceFp)"
+                        )
+                        sealSessionInKeystore(activityContext, verifiedSession)
+                    }
+                }
+                return@runCatching verifiedSession
+            }
+            is CustomTokenExchangeOutcome.Rejected -> {
+                throw SecurityException(tokenOutcome.message)
+            }
+            is CustomTokenExchangeOutcome.Unavailable -> {
+                // Spark-Plan Native Firebase Auth fallback (`signInWithEmailAndPassword` / first-run `waqar` bootstrap)
+                val sparkSession = signInWithSparkPlanFirebaseAuth(
+                    activityContext = activityContext,
+                    selectedRole = selectedRole,
+                    cleanUsername = cleanUsername,
+                    cleanPassword = cleanPassword,
+                    deviceFp = deviceFp
+                )
+                if (sparkSession != null) {
+                    ioScope.launch {
+                        runCatching {
+                            val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
+                            repository.saveBoundPortalSession(
+                                uid = sparkSession.sessionUid,
+                                actorId = sparkSession.linkedEntityId.ifBlank { sparkSession.sessionUid },
+                                username = sparkSession.username,
+                                role = sparkSession.role.key,
+                                deviceFingerprint = deviceFp,
+                                expiresAt = expiresAt
+                            )
+                            logSecurityAuditEvent(
+                                actorUid = sparkSession.sessionUid,
+                                actorName = sparkSession.displayName,
+                                eventType = "SPARK_NATIVE_AUTH_LOGIN_SUCCESS",
+                                severity = "INFO",
+                                details = "Authenticated '${sparkSession.username}' (${sparkSession.role.key}) via Native Firebase Auth (fp=$deviceFp)"
+                            )
+                            sealSessionInKeystore(activityContext, sparkSession)
+                        }
+                    }
+                    return@runCatching sparkSession
+                }
             }
         }
 
@@ -1083,7 +1102,7 @@ class FirebaseAuthServiceProvider(
 
             // Refresh remote credential silently on background IO when served from local cache
             if (wasCachedLocally) {
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     runCatching {
                         val docRef = repository.firestoreDb().collection("portalCredentials").document(cleanUsername)
                         val snap = kotlinx.coroutines.withTimeoutOrNull(3_000L) {
@@ -1108,7 +1127,7 @@ class FirebaseAuthServiceProvider(
                 existingCred.supportsRole(selectedRole) ||
                 portalAuthRepository.hasProvisionedAccessForRole(existingCred, existingUserProfile, selectedRole)
             if (!isAllowedForSelectedRole) {
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     logSecurityAuditEvent(
                         actorUid = currentFirebaseUser?.uid ?: "unauthenticated",
                         actorName = cleanUsername,
@@ -1133,7 +1152,7 @@ class FirebaseAuthServiceProvider(
             }
 
             if (!passwordValid) {
-                CoroutineScope(Dispatchers.IO).launch {
+                ioScope.launch {
                     logSecurityAuditEvent(
                         actorUid = currentFirebaseUser?.uid ?: "unauthenticated",
                         actorName = cleanUsername,
@@ -1158,7 +1177,7 @@ class FirebaseAuthServiceProvider(
 
             // Non-blocking background sync preserving PBKDF2-HMAC-SHA256 12,000-iteration Web-Mobile parity
             val finalCred = existingCred
-            CoroutineScope(Dispatchers.IO).launch {
+            ioScope.launch {
                 val upgradedCred = if (!Argon2CredentialHasher.isArgon2idFormat(finalCred.passwordHash) &&
                     finalCred.passwordHash.length != 64
                 ) {
@@ -1248,7 +1267,7 @@ class FirebaseAuthServiceProvider(
                 deviceFingerprint = deviceFp
             )
 
-            CoroutineScope(Dispatchers.IO).launch {
+            ioScope.launch {
                 runCatching { portalAuthRepository.provisionCredentialWithRoleFlags(adminCred, currentFirebaseUser?.email.orEmpty()) }
                 val expiresAt = Timestamp(Date(System.currentTimeMillis() + 24L * 3600L * 1000L))
                 runCatching {
@@ -1328,7 +1347,7 @@ class FirebaseAuthServiceProvider(
                 repository.findMatchingStudentForLogin(cleanUsername) != null
         }.getOrDefault(false)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             logSecurityAuditEvent(
                 actorUid = currentFirebaseUser?.uid ?: "unauthenticated",
                 actorName = cleanUsername,
@@ -1469,7 +1488,7 @@ class FirebaseAuthServiceProvider(
         }
 
         // Best-effort seal into server-side tamper-evident audit hash chain
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             runCatching {
                 com.waqar.institute.security.ServerAuditHashChainClient.sealAuditChainEvent(
                     context = context,

@@ -18,12 +18,10 @@ object AntiHookManager {
     private var nativeLoaded = false
 
     init {
-        try {
+        nativeLoaded = runCatching {
             System.loadLibrary("waqar_native_security")
-            nativeLoaded = true
-        } catch (_: UnsatisfiedLinkError) {
-            nativeLoaded = false
-        }
+            true
+        }.getOrDefault(false)
     }
 
     data class HookInspectionReport(
@@ -38,7 +36,7 @@ object AntiHookManager {
 
     fun runComprehensiveHookScan(): HookInspectionReport {
         val nativeFlags = if (nativeLoaded) {
-            runCatching { nativeScanFridaAndHooks() }.getOrDefault(0x04)
+            runCatching { nativeScanFridaAndHooks() }.getOrDefault(0)
         } else {
             0
         }

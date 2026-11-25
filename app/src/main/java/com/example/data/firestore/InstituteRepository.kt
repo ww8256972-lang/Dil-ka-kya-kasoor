@@ -591,7 +591,7 @@ class InstituteRepository(
         return runCatching {
             val serverSnap = runCatching {
                 kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    db.collection("students").limit(250).get(Source.SERVER).await()
+                    db.collection("students").limit(50).get(Source.SERVER).await()
                 }
             }.getOrNull()
             val serverList = serverSnap?.documents?.mapNotNull { it.toObject(StudentRecord::class.java) } ?: emptyList()
@@ -601,7 +601,7 @@ class InstituteRepository(
             localStudentsCache.values.firstOrNull(::matches)?.let { return@runCatching it }
 
             val cachedList = runCatching {
-                db.collection("students").limit(250).get(Source.CACHE).await()
+                db.collection("students").limit(50).get(Source.CACHE).await()
                     .documents.mapNotNull { it.toObject(StudentRecord::class.java) }
             }.getOrDefault(emptyList())
             cachedList.forEach { localStudentsCache[it.id] = it }
@@ -618,7 +618,7 @@ class InstituteRepository(
     ): Pair<List<StudentRecord>, com.google.firebase.firestore.DocumentSnapshot?> {
         var query = db.collection("students")
             .orderBy("createdAt", Query.Direction.DESCENDING)
-            .limit(limit.coerceIn(1L, 500L))
+            .limit(limit.coerceIn(1L, 50L))
         if (lastDocument != null) {
             query = query.startAfter(lastDocument)
         }
@@ -650,7 +650,7 @@ class InstituteRepository(
         return runCatching {
             val serverSnap = runCatching {
                 kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    db.collection("staff").get(Source.SERVER).await()
+                    db.collection("staff").limit(50).get(Source.SERVER).await()
                 }
             }.getOrNull()
             val serverList = serverSnap?.documents?.mapNotNull { it.toObject(StaffMember::class.java) } ?: emptyList()
@@ -660,7 +660,7 @@ class InstituteRepository(
             localStaffCache.values.firstOrNull(::matches)?.let { return@runCatching it }
 
             val cachedList = runCatching {
-                db.collection("staff").get(Source.CACHE).await()
+                db.collection("staff").limit(50).get(Source.CACHE).await()
                     .documents.mapNotNull { it.toObject(StaffMember::class.java) }
             }.getOrDefault(emptyList())
             cachedList.forEach { localStaffCache[it.id] = it }
@@ -684,7 +684,7 @@ class InstituteRepository(
         return runCatching {
             val serverSnap = runCatching {
                 kotlinx.coroutines.withTimeoutOrNull(6_000L) {
-                    db.collection("guardians").get(Source.SERVER).await()
+                    db.collection("guardians").limit(50).get(Source.SERVER).await()
                 }
             }.getOrNull()
             val serverList = serverSnap?.documents?.mapNotNull { it.toObject(GuardianLink::class.java) } ?: emptyList()
@@ -694,7 +694,7 @@ class InstituteRepository(
             localGuardiansCache.values.firstOrNull(::matches)?.let { return@runCatching it }
 
             val cachedList = runCatching {
-                db.collection("guardians").get(Source.CACHE).await()
+                db.collection("guardians").limit(50).get(Source.CACHE).await()
                     .documents.mapNotNull { it.toObject(GuardianLink::class.java) }
             }.getOrDefault(emptyList())
             cachedList.forEach { localGuardiansCache[it.id] = it }
@@ -1161,7 +1161,7 @@ class InstituteRepository(
     private fun <T> observeCollection(
         collectionName: String,
         clazz: Class<T>,
-        limit: Long = 500L
+        limit: Long = 50L
     ): Flow<List<T>> = callbackFlow {
         val reg = db.collection(collectionName)
             .orderBy("createdAt", Query.Direction.DESCENDING)

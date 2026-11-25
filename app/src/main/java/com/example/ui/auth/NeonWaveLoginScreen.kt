@@ -58,6 +58,8 @@ fun NeonWaveLoginScreen(
     isAuthenticating: Boolean = false,
     externalStatusMessage: String? = null,
     pendingAdminSetupUsername: String? = null,
+    keepSessionActive: Boolean = true,
+    onKeepSessionToggled: (Boolean) -> Unit = {},
     onRoleSelected: (PortalRole) -> Unit,
     onLanguageToggle: () -> Unit,
     onCredentialLogin: (Context, PortalRole, String, String) -> Unit,
@@ -70,7 +72,7 @@ fun NeonWaveLoginScreen(
     var usernameInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var keepSignedIn by remember { mutableStateOf(true) }
+    var keepSignedIn by remember { mutableStateOf(keepSessionActive) }
     var localErrorMessage by remember { mutableStateOf<String?>(null) }
     var showRecoverySheet by remember { mutableStateOf(false) }
     var failedAttempts by remember { mutableIntStateOf(0) }
@@ -423,11 +425,11 @@ fun NeonWaveLoginScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .heightIn(min = 48.dp)
-                                .clickable { keepSignedIn = !keepSignedIn }
+                                .clickable { keepSignedIn = !keepSignedIn; onKeepSessionToggled(keepSignedIn) }
                         ) {
                             Checkbox(
                                 checked = keepSignedIn,
-                                onCheckedChange = { keepSignedIn = it },
+                                onCheckedChange = { keepSignedIn = it; onKeepSessionToggled(keepSignedIn) },
                                 colors = CheckboxDefaults.colors(
                                     checkedColor = palette.start,
                                     checkmarkColor = WciColors.OnAccentDark
@@ -510,7 +512,9 @@ fun NeonWaveLoginScreen(
                                 } else {
                                     selectedRole
                                 }
-                                onCredentialLogin(act, effectiveRole, usernameInput.trim(), passwordInput.trim())
+                                runCatching {
+                                    onCredentialLogin(act, effectiveRole, usernameInput.trim(), passwordInput.trim())
+                                }
                             }
                         },
                         icon = Icons.AutoMirrored.Filled.Login,

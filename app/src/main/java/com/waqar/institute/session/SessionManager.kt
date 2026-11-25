@@ -254,8 +254,10 @@ object SessionManager {
                     Log.w(TAG, "Force logout triggered for $cleanUser: $reason")
                     clearLocalSession(appCtx)
                     _sessionForceLogoutEvent.value = reason
-                    ioScope.launch(Dispatchers.Main) {
-                        onForceLogout(reason)
+                    ioScope.launch {
+                        withContext(Dispatchers.Main) {
+                            onForceLogout(reason)
+                        }
                     }
                 }
             }

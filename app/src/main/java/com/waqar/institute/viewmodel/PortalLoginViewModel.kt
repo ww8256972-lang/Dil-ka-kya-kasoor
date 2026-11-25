@@ -8,11 +8,13 @@ import com.example.data.firestore.InstituteRepository
 import com.example.data.model.PortalRole
 import com.waqar.institute.security.MemoryScrubberManager
 import com.waqar.institute.security.NetworkSecurityGuard
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -61,48 +63,56 @@ class PortalLoginViewModel : ViewModel() {
         onAuthenticated: (FirebaseAuthServiceProvider.AuthenticatedPortalSession) -> Unit,
         onError: (String) -> Unit
     ) {
-        val now = System.currentTimeMillis()
+        val appContext = context.applicationContext ?: context
         val identityKey = "${role.key}:${usernameInput.trim().lowercase()}"
-        val rateStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
-            context = context,
-            scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
-            identityKey = identityKey,
-            nowEpochMs = now
-        )
-        val current = _securityState.value
-        if (!rateStatus.allowed || current.isCurrentlyLockedOut(now)) {
-            val secs = if (!rateStatus.allowed) rateStatus.retryAfterSeconds else current.remainingLockoutSeconds(now)
-            val msg = "HTTP 429 Too Many Requests: Rate limit exceeded (max 5 requests per 60s). Please wait ${secs}s before retrying."
-            _securityState.update { state ->
-                state.copy(
-                    lockoutUntilEpochMillis = maxOf(state.lockoutUntilEpochMillis, rateStatus.blockedUntilEpochMs),
-                    statusMessage = msg
-                )
-            }
-            MemoryScrubberManager.scrubCharArray(passwordChars)
-            onError(msg)
-            return
-        }
 
-        viewModelScope.launch {
-            _securityState.update { state -> state.copy(isAuthenticating = true, statusMessage = null) }
+        // Set authenticating state immediately off UI thread to avoid frame drops
+        _securityState.update { state -> state.copy(isAuthenticating = true, statusMessage = null) }
+
+        viewModelScope.launch(Dispatchers.IO) {
             try {
+                val now = System.currentTimeMillis()
+                val rateStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
+                    context = appContext,
+                    scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
+                    identityKey = identityKey,
+                    nowEpochMs = now
+                )
+                val current = _securityState.value
+                if (!rateStatus.allowed || current.isCurrentlyLockedOut(now)) {
+                    val secs = if (!rateStatus.allowed) rateStatus.retryAfterSeconds else current.remainingLockoutSeconds(now)
+                    val msg = "HTTP 429 Too Many Requests: Rate limit exceeded (max 5 requests per 60s). Please wait ${secs}s before retrying."
+                    _securityState.update { state ->
+                        state.copy(
+                            isAuthenticating = false,
+                            lockoutUntilEpochMillis = maxOf(state.lockoutUntilEpochMillis, rateStatus.blockedUntilEpochMs),
+                            statusMessage = msg
+                        )
+                    }
+                    withContext(Dispatchers.Main.immediate) {
+                        onError(msg)
+                    }
+                    return@launch
+                }
+
                 // 1. Verify network security posture (detect active MITM proxy / injected user CAs)
-                val networkReport = NetworkSecurityGuard.auditNetworkSecurity(context)
+                val networkReport = NetworkSecurityGuard.auditNetworkSecurity(appContext)
                 if (!networkReport.isConnectionTrusted) {
                     val err = "Untrusted network proxy or custom CA certificate detected (${networkReport.reason})."
                     _securityState.update { state -> state.copy(isAuthenticating = false, statusMessage = err) }
-                    onError(err)
+                    withContext(Dispatchers.Main.immediate) {
+                        onError(err)
+                    }
                     return@launch
                 }
 
                 // 2. Authenticate against Cloud Firestore / PBKDF2-HMAC-SHA256 / Encrypted Keystore credential store
                 val passwordString = String(passwordChars)
-                val repository = InstituteRepository.create(context.applicationContext)
-                val authProvider = FirebaseAuthServiceProvider(repository = repository, context = context)
+                val repository = InstituteRepository.create(appContext)
+                val authProvider = FirebaseAuthServiceProvider(repository = repository, context = appContext)
                 val result: Result<FirebaseAuthServiceProvider.AuthenticatedPortalSession> =
                     authProvider.signInToPortalWithCredentials(
-                        activityContext = context,
+                        activityContext = appContext,
                         selectedRole = role,
                         rawUsername = usernameInput,
                         rawPassword = passwordString
@@ -119,11 +129,13 @@ class PortalLoginViewModel : ViewModel() {
                                 statusMessage = null
                             )
                         }
-                        onAuthenticated(session)
+                        withContext(Dispatchers.Main.immediate) {
+                            onAuthenticated(session)
+                        }
                     },
                     onFailure = { throwable: Throwable ->
                         val postStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
-                            context = context,
+                            context = appContext,
                             scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
                             identityKey = identityKey
                         )
@@ -143,9 +155,22 @@ class PortalLoginViewModel : ViewModel() {
                                 statusMessage = message
                             )
                         }
-                        onError(message)
+                        withContext(Dispatchers.Main.immediate) {
+                            onError(message)
+                        }
                     }
                 )
+            } catch (t: Throwable) {
+                val errMsg = t.localizedMessage ?: "Authentication failed unexpectedly."
+                _securityState.update { state ->
+                    state.copy(
+                        isAuthenticating = false,
+                        statusMessage = errMsg
+                    )
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    onError(errMsg)
+                }
             } finally {
                 // 4. Immediately zero-fill password buffer in RAM
                 MemoryScrubberManager.scrubCharArray(passwordChars)

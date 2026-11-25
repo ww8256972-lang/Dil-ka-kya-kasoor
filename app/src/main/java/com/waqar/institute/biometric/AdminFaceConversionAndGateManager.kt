@@ -200,14 +200,21 @@ object AdminFaceConversionAndGateManager {
         return hasUpper && hasLower && hasDigit && hasSymbol
     }
 
+    @Volatile
+    private var cachedMasterBitmap: Bitmap? = null
+
     /**
      * Loads the bundled Master Admin reference photo (`assets/admin_master_face_waqar.jpg`)
      * to anchor the primary administrator (Waqar Khan) face biometric identity.
+     * Caches in-memory so decoding only happens once across app lifetime.
      */
     fun loadBundledMasterAdminBitmap(context: Context): Bitmap? {
+        cachedMasterBitmap?.let { return it }
         return runCatching {
             context.assets.open("admin_master_face_waqar.jpg").use { inputStream ->
-                BitmapFactory.decodeStream(inputStream)
+                BitmapFactory.decodeStream(inputStream)?.also { bmp ->
+                    cachedMasterBitmap = bmp
+                }
             }
         }.getOrNull()
     }

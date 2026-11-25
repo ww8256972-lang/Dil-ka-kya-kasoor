@@ -37,6 +37,9 @@ class ChaosEntropySeeder(context: Context) : SensorEventListener {
     // Chaotic logistic parameter in deep chaos regime (r in [3.99, 4.0])
     private val rParameter = 3.999999999999999
 
+    private var sampleCount = 0
+    private val maxSamples = 16
+
     init {
         // Initial pool seed with SecureRandom
         val initBytes = ByteArray(64)
@@ -44,10 +47,10 @@ class ChaosEntropySeeder(context: Context) : SensorEventListener {
         entropyBuffer.set(initBytes)
 
         accelerometer?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
         gyroscope?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST)
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
     }
 
@@ -68,6 +71,15 @@ class ChaosEntropySeeder(context: Context) : SensorEventListener {
         val freshEntropy = md.digest()
 
         entropyBuffer.set(freshEntropy)
+
+        sampleCount++
+        if (sampleCount >= maxSamples) {
+            unregister()
+        }
+    }
+
+    fun unregister() {
+        sensorManager?.unregisterListener(this)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {

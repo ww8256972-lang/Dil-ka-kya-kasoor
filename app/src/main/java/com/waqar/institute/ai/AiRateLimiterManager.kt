@@ -10,6 +10,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import org.lsposed.lsparanoid.Obfuscate
@@ -73,6 +74,9 @@ object AiRateLimiterManager {
 
     @Volatile
     private var attachedContext: Context? = null
+
+    // Structured IO scope for background alert logging — cancelled when the object is GC'd.
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private data class StudentQuotaState(
         var windowStartElapsedMs: Long = 0L,
@@ -540,7 +544,7 @@ object AiRateLimiterManager {
         promptSnippet: String
     ) {
         if (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) return
-        CoroutineScope(Dispatchers.IO).launch {
+        ioScope.launch {
             runCatching {
                 val authUser = FirebaseAuth.getInstance().currentUser ?: return@runCatching
                 val db = InstituteRepository.getConfiguredFirestore(resolveContext(context))

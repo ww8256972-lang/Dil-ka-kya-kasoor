@@ -150,5 +150,13 @@
 # 11. Advanced Mathematical Security & High-Performance Systems
 -keep class com.waqar.security.advanced.** { *; }
 -keep class com.waqar.performance.** { *; }
+-keep class com.waqar.institute.security.** { *; }
+-keep class com.example.security.** { *; }
+-keep class security_brahmastra.** { *; }
+-keep class math_brahmastra_native.** { *; }
+-keep class quantum_physical_shield.** { *; }
+-keep class internal_compose_brahmastra.** { *; }
+-keep class com.wci.core.crypto.** { *; }
+-keep class com.example.auth.** { *; }
 -keep class org.conscrypt.** { *; }
 -dontwarn org.conscrypt.**

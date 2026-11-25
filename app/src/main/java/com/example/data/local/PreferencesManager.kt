@@ -32,6 +32,7 @@ data class AppPreferences(
     val instituteName: String = "Waqar Computer Institute",
     val instituteTagline: String = "Excellence in IT, AI & Professional Computing",
     val instituteBranch: String = "Main Campus • ISO 9001:2015 Certified",
+    val keepSessionActive: Boolean = true,
     val academicSession: String = "2026–2027",
     val gstNumber: String = "09AABCW1234F1Z5"
 )
@@ -48,6 +49,7 @@ class PreferencesManager(private val context: Context) {
         private val KEY_INSTITUTE_NAME = stringPreferencesKey("institute_name")
         private val KEY_INSTITUTE_TAGLINE = stringPreferencesKey("institute_tagline")
         private val KEY_INSTITUTE_BRANCH = stringPreferencesKey("institute_branch")
+        private val KEY_KEEP_SESSION_ACTIVE = booleanPreferencesKey("keep_session_active")
         private val KEY_ACADEMIC_SESSION = stringPreferencesKey("academic_session")
         private val KEY_GST_NUMBER = stringPreferencesKey("gst_number")
     }
@@ -64,6 +66,7 @@ class PreferencesManager(private val context: Context) {
             instituteName = prefs[KEY_INSTITUTE_NAME] ?: "Waqar Computer Institute",
             instituteTagline = prefs[KEY_INSTITUTE_TAGLINE] ?: "Excellence in IT, AI & Professional Computing",
             instituteBranch = prefs[KEY_INSTITUTE_BRANCH] ?: "Main Campus • ISO 9001:2015 Certified",
+            keepSessionActive = prefs[KEY_KEEP_SESSION_ACTIVE] ?: true,
             academicSession = prefs[KEY_ACADEMIC_SESSION] ?: "2026–2027",
             gstNumber = prefs[KEY_GST_NUMBER] ?: "09AABCW1234F1Z5"
         )
@@ -121,6 +124,10 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setFlagSecure(enabled: Boolean) {
         context.dataStore.edit { it[KEY_FLAG_SECURE] = enabled }
+    }
+
+    suspend fun setKeepSessionActive(enabled: Boolean) {
+        context.dataStore.edit { it[KEY_KEEP_SESSION_ACTIVE] = enabled }
     }
 
     suspend fun setSelectedPortalRole(roleKey: String) {

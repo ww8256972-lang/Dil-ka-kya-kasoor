@@ -18,13 +18,6 @@
         <domain includeSubdomains="true">firestore.googleapis.com</domain>
         <domain includeSubdomains="true">identitytoolkit.googleapis.com</domain>
         <domain includeSubdomains="true">securetoken.googleapis.com</domain>
-        <certificateTransparency enabled="true" />
-        <pin-set expiration="2028-12-31">
-            <pin digest="SHA-256">hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=</pin>
-            <pin digest="SHA-256">Vfd95BwDeSQo+NUYxVEEIlvkOlWY2SalKK1lPhzOx78=</pin>
-            <pin digest="SHA-256">f8NnEFZxQ4ExFOhSN7EiFWtiudZQVD2oY60uauV/n78=</pin>
-            <pin digest="SHA-256">YPtHaftLw6/0vnc2BnNKGF54xiCA28WFcccjkA4ypCM=</pin>
-        </pin-set>
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

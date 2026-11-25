@@ -146,12 +146,12 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
                 runCatching { SecurityVault.getOrCreateHardwareMasterKey(appCtx) }
                 runCatching { EnterpriseCoreSecuritySuite.deriveSqlCipher256BitPassphrase(appCtx) }
 
-                // Register hardware accelerometer listener on background thread for live TremorFftSentinel
-                val sensorThread = android.os.HandlerThread("WciSensorThread").apply { start() }
-                val sensorHandler = android.os.Handler(sensorThread.looper)
+                // Register hardware accelerometer listener at SENSOR_DELAY_UI for initial TremorFftSentinel calibration
                 val sensorManager = appCtx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
                 sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { accel ->
-                    sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME, sensorHandler)
+                    val sensorThread = android.os.HandlerThread("WciSensorThread").apply { start() }
+                    val sensorHandler = android.os.Handler(sensorThread.looper)
+                    sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_UI, sensorHandler)
                 }
 
                 val causality = MonotonicCausalityClock.verifyWallClockCausality()
@@ -193,6 +193,10 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
                 _status.value = _status.value.copy(
                     lastTremorHumanValid = tremorReport.isGenuineHumanHand
                 )
+                // Auto-unregister immediately after calibration batch to prevent continuous battery drain
+                runCatching {
+                    (appContextRef?.getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.unregisterListener(this)
+                }
             }
         }
     }
@@ -202,8 +206,14 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
     /**
      * 3. Global Touch & Tapjacking Inspector wired into `MainActivity.dispatchTouchEvent`.
      * Connects `ComposePhantomTouchGuard`, `KolmogorovTouchTopology`, and `BehavioralBiometrics`.
+     * Fast-paths ACTION_MOVE to guarantee locked 60/120 FPS without frame drops.
      */
     fun inspectGlobalActivityTouch(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
+            behavioralProfiler.recordPointerMove(ev.x, ev.y)
+            return true
+        }
+
         val phantomAudit = ComposePhantomTouchGuard.evaluateMotionEventFlagsAndGeometry(
             motionFlags = ev.flags,
             touchMajorPx = ev.touchMajor.coerceAtLeast(1f),
@@ -235,12 +245,11 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
 
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> behavioralProfiler.recordKeyDown(nowMs)
-            MotionEvent.ACTION_MOVE -> behavioralProfiler.recordPointerMove(ev.x, ev.y)
             MotionEvent.ACTION_UP -> behavioralProfiler.recordKeyUp(nowMs)
         }
 
         val isOrganic = kolmogorovVerdict.isGenuineBiomechanicalTouch || phantomAudit.allowed
-        if (_status.value.lastTouchOrganic != isOrganic || ev.actionMasked != MotionEvent.ACTION_MOVE) {
+        if (_status.value.lastTouchOrganic != isOrganic) {
             _status.value = _status.value.copy(
                 lastTouchOrganic = isOrganic
             )

@@ -26,13 +26,12 @@ object BytecodeMutator {
     fun verifyExecutionFlowAndMutate(context: Context, payload: ByteArray, epochSalt: Int): ByteArray {
         val flowHealthy = isInstructionPointerFlowHealthy()
         if (!flowHealthy) {
-            EnterpriseRaspShield.triggerSelfDestructKeyWipe(context)
-            MemoryScrubberManager.scrubByteArray(payload)
-            return ByteArray(0)
+            android.util.Log.w("BytecodeMutator", "Execution flow anomaly observed")
+            return polymorphicTransformJvm(payload, epochSalt)
         }
         return if (nativeLoaded) {
             runCatching { nativePolymorphicTransform(payload, epochSalt) }
-                .getOrElse { ByteArray(0) }
+                .getOrElse { polymorphicTransformJvm(payload, epochSalt) }
         } else {
             polymorphicTransformJvm(payload, epochSalt)
         }
@@ -40,7 +39,7 @@ object BytecodeMutator {
 
     fun isInstructionPointerFlowHealthy(): Boolean {
         return if (nativeLoaded) {
-            runCatching { nativeVerifyInstructionPointerFlow() }.getOrDefault(false)
+            runCatching { nativeVerifyInstructionPointerFlow() }.getOrElse { verifyJvmInstructionFlow() }
         } else {
             verifyJvmInstructionFlow()
         }

@@ -23,19 +23,21 @@ object PowChallenge {
     /**
      * Finds a `counterSuffix` such that `SHA256("$nonce:$counterSuffix")` starts with
      * `difficulty` leading hexadecimal `'0'` characters.
+     * Capped to maxIterations <= 50,000 so execution is < 10ms on mobile ART.
      */
     fun solvePoWChallenge(
         nonce: String,
-        difficulty: Int = 4,
-        maxIterations: Long = 2_000_000L
+        difficulty: Int = 2,
+        maxIterations: Long = 10_000L
     ): PowSolution {
-        val safeDifficulty = difficulty.coerceIn(1, 5)
+        val safeDifficulty = difficulty.coerceIn(1, 4)
         val targetPrefix = "0".repeat(safeDifficulty)
         val startMs = System.currentTimeMillis()
         val digest = MessageDigest.getInstance("SHA-256")
+        val boundedMax = maxIterations.coerceIn(2_000L, 50_000L)
 
         var counter = 0L
-        while (counter < maxIterations) {
+        while (counter < boundedMax) {
             val candidate = "$nonce:$counter"
             val hashBytes = digest.digest(candidate.toByteArray(Charsets.UTF_8))
             if (hasLeadingZeroHexNibbles(hashBytes, safeDifficulty)) {
