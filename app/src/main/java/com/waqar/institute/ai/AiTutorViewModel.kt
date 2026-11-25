@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import org.lsposed.lsparanoid.Obfuscate
 
 /**
@@ -67,15 +68,10 @@ class AiTutorViewModel(
      */
     fun checkAndSyncLockoutStatus() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val namedDbId = "ai-studio-android-waqarins-b07db193-f2b2-469a-b782-7cb127ebd6a1"
-        val db = runCatching {
-            com.google.firebase.Firebase.let {
-                FirebaseFirestore.getInstance(com.google.firebase.FirebaseApp.getInstance(), namedDbId)
-            }
-        }.getOrElse { FirebaseFirestore.getInstance() }
-
-        db.collection("ai_tutor_locks").doc(uid).get()
-            .addOnSuccessListener { snap ->
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val db = com.example.data.firestore.InstituteRepository.getConfiguredFirestore(context)
+                val snap = db.collection("ai_tutor_locks").document(uid).get().await()
                 if (snap.exists()) {
                     val locked = snap.getBoolean("locked") ?: false
                     val lockedUntil = snap.getLong("lockedUntilMs") ?: 0L
@@ -86,13 +82,12 @@ class AiTutorViewModel(
                         clearLockout()
                     }
                 }
-            }
-            .addOnFailureListener {
+            }.onFailure {
                 // If offline, check local encrypted preferences via AiRateLimiterManager
-                val guard = AiRateLimiterManager.checkPreQueryGuardrails(
-                    promptText = "test",
+                val guard = AiRateLimiterManager.evaluatePreCacheGuardrails(
                     userId = uid,
                     role = PortalRole.STUDENT,
+                    promptText = "test",
                     context = context
                 )
                 if (guard is AiRateLimiterManager.GuardrailCheckResult.LockedOut24Hours) {
@@ -101,6 +96,7 @@ class AiTutorViewModel(
                     applyLockout(now + remainingMs)
                 }
             }
+        }
     }
 
     private fun applyLockout(lockedUntilEpochMs: Long) {
@@ -241,11 +237,12 @@ class AiTutorViewModel(
             val accumulated = StringBuilder()
 
             try {
-                geminiService.askTutorStream(
+                geminiService.streamTutorResponse(
+                    role = PortalRole.STUDENT.label,
+                    languageCode = "EN",
+                    featureType = "TUTOR_CHAT",
                     userPrompt = trimmed,
-                    userId = uid,
-                    role = PortalRole.STUDENT,
-                    context = context
+                    userId = uid
                 ).collect { chunk ->
                     accumulated.setLength(0)
                     accumulated.append(chunk)

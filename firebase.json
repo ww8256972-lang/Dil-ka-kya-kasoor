@@ -27,7 +27,7 @@
     ]
   },
   "functions": {
-    "source": "cloud-functions"
+    "source": "functions"
   },
   "emulators": {
     "auth": {

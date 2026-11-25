@@ -45,6 +45,12 @@ object WindowSecureManager {
         }
     }
 
+    @Volatile
+    private var lastAppliedWindowRef: Int? = null
+
+    @Volatile
+    private var lastAppliedBlockCapture: Boolean? = null
+
     fun applyPortalSecurity(
         activity: Activity?,
         portalRole: String,
@@ -60,6 +66,13 @@ object WindowSecureManager {
         SecureWindowController.setPortalEnforcedLock(shouldBlockCapture)
 
         val window = activity?.window ?: return
+        val windowHash = System.identityHashCode(window)
+        if (lastAppliedWindowRef == windowHash && lastAppliedBlockCapture == shouldBlockCapture) {
+            return
+        }
+        lastAppliedWindowRef = windowHash
+        lastAppliedBlockCapture = shouldBlockCapture
+
         if (shouldBlockCapture) {
             window.setFlags(
                 WindowManager.LayoutParams.FLAG_SECURE,
@@ -88,15 +101,6 @@ fun BindPortalWindowSecurity(
 ) {
     val context = LocalContext.current
     val activity = SecureWindowController.tailrecFindActivity(context)
-
-    SideEffect {
-        WindowSecureManager.applyPortalSecurity(
-            activity = activity,
-            portalRole = portalRole,
-            isAuthenticated = isAuthenticated,
-            allowAdminSecureOverride = allowAdminSecureOverride
-        )
-    }
 
     DisposableEffect(activity, portalRole, isAuthenticated, allowAdminSecureOverride) {
         WindowSecureManager.applyPortalSecurity(

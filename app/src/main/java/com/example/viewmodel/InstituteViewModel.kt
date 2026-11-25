@@ -203,45 +203,49 @@ class InstituteViewModel(
 
         // Restore hardware-bound persistent session on startup (prevents auto-back / logout loop on launch)
         appContext?.let { ctx ->
-            runCatching {
-                val savedSessionJson = com.example.security.HardwareKeystoreVault.readHardwareSessionToken(ctx)
-                if (!savedSessionJson.isNullOrBlank()) {
-                    val json = org.json.JSONObject(savedSessionJson)
-                    val uid = json.optString("uid")
-                    val username = json.optString("username")
-                    val roleKey = json.optString("role")
-                    val linkedEntityId = json.optString("linkedEntityId")
-                    val displayName = json.optString("displayName", username)
-                    if (uid.isNotBlank() && roleKey.isNotBlank()) {
-                        val role = PortalRole.fromKey(roleKey)
-                        val roleFlags = com.example.auth.PortalAuthRepository.buildRoleFlags(role)
-                        val restoredProfile = UserProfile(
-                            uid = uid,
-                            email = "$username@waqarinstitute.edu",
-                            displayName = displayName,
-                            role = roleKey,
-                            username = username,
-                            linkedEntityId = linkedEntityId,
-                            isStudent = roleFlags.isStudent,
-                            isTeacher = roleFlags.isTeacher,
-                            isParent = roleFlags.isParent,
-                            isAdmin = roleFlags.isAdmin,
-                            portalRoles = roleFlags.portalRoles
-                        )
-                        viewModelScope.launch { prefsManager.setSelectedPortalRole(roleKey) }
-                        internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(roleKey)
-                        val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(ctx)
-                        val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
-                        com.waqar.institute.session.ConcurrentSessionManager.prewarmLocalSessionToken(cleanUser, devId, role)
-                        _uiState.update {
-                            it.copy(
-                                userProfile = restoredProfile,
-                                activePortalRole = role,
-                                isAuthenticating = false
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    val savedSessionJson = com.example.security.HardwareKeystoreVault.readHardwareSessionToken(ctx)
+                    if (!savedSessionJson.isNullOrBlank()) {
+                        val json = org.json.JSONObject(savedSessionJson)
+                        val uid = json.optString("uid")
+                        val username = json.optString("username")
+                        val roleKey = json.optString("role")
+                        val linkedEntityId = json.optString("linkedEntityId")
+                        val displayName = json.optString("displayName", username)
+                        if (uid.isNotBlank() && roleKey.isNotBlank()) {
+                            val role = PortalRole.fromKey(roleKey)
+                            val roleFlags = com.example.auth.PortalAuthRepository.buildRoleFlags(role)
+                            val restoredProfile = UserProfile(
+                                uid = uid,
+                                email = "$username@waqarinstitute.edu",
+                                displayName = displayName,
+                                role = roleKey,
+                                username = username,
+                                linkedEntityId = linkedEntityId,
+                                isStudent = roleFlags.isStudent,
+                                isTeacher = roleFlags.isTeacher,
+                                isParent = roleFlags.isParent,
+                                isAdmin = roleFlags.isAdmin,
+                                portalRoles = roleFlags.portalRoles
                             )
+                            prefsManager.setSelectedPortalRole(roleKey)
+                            internal_compose_brahmastra.RoleCapabilityGate.bindVerifiedFirebaseJwtRole(roleKey)
+                            val devId = com.waqar.institute.session.ConcurrentSessionManager.resolveHardwareDeviceId(ctx)
+                            val cleanUser = username.trim().lowercase().replace(Regex("[^a-z0-9_\\-.]"), "_")
+                            com.waqar.institute.session.ConcurrentSessionManager.prewarmLocalSessionToken(cleanUser, devId, role)
+                            withContext(Dispatchers.Main.immediate) {
+                                _uiState.update {
+                                    it.copy(
+                                        userProfile = restoredProfile,
+                                        activePortalRole = role,
+                                        isAuthenticating = false
+                                    )
+                                }
+                            }
+                            startRealtimeStreamsIfNeeded(uid)
+                            recomputeRoleScopedData()
                         }
-                        startRealtimeStreamsIfNeeded(uid)
-                        recomputeRoleScopedData()
                     }
                 }
             }
@@ -632,23 +636,6 @@ class InstituteViewModel(
         username: String,
         password: String
     ) {
-        val nowMs = System.currentTimeMillis()
-        val rateStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
-            context = activityContext,
-            scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
-            identityKey = "${role.key}:${username.trim().lowercase()}",
-            nowEpochMs = nowMs
-        )
-        if (!rateStatus.allowed || nowMs < authLockoutUntilEpochMs) {
-            val remainingSec = if (!rateStatus.allowed) {
-                rateStatus.retryAfterSeconds
-            } else {
-                ((authLockoutUntilEpochMs - nowMs).coerceAtLeast(0L) + 999L) / 1000L
-            }
-            postMessage("HTTP 429 Too Many Requests: Rate limit exceeded (max 5 requests per 60s). Please wait ${remainingSec}s before retrying.")
-            return
-        }
-
         _uiState.update {
             it.copy(
                 isAuthenticating = true,
@@ -657,6 +644,26 @@ class InstituteViewModel(
             )
         }
         viewModelScope.launch(Dispatchers.IO) {
+            val nowMs = System.currentTimeMillis()
+            val rateStatus = com.example.security.EnterpriseRateLimiter.inspectStatus(
+                context = activityContext,
+                scope = com.example.security.EnterpriseRateLimiter.RateLimitScope.LOGIN,
+                identityKey = "${role.key}:${username.trim().lowercase()}",
+                nowEpochMs = nowMs
+            )
+            if (!rateStatus.allowed || nowMs < authLockoutUntilEpochMs) {
+                val remainingSec = if (!rateStatus.allowed) {
+                    rateStatus.retryAfterSeconds
+                } else {
+                    ((authLockoutUntilEpochMs - nowMs).coerceAtLeast(0L) + 999L) / 1000L
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    _uiState.update { it.copy(isAuthenticating = false) }
+                    postMessage("HTTP 429 Too Many Requests: Rate limit exceeded (max 5 requests per 60s). Please wait ${remainingSec}s before retrying.")
+                }
+                return@launch
+            }
+
             val pwdChars = password.toCharArray()
             com.example.security.MemoryScrubberLifecycleObserver.registerSensitiveChars(pwdChars)
             try {
@@ -3432,5 +3439,10 @@ internal object TeacherScopeMatcher {
         (stu.batchId.isNotBlank() && normKey(stu.batchId) in teacherBatchIds) ||
             (stu.batchName.isNotBlank() && normKey(stu.batchName) in teacherBatchNames) ||
             (stu.batchId.isBlank() && stu.batchName.isBlank() && normKey(stu.courseName) in teacherCourseNames)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cancelRealtimeStreams()
     }
 }

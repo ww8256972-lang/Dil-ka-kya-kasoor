@@ -70,7 +70,9 @@ class InstituteRepository(
         fun create(context: Context): InstituteRepository {
             appContext = context.applicationContext
             com.example.security.ensureFirebaseInitialized(context)
-            loadLocalVaultFromPrefs(context.applicationContext)
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                loadLocalVaultFromPrefs(context.applicationContext)
+            }
             val databaseId = resolveFirestoreDatabaseId(context)
             val firestore = FirebaseFirestore.getInstance(databaseId)
             try {

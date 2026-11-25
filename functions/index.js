@@ -941,8 +941,9 @@ async function streamGrokSseResponse(grokResp, res, chosenModel, cacheHash, feat
 }
 
 async function callGeminiApi(geminiKey, systemPrompt, userPrompt, res, cacheHash, featureType, languageCode, db) {
-  const modelName = "gemini-2.5-flash";
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse&key=${geminiKey}`;
+  const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"];
+  let upstreamResp = null;
+  let adoptedModel = "gemini-3.8-flash";
 
   const payload = {
     system_instruction: {
@@ -960,30 +961,30 @@ async function callGeminiApi(geminiKey, systemPrompt, userPrompt, res, cacheHash
     },
   };
 
-  let upstreamResp;
-  try {
-    upstreamResp = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch (_) {
-    // If 2.5-flash timed out, try gemini-1.5-flash
-    const fbEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?alt=sse&key=${geminiKey}`;
-    upstreamResp = await fetch(fbEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15000),
-    });
+  for (const model of candidateModels) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${geminiKey}`;
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (resp.ok && resp.body) {
+        upstreamResp = resp;
+        adoptedModel = model;
+        break;
+      }
+    } catch (_) {
+      // Try next candidate model
+    }
   }
 
   if (!upstreamResp || !upstreamResp.ok) {
     throw new Error(`Gemini API error (HTTP ${upstreamResp ? upstreamResp.status : "unknown"})`);
   }
 
-  return streamGeminiSseResponse(upstreamResp, res, modelName, cacheHash, featureType, languageCode, userPrompt, db);
+  return streamGeminiSseResponse(upstreamResp, res, adoptedModel, cacheHash, featureType, languageCode, userPrompt, db);
 }
 
 async function streamGeminiSseResponse(geminiResp, res, modelTag, cacheHash, featureType, languageCode, userPrompt, db) {

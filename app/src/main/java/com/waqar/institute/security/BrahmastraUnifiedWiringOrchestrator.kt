@@ -146,10 +146,12 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
                 runCatching { SecurityVault.getOrCreateHardwareMasterKey(appCtx) }
                 runCatching { EnterpriseCoreSecuritySuite.deriveSqlCipher256BitPassphrase(appCtx) }
 
-                // Register hardware accelerometer listener for live TremorFftSentinel
+                // Register hardware accelerometer listener on background thread for live TremorFftSentinel
+                val sensorThread = android.os.HandlerThread("WciSensorThread").apply { start() }
+                val sensorHandler = android.os.Handler(sensorThread.looper)
                 val sensorManager = appCtx.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
                 sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { accel ->
-                    sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME)
+                    sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME, sensorHandler)
                 }
 
                 val causality = MonotonicCausalityClock.verifyWallClockCausality()
@@ -237,9 +239,12 @@ object BrahmastraUnifiedWiringOrchestrator : SensorEventListener {
             MotionEvent.ACTION_UP -> behavioralProfiler.recordKeyUp(nowMs)
         }
 
-        _status.value = _status.value.copy(
-            lastTouchOrganic = kolmogorovVerdict.isGenuineBiomechanicalTouch || phantomAudit.allowed
-        )
+        val isOrganic = kolmogorovVerdict.isGenuineBiomechanicalTouch || phantomAudit.allowed
+        if (_status.value.lastTouchOrganic != isOrganic || ev.actionMasked != MotionEvent.ACTION_MOVE) {
+            _status.value = _status.value.copy(
+                lastTouchOrganic = isOrganic
+            )
+        }
         return true
     }
 

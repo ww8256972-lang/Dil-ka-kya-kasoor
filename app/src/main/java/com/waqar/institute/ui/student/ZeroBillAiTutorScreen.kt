@@ -375,7 +375,7 @@ fun ZeroBillAiTutorScreen(
                             viewModel.sendQuery(promptToSend)
                         }
                     },
-                    variant = if (uiState.isLocked) GlassButtonVariant.OUTLINE else GlassButtonVariant.PRIMARY,
+                    variant = if (uiState.isLocked) GlassButtonVariant.SECONDARY else GlassButtonVariant.PRIMARY,
                     icon = {
                         Icon(
                             imageVector = if (uiState.isLocked) Icons.Default.Lock else Icons.Default.Send,

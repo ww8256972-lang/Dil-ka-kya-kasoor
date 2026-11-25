@@ -52,8 +52,10 @@ object KolmogorovTouchTopology {
     }
 
     fun evaluateTouchSample(sample: TouchKinematicSample): KolmogorovVerdict {
-        val obscured = (sample.motionFlags and MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0 ||
-            (sample.motionFlags and MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED) != 0
+        // Only FLAG_WINDOW_IS_OBSCURED represents genuine full-screen overlay tapjacking attacks.
+        // Android soft-keyboards, autofill popups, and dialogs set FLAG_WINDOW_IS_PARTIALLY_OBSCURED
+        // on legitimate touch events, so it must not be treated as an overlay attack.
+        val obscured = (sample.motionFlags and MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0
         if (obscured) {
             return KolmogorovVerdict(
                 splineActivationScore = 0.0,

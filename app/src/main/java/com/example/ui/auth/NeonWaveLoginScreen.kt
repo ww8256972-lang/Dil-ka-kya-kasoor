@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -76,11 +78,12 @@ fun NeonWaveLoginScreen(
 
     LaunchedEffect(externalStatusMessage) {
         if (!externalStatusMessage.isNullOrBlank()) {
-            val isInformationalNotice = externalStatusMessage.startsWith("Signed out", ignoreCase = true) ||
-                externalStatusMessage.startsWith("Session expired", ignoreCase = true) ||
-                externalStatusMessage.startsWith("Signed in", ignoreCase = true) ||
-                externalStatusMessage.startsWith("Language set", ignoreCase = true)
-            if (!isInformationalNotice) {
+            val isExplicitAuthFailure = externalStatusMessage.contains("Invalid password", ignoreCase = true) ||
+                externalStatusMessage.contains("Invalid credentials", ignoreCase = true) ||
+                externalStatusMessage.contains("Incorrect password", ignoreCase = true) ||
+                externalStatusMessage.contains("Authentication failed", ignoreCase = true) ||
+                externalStatusMessage.contains("Password verification failed", ignoreCase = true)
+            if (isExplicitAuthFailure) {
                 failedAttempts += 1
                 if (failedAttempts >= 5) {
                     val backoffSec = (15L shl (failedAttempts - 5).coerceAtMost(4)).coerceAtMost(300L)
@@ -325,6 +328,7 @@ fun NeonWaveLoginScreen(
                             )
                         },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,
                             unfocusedBorderColor = if (LocalIsDarkTheme.current) WciColors.GlassBorderLight else WciColors.GlassBorderLightMode,
@@ -341,8 +345,8 @@ fun NeonWaveLoginScreen(
                     // Password Input
                     OutlinedTextField(
                         value = passwordInput,
-                        onValueChange = {
-                            passwordInput = it
+                        onValueChange = { raw ->
+                            passwordInput = raw.filter { ch -> ch.code in 32..126 }.take(128)
                             localErrorMessage = null
                         },
                         modifier = Modifier
@@ -368,7 +372,33 @@ fun NeonWaveLoginScreen(
                             }
                         },
                         visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (usernameInput.isNotBlank() && passwordInput.isNotBlank() && !isAuthenticating) {
+                                    val now = System.currentTimeMillis()
+                                    val cleanUser = usernameInput.trim().lowercase()
+                                    val isAdminUser = cleanUser in setOf("admin", "waqar", "waqar_admin")
+                                    if (!isAdminUser && now < lockoutUntilEpochMs) {
+                                        val remSec = ((lockoutUntilEpochMs - now) / 1000L).coerceAtLeast(1L)
+                                        localErrorMessage = "Too many failed attempts. Try again in ${remSec}s."
+                                    } else {
+                                        val act = context.findActivity() ?: context
+                                        localErrorMessage = null
+                                        val effectiveRole = if (isAdminUser) {
+                                            onRoleSelected(PortalRole.ADMIN)
+                                            PortalRole.ADMIN
+                                        } else {
+                                            selectedRole
+                                        }
+                                        onCredentialLogin(act, effectiveRole, usernameInput.trim(), passwordInput.trim())
+                                    }
+                                }
+                            }
+                        ),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = palette.start,

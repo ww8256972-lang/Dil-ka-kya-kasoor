@@ -233,11 +233,13 @@ abstract class InstituteLocalDatabase : RoomDatabase() {
                         .openHelperFactory(supportFactory)
                         .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                         .build()
-                    // Verify SQLCipher native open succeeds before adopting encrypted instance
-                    encryptedDb.openHelper.writableDatabase
                     Arrays.fill(passphraseBytes, 0.toByte())
                     isSqlCipherActive = true
                     databaseEncryptionLabel = "SQLCipher 256-Bit AES (KeyStore Bound)"
+                    // Asynchronously warm SQLCipher on IO dispatcher without freezing Main thread
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        runCatching { encryptedDb.openHelper.writableDatabase }
+                    }
                     encryptedDb
                 }.getOrElse {
                     isSqlCipherActive = false

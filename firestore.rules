@@ -766,6 +766,29 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // PRD Section 3.4 & 7.1: 100% Offline Fee Receipt Ledger (350,000 docs scale)
+    match /offline_fee_receipts/{receiptId} {
+      allow read: if isStaffOrAdmin() || (isSignedIn() && (
+        resource.data.get('studentUid', '') == request.auth.uid ||
+        resource.data.get('parentUid', '') == request.auth.uid ||
+        matchesAuthenticatedIdentity(resource.data.get('studentRollNo', ''))
+      ));
+      allow create: if isAdmin() &&
+        request.resource.data.get('campusId', '') == 'WCI_UNNAO_MAIN' &&
+        request.resource.data.get('paymentMode', '') in ['CASH', 'CAMPUS_CARD', 'BANK_NEFT_OFFLINE', 'MERIT_SCHOLARSHIP_WAIVER'] &&
+        request.resource.data.get('amountPaisa', 0) is int &&
+        request.resource.data.get('amountPaisa', 0) > 0 &&
+        request.resource.data.get('receiptNo', '') is string &&
+        !('razorpay_payment_id' in request.resource.data) &&
+        !('stripe_payment_intent' in request.resource.data) &&
+        !('upi_txn_id' in request.resource.data) &&
+        !('installment_schedule' in request.resource.data);
+      allow update: if isAdmin() &&
+        request.resource.data.get('campusId', '') == 'WCI_UNNAO_MAIN' &&
+        request.resource.data.get('paymentMode', '') in ['CASH', 'CAMPUS_CARD', 'BANK_NEFT_OFFLINE', 'MERIT_SCHOLARSHIP_WAIVER'];
+      allow delete: if false; // Immutable ledger chain
+    }
+
     match /staffPayroll/{payrollId} {
       allow read: if isStaffOrAdmin();
       allow create, update, delete: if isAdmin();

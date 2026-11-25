@@ -1000,7 +1000,7 @@ class FirebaseAuthServiceProvider(
                         Arrays.fill(chkChars, '\u0000')
                     }
                 }
-                if (matchesExistingLocalIfPresent || !adminVerify.isCustomized || adminVerify.isCustomized) {
+                if (matchesExistingLocalIfPresent) {
                     val displayName = existingLocal?.displayName?.ifBlank { "Waqar Khan (Admin)" }
                         ?: currentFirebaseUser?.displayName
                         ?: "Waqar Khan (Admin)"
